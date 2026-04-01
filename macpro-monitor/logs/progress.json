@@ -1,0 +1,166 @@
+{
+  "startTime": "2026-03-31T23:45:26.457Z",
+  "prepStartTime": "2026-03-31T23:45:26.457Z",
+  "lastUpdate": "2026-03-31T23:47:21.811Z",
+  "progress": 100,
+  "stage": "prep",
+  "phase": "prep",
+  "status": "waiting_reboot",
+  "message": "Ready for reboot",
+  "ip": null,
+  "hostname": "macpro-linux",
+  "username": "teja",
+  "wifi_ssid": "ATTj6pXatS",
+  "updates": [
+    {
+      "timestamp": "2026-03-31T23:40:01.797Z",
+      "stage": "test",
+      "progress": 0,
+      "status": "ready",
+      "message": "VM reset complete, ready for next test"
+    },
+    {
+      "timestamp": "2026-03-31T23:45:26.457Z",
+      "stage": "init",
+      "progress": 0,
+      "status": "starting",
+      "message": "Mac Pro Ubuntu preparation started",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:45:26.495Z",
+      "stage": "prep",
+      "progress": 5,
+      "status": "copying",
+      "message": "Copying driver packages from local storage",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:45:26.834Z",
+      "stage": "prep",
+      "progress": 10,
+      "status": "copied",
+      "message": "Driver packages copied",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS",
+      "package_count": 29
+    },
+    {
+      "timestamp": "2026-03-31T23:45:26.889Z",
+      "stage": "prep",
+      "progress": 20,
+      "status": "iso_ready",
+      "message": "Ubuntu ISO verified",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:45:27.534Z",
+      "stage": "prep",
+      "progress": 30,
+      "status": "partitions_ready",
+      "message": "Partitions mounted",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:45:27.582Z",
+      "stage": "prep",
+      "progress": 30,
+      "status": "extracted",
+      "message": "Ubuntu ISO files found",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:47:20.652Z",
+      "stage": "prep",
+      "progress": 40,
+      "status": "copied",
+      "message": "Ubuntu files copied to partition",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:47:21.167Z",
+      "stage": "prep",
+      "progress": 45,
+      "status": "initrd_replaced",
+      "message": "Initramfs replaced with WiFi driver",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:47:21.366Z",
+      "stage": "prep",
+      "progress": 50,
+      "status": "drivers_embedded",
+      "message": "Broadcom driver packages embedded",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:47:21.548Z",
+      "stage": "prep",
+      "progress": 60,
+      "status": "config_ready",
+      "message": "Autoinstall configuration created",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:47:21.578Z",
+      "stage": "prep",
+      "progress": 70,
+      "status": "boot_config",
+      "message": "Creating boot configuration",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:47:21.615Z",
+      "stage": "prep",
+      "progress": 80,
+      "status": "boot_ready",
+      "message": "Boot configuration created",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:47:21.782Z",
+      "stage": "prep",
+      "progress": 90,
+      "status": "ready",
+      "message": "Preparation complete",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    },
+    {
+      "timestamp": "2026-03-31T23:47:21.811Z",
+      "stage": "prep",
+      "progress": 100,
+      "status": "waiting_reboot",
+      "message": "Ready for reboot",
+      "hostname": "macpro-linux",
+      "username": "teja",
+      "wifi_ssid": "ATTj6pXatS"
+    }
+  ],
+  "stalled": true,
+  "stalledSince": "2026-04-01T00:02:25.341Z"
+}

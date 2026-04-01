@@ -1,0 +1,15 @@
+# VirtualBox test directory - contains VM disks, ISOs, and runtime files
+vbox-test/
+
+# Prerequisites - large binaries (ISOs, deb packages, kernel modules)
+prereqs/
+
+# SSH credentials - NEVER commit private keys
+ssh-MacPro/
+ssh-Macbook/
+
+# Sisyphus internal
+.sisyphus/
+
+# macOS
+.DS_Store

@@ -1,0 +1,174 @@
+
+╔════════════════════════════════════════╗
+║   Mac Pro Installation Monitor          ║
+╚════════════════════════════════════════╝
+
+✓ Server running!
+
+📊 Dashboard:
+
+   http://localhost:8080
+   http://192.168.1.115:8080
+
+🔗 Webhook URL (copy this):
+
+   http://192.168.1.115:8080/webhook
+
+📝 Features:
+   - Monitors PREP phase (driver copy, ISO extraction)
+   - Monitors INSTALL phase (Ubuntu autoinstall)
+   - Shows hostname, username, WiFi config
+   - Displays installation IP when available
+
+
+[4:40:01 PM] [WAIT] VM reset complete, ready for next test (0%)
+
+[PREP] Preparation phase started!
+[4:45:26 PM] [PREP] Mac Pro Ubuntu preparation started (0%)
+[4:45:26 PM] [PREP] Copying driver packages from local storage (5%)
+[4:45:26 PM] [PREP] Driver packages copied (10%)
+[4:45:26 PM] [PREP] Ubuntu ISO verified (20%)
+[4:45:27 PM] [PREP] Partitions mounted (30%)
+[4:45:27 PM] [PREP] Ubuntu ISO files found (30%)
+[4:47:20 PM] [PREP] Ubuntu files copied to partition (40%)
+[4:47:21 PM] [PREP] Initramfs replaced with WiFi driver (45%)
+[4:47:21 PM] [PREP] Broadcom driver packages embedded (50%)
+[4:47:21 PM] [PREP] Autoinstall configuration created (60%)
+[4:47:21 PM] [PREP] Creating boot configuration (70%)
+[4:47:21 PM] [PREP] Boot configuration created (80%)
+[4:47:21 PM] [PREP] Preparation complete (90%)
+
+[COMPLETE] Installation complete!
+[4:47:21 PM] [PREP] Ready for reboot (100%)
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 5 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 6 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 7 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 8 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 9 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 10 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 11 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 12 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 13 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+[WARNING] 14 minutes since last update
+
+[STALL DETECTED] No update for 15 minutes
