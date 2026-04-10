@@ -7,6 +7,8 @@ autoinstall:
   kernel:
     package: linux-image-6.8.0-100-generic
 
+  timezone: America/Los_Angeles
+
   apt:
     preserve_sources_list: true
     preferences:
@@ -39,19 +41,25 @@ autoinstall:
 
   early-commands:
     - |
-      KVER="6.8.0-100-generic"
+      KVER="$(uname -r)"
+      ABI_VER="${KVER%-generic}"
       PKGS="/cdrom/macpro-pkgs"
       LOG="/run/macpro.log"
       echo "=== MAC PRO 2013 AUTOINSTALL ===" > "$LOG"
       echo "Kernel: $(uname -r)" >> "$LOG"
       echo "Target: $KVER" >> "$LOG"
       echo "Packages: $(ls $PKGS/*.deb 2>/dev/null | wc -l) debs" >> "$LOG"
+      # Validate kernel headers exist for running kernel
+      if ! ls $PKGS/linux-headers-${ABI_VER}_*.deb 1>/dev/null 2>&1; then
+        echo "[early] FATAL: No kernel headers for $KVER in $PKGS" >> "$LOG"
+        exit 1
+      fi
 
       echo "[early] Installing kernel headers..." >> "$LOG"
-      dpkg -i $PKGS/linux-headers-6.8.0-100_6.8.0-100.100_all.deb \
-              $PKGS/linux-headers-6.8.0-100-generic_6.8.0-100.100_amd64.deb \
-              $PKGS/linux-libc-dev_6.8.0-100.100_amd64.deb \
-              $PKGS/linux-modules-6.8.0-100-generic_6.8.0-100.100_amd64.deb 2>>"$LOG" || { echo "[early] ERROR: kernel headers failed" >> "$LOG"; }
+      dpkg -i $PKGS/linux-headers-${ABI_VER}_*.deb \
+              $PKGS/linux-headers-${KVER}_*.deb \
+              $PKGS/linux-libc-dev_*.deb \
+              $PKGS/linux-modules-${KVER}_*.deb 2>>"$LOG" || { echo "[early] FATAL: kernel headers failed" >> "$LOG"; exit 1; }
 
       echo "[early] Installing build toolchain..." >> "$LOG"
       dpkg -i $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
@@ -68,7 +76,8 @@ autoinstall:
               $PKGS/make_*.deb $PKGS/build-essential_*.deb \
               $PKGS/perl-base_*.deb \
               $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
-              $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb 2>>"$LOG" || { echo "[early] ERROR: build toolchain failed" >> "$LOG"; }
+              $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb \
+              $PKGS/patch_2.7.6-7build3_amd64.deb 2>>"$LOG" || { echo "[early] FATAL: build toolchain failed" >> "$LOG"; exit 1; }
 
       echo "[early] Installing DKMS and Broadcom driver source..." >> "$LOG"
       dpkg -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || { echo "[early] ERROR: dkms/broadcom install failed" >> "$LOG"; }
@@ -78,13 +87,23 @@ autoinstall:
       dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || echo "[early] WARN: dkms build failed" >> "$LOG"
       dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || echo "[early] WARN: dkms install failed" >> "$LOG"
 
+      for drv in b43 ssb bcma brcmsmac; do
+          echo "blacklist $drv" >> /etc/modprobe.d/blacklist-bcm.conf
+      done
+      rmmod b43 ssb bcma brcmsmac 2>/dev/null || true
       echo "[early] Loading wl module..." >> "$LOG"
       modprobe wl 2>>"$LOG" || echo "[early] ERROR: modprobe wl failed" >> "$LOG"
       sleep 5
+      if ! lsmod | grep -q wl; then
+        echo "[early] WARN: wl not loaded, retrying after forcing conflicting drivers off..." >> "$LOG"
+        for drv in b43 ssb bcma brcmsmac wl; do rmmod $drv 2>/dev/null || true; done
+        modprobe wl 2>>"$LOG" || echo "[early] ERROR: modprobe wl retry failed" >> "$LOG"
+        sleep 5
+      fi
       if lsmod | grep -q wl; then
         echo "[early] SUCCESS: wl module loaded" >> "$LOG"
       else
-        echo "[early] ERROR: wl module not in lsmod" >> "$LOG"
+        echo "[early] FATAL: wl module not in lsmod — cannot continue without WiFi driver" >> "$LOG"; exit 1
       fi
 
       echo "[early] Detecting WiFi interface..." >> "$LOG"
@@ -102,11 +121,12 @@ autoinstall:
       fi
 
       echo "[early] Starting SSH server for remote debugging..." >> "$LOG"
-      apt-get -y install openssh-server 2>>"$LOG" || dpkg -i $PKGS/openssh-server_*.deb 2>>"$LOG" || true
+      # Try installing openssh-server via apt (needs network) or from ISO pool
+      apt-get -y install openssh-server 2>>"$LOG" || dpkg -i /cdrom/pool/restricted/o/openssh/openssh-server_*.deb /cdrom/pool/restricted/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
       if [ -f /usr/sbin/sshd ]; then
         mkdir -p /run/sshd
         /usr/sbin/sshd -D -e &
-        echo "[early] SSH server started (user: ubuntu, pass: ubuntu)" >> "$LOG"
+        echo "[early] SSH server started (installer user: ubuntu, pass: ubuntu; target user: teja)" >> "$LOG"
       else
         echo "[early] WARNING: Could not start SSH server" >> "$LOG"
       fi
@@ -130,7 +150,6 @@ autoinstall:
     - wireless-tools
     - avahi-daemon
     - libnss-mdns
-    - network-manager
 
   storage:
     config:
@@ -172,16 +191,22 @@ autoinstall:
 
   late-commands:
     - |
-      KVER="6.8.0-100-generic"
+      KVER="$(uname -r)"
+      ABI_VER="${KVER%-generic}"
       PKGS="/cdrom/macpro-pkgs"
       LOG="/run/macpro.log"
       echo "[late] Installing WiFi driver into target system..." >> "$LOG"
+      # Validate kernel headers exist before attempting install
+      if ! ls $PKGS/linux-headers-${ABI_VER}_*.deb 1>/dev/null 2>&1; then
+        echo "[late] FATAL: No matching kernel headers for $KVER in $PKGS" >> "$LOG"
+        exit 1
+      fi
       # Stage 1: Kernel headers (no deps)
       dpkg --root /target -i \
-        $PKGS/linux-headers-6.8.0-100_6.8.0-100.100_all.deb \
-        $PKGS/linux-headers-6.8.0-100-generic_6.8.0-100.100_amd64.deb \
-        $PKGS/linux-libc-dev_6.8.0-100.100_amd64.deb \
-        $PKGS/linux-modules-6.8.0-100-generic_6.8.0-100.100_amd64.deb 2>>"$LOG" || echo "[late] WARN: Stage 1 (headers) had errors" >> "$LOG"
+        $PKGS/linux-headers-${ABI_VER}_*.deb \
+        $PKGS/linux-headers-${KVER}_*.deb \
+        $PKGS/linux-libc-dev_*.deb \
+        $PKGS/linux-modules-${KVER}_*.deb 2>>"$LOG" || echo "[late] WARN: Stage 1 (headers) had errors" >> "$LOG"
       # Stage 2: Base libraries first, then binaries that depend on them
       dpkg --root /target -i \
         $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
@@ -200,7 +225,8 @@ autoinstall:
         $PKGS/make_*.deb $PKGS/build-essential_*.deb \
         $PKGS/perl-base_*.deb \
         $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb \
-        $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb 2>>"$LOG" || echo "[late] WARN: Stage 3 (tools) had errors" >> "$LOG"
+        $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
+        $PKGS/patch_2.7.6-7build3_amd64.deb 2>>"$LOG" || echo "[late] WARN: Stage 3 (tools) had errors" >> "$LOG"
       # Stage 4: DKMS and driver (depend on stage 3)
       dpkg --root /target -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || echo "[late] WARN: Stage 4 (dkms) had errors" >> "$LOG"
       chroot /target dkms add broadcom-sta/6.30.223.271 2>>"$LOG" || true
@@ -209,16 +235,19 @@ autoinstall:
       echo "wl" >> /target/etc/modules
       echo "[late] WiFi driver installed into target" >> "$LOG"
     - |
-      WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wl[pw][^:]+' | head -1 || ip link show 2>/dev/null | grep -oE 'wlan[0-9]+' | head -1)
-      WIFI_IFACE=${WIFI_IFACE:-wlan0}
+      # Remove autoinstall-generated netplan to avoid conflict, write match-based version
+      rm -f /target/etc/netplan/50-cloud-init.yaml 2>/dev/null || true
       mkdir -p /target/etc/netplan
-      printf 'network:\n  version: 2\n  wifis:\n    %s:\n      match:\n        driver: wl\n      dhcp4: true\n      optional: true\n      access-points:\n        "ATTj6pXatS":\n          password: "j75b39=z?mpg"\n' "$WIFI_IFACE" > /target/etc/netplan/01-wifi.yaml
+      printf 'network:\n  version: 2\n  wifis:\n    wl0:\n      match:\n        driver: wl\n      dhcp4: true\n      optional: true\n      access-points:\n        "ATTj6pXatS":\n          password: "j75b39=z?mpg"\n' > /target/etc/netplan/01-wifi.yaml
       chmod 600 /target/etc/netplan/01-wifi.yaml
+    - |
+      echo 'GRUB_CMDLINE_LINUX_DEFAULT="nomodeset amdgpu.si.modeset=0"' >> /target/etc/default/grub.d/macpro.cfg
+      chroot /target update-grub 2>>/run/macpro.log || echo "[late] WARN: update-grub failed" >> /run/macpro.log
     - |
       sed -i 's/^hosts:.*/hosts: files mdns_minimal [NOTFOUND=return] dns/' /target/etc/nsswitch.conf
     - |
-      chroot /target apt-mark hold linux-image-6.8.0-100-generic 2>>/run/macpro.log || echo "[late] WARN: kernel hold failed" >> /run/macpro.log
-      chroot /target apt-mark hold linux-headers-6.8.0-100-generic 2>>/run/macpro.log || echo "[late] WARN: headers hold failed" >> /run/macpro.log
+      chroot /target apt-mark hold "linux-image-${KVER}" 2>>/run/macpro.log || echo "[late] WARN: kernel hold failed" >> /run/macpro.log
+      chroot /target apt-mark hold "linux-headers-${KVER}" 2>>/run/macpro.log || echo "[late] WARN: headers hold failed" >> /run/macpro.log
     - |
       echo "teja ALL=(ALL) NOPASSWD:ALL" >> /target/etc/sudoers.d/teja
       chmod 440 /target/etc/sudoers.d/teja
@@ -240,4 +269,9 @@ autoinstall:
       dmesg > /tmp/error-dmesg.log
       journalctl -b > /tmp/error-journalctl.log
 
+  # NOTE: Using reboot (not poweroff) because headless deployment requires
+  # remote access after installation completes. The GPU cold-boot quirk
+  # (AMD FirePro needs cold boot for init) only affects macOS→Linux transitions,
+  # not Linux→Linux reboots. If GPU issues occur on first boot, add
+  # nomodeset amdgpu.si.modeset=0 to GRUB (already done in late-commands).
   shutdown: reboot
