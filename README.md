@@ -8,20 +8,20 @@ Mac Pro 2013 has no Ethernet port. The Broadcom BCM4360 WiFi requires a propriet
 
 ## Solution
 
-**Minimal ISO modification** — only insert `autoinstall.yaml` into the stock Ubuntu 24.04.4 Server ISO. The autoinstall config leverages packages already present in the ISO's pool to compile and install the WiFi driver during installation. EFI boot structure is preserved via `xorriso -boot_image any keep`.
+**Minimal ISO modification** — insert `autoinstall.yaml` and a `packages/` directory of required debs into the stock Ubuntu 24.04.4 Server ISO. The autoinstall config installs build tools and the Broadcom driver source from those packages, compiles via DKMS against the running kernel, and loads `wl` before network configuration. EFI boot structure is preserved via `xorriso -boot_image any keep`.
 
 ```
-Boot ISO → early-commands compile wl driver from ISO pool → WiFi connects → autoinstall completes
+Boot ISO → early-commands install packages from /cdrom/macpro-pkgs/ → compile wl driver → WiFi connects → autoinstall completes
 ```
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `autoinstall.yaml` | Ubuntu autoinstall configuration (the only file added to ISO) |
-| `build-iso.sh` | Builds modified ISO from stock Ubuntu ISO + autoinstall.yaml |
+| `autoinstall.yaml` | Ubuntu autoinstall configuration |
+| `build-iso.sh` | Builds modified ISO from stock Ubuntu ISO + autoinstall.yaml + packages |
+| `packages/` | .deb files needed to compile and install WiFi driver (~36 packages, ~75MB) |
 | `macpro-monitor/` | Node.js webhook server for headless install monitoring |
-| `prepare_ubuntu_install_final.sh` | Legacy macOS-side prep script (references old initramfs approach) |
 
 ## Quick Start
 
@@ -37,7 +37,6 @@ sudo ./build-iso.sh
 ### 2. Write to USB
 
 ```bash
-# On macOS:
 diskutil list  # find your USB drive
 diskutil unmountDisk /dev/diskN
 sudo dd if=ubuntu-macpro.iso of=/dev/diskN bs=1m
@@ -56,18 +55,45 @@ Hold Option key → select Ubuntu installer. GRUB will auto-select the autoinsta
 
 **Important:** If booting manually, add kernel parameters:
 ```
-autoinstall nomodeset amdgpu.si.modeset=0
+autoinstall ds=nocloud nomodeset amdgpu.si.modeset=0
 ```
 
 ## How It Works
 
+### What's Added to the ISO
+
+Only two things are injected into the stock ISO:
+
+1. `/autoinstall.yaml` — installation configuration
+2. `/macpro-pkgs/` — flat directory of ~36 .deb files for driver compilation
+
+### Why Packages Must Be Included
+
+The stock Ubuntu 24.04.4 Server ISO does NOT include:
+- `dkms` — Dynamic Kernel Module Support framework
+- `broadcom-sta-dkms` — Broadcom WiFi driver source
+- `make`, `gcc-13`, `build-essential` — compilation toolchain
+- `perl-base`, `kmod`, `fakeroot` — DKMS dependencies
+
+These must be included on the ISO because without WiFi, the installer cannot download them from the internet.
+
+The ISO DOES include in its pool (no need to include separately):
+- `linux-headers-6.8.0-100*` — matching kernel headers
+- `linux-modules-6.8.0-100-generic` — kernel modules
+- `binutils`, `libc6-dev` — base build tools
+- `wpasupplicant`, `avahi-daemon` — network utilities
+
+We include all needed debs in `packages/` for simplicity, even those available in the ISO pool, to avoid fragile dependency resolution against deep pool paths.
+
 ### autoinstall.yaml Key Sections
 
 **early-commands** (runs before network config):
-- Installs kernel headers and build tools from `/cdrom/pool/` (packages on the ISO)
-- Compiles Broadcom `wl` driver via DKMS against running kernel
-- Loads driver with `modprobe wl`
-- Waits for WiFi interface to appear
+1. Installs kernel headers and modules from `/cdrom/macpro-pkgs/`
+2. Installs build toolchain (gcc, make, binutils, libc-dev, etc.)
+3. Installs `broadcom-sta-dkms` and `dkms`
+4. Compiles `wl.ko` via DKMS against running kernel
+5. Loads driver with `modprobe wl`
+6. Waits for WiFi interface to appear
 
 **network**: Matches any interface with `driver: wl`, connects to configured WiFi
 
@@ -78,16 +104,6 @@ autoinstall nomodeset amdgpu.si.modeset=0
 - Configures mDNS for `macpro-linux.local` hostname resolution
 
 **error-commands**: Attempts to load driver and send webhook notification on failure
-
-### Why This Works Without Network
-
-The Ubuntu 24.04.4 Server ISO already includes in its pool:
-- `broadcom-sta-dkms` — Broadcom driver source
-- `linux-headers-6.8.0-100*` — matching kernel headers
-- `dkms`, `make`, `gcc-13`, `binutils`, `libc6-dev` — build toolchain
-- `wpasupplicant`, `avahi-daemon` — network utilities
-
-Since subiquity mounts the ISO at `/cdrom`, all packages are available via `dpkg -i /cdrom/pool/...`.
 
 ### AMD FirePro GPU
 
@@ -106,19 +122,35 @@ Edit `autoinstall.yaml` to change:
 | SSH keys | `ssh.authorized-keys` | 4 keys |
 | Webhook URL | `reporting` | `http://192.168.1.115:8080/webhook` |
 
+## Updating Packages
+
+If you need to refresh the `packages/` directory (e.g., for a different kernel version):
+
+```bash
+# Extract from fresh ISO:
+7z e prereqs/ubuntu-24.04.4-live-server-amd64.iso -o/tmp/extract \
+    'pool/main/l/linux/linux-headers-6.8.0-100*_*' \
+    'pool/main/b/binutils/*' \
+    'pool/main/g/glibc/libc-dev*_*' \
+    'pool/main/g/glibc/libc6-dev_*' -y
+
+# Download missing packages (dkms, broadcom-sta, gcc, make, etc.)
+# from http://packages.ubuntu.com/noble/
+```
+
 ## Troubleshooting
 
 ### Driver won't compile
-Check that ISO kernel matches headers:
 ```bash
-strings /cdrom/casper/vmlinuz | grep "6.8.0-100"
-ls /cdrom/pool/main/l/linux/linux-headers-6.8.0-100*
+dmesg | grep -i 'dkms\|wl\|broadcom'
+cat /run/macpro.log
 ```
 
 ### WiFi doesn't connect
 ```bash
 dmesg | grep wl
 ip link show | grep wl
+lsmod | grep wl
 ```
 
 ### Can't SSH after install

@@ -2,20 +2,25 @@
 
 ## Project Overview
 
-Automated Ubuntu 24.04.4 LTS Server installer for headless Mac Pro 2013 (MacPro6,1) with Broadcom BCM4360 WiFi. Uses minimal ISO modification — only `autoinstall.yaml` is injected into the stock Ubuntu ISO.
+Automated Ubuntu 24.04.4 LTS Server installer for headless Mac Pro 2013 (MacPro6,1) with Broadcom BCM4360 WiFi. Uses minimal ISO modification — only `autoinstall.yaml` and a `packages/` directory of required debs are injected into the stock Ubuntu ISO.
 
 ## Project Structure
 
 ```
 /Users/djtchill/Desktop/Mac/
-├── autoinstall.yaml                 # The only file added to ISO
+├── autoinstall.yaml                 # Autoinstall configuration (added to ISO at /)
 ├── build-iso.sh                     # ISO builder (xorriso)
+├── packages/                        # .deb files for driver compilation (~36 debs, ~75MB)
+│   ├── broadcom-sta-dkms_*.deb      # Broadcom WiFi driver source
+│   ├── dkms_*.deb                   # Dynamic Kernel Module Support
+│   ├── linux-headers-6.8.0-100*     # Kernel headers matching ISO kernel
+│   ├── gcc-13_*, make_*, etc.       # Build toolchain
+│   └── ...
 ├── README.md                        # Documentation
 ├── macpro-monitor/                  # Node.js webhook monitor
 │   ├── server.js
 │   ├── start.sh / stop.sh / reset.sh
 │   └── logs/
-├── prepare_ubuntu_install_final.sh  # Legacy macOS prep script
 └── prereqs/                         # Stock Ubuntu ISO (gitignored)
 ```
 
@@ -34,9 +39,9 @@ cd macpro-monitor && ./start.sh    # Start (port 8080)
 
 ## Core Design Decisions
 
-1. **Minimal ISO modification**: Only `autoinstall.yaml` is added via `xorriso -map`. EFI boot structure is preserved with `-boot_image any keep`. No initrd hacking, no kernel swapping, no driver pre-compilation.
+1. **Minimal ISO modification**: Only `autoinstall.yaml` and `packages/` directory are added via `xorriso -map`. EFI boot structure is preserved with `-boot_image any keep`. No initrd hacking, no kernel swapping, no driver pre-compilation.
 
-2. **Compile during install**: The `early-commands` section installs kernel headers and build tools from `/cdrom/pool/`, then compiles `wl.ko` via DKMS against the running kernel. This avoids kernel version mismatches since compilation happens against the actual booted kernel.
+2. **Compile during install**: The `early-commands` section installs kernel headers and build tools from `/cdrom/macpro-pkgs/`, then compiles `wl.ko` via DKMS against the running kernel. This avoids kernel version mismatches since compilation happens against the actual booted kernel.
 
 3. **GPU**: AMD FirePro uses built-in `amdgpu` driver. Only `nomodeset amdgpu.si.modeset=0` kernel params needed (set in GRUB at boot time, not baked into ISO).
 
@@ -86,6 +91,7 @@ function escapeHtml(str) {
 
 ## Important Files
 
-- `autoinstall.yaml` - The core autoinstall configuration (only file added to ISO)
+- `autoinstall.yaml` - The core autoinstall configuration (added to ISO at /)
+- `packages/` - .deb files for driver compilation (added to ISO at /macpro-pkgs/)
 - `build-iso.sh` - ISO build script using xorriso
 - `.gitignore` - Excludes `prereqs/`, `*.iso`, `ssh-*/`, `.sisyphus/`
