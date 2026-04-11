@@ -217,6 +217,7 @@ autoinstall:
         curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":26,"stage":"prep-netcheck","status":"failed","message":"FATAL: WiFi not connected — aborting before storage wipe"}' > /dev/null 2>&1 || true
         exit 1
       fi
+      set +x
 
   network:
     version: 2
