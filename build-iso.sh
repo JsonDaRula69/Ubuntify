@@ -99,9 +99,10 @@ echo "  ... (preserving original boot structure)"
 # Rebuild ISO using extracted boot parameters
 # The -V "cidata" sets the volume label for NoCloud discovery
 # BOOT_PARAMS preserves MBR, EFI partition image, and El Torito boot entries
-# eval is needed because BOOT_PARAMS contains multiple quoted arguments
-eval xorriso -as mkisofs \
-    $BOOT_PARAMS \
+# Parse BOOT_PARAMS into array to avoid eval injection risk
+read -ra BOOT_ARRAY <<< "$BOOT_PARAMS"
+xorriso -as mkisofs \
+    "${BOOT_ARRAY[@]}" \
     -V "cidata" \
     -o "${OUTPUT_ISO}" \
     "$STAGING/iso_root"
