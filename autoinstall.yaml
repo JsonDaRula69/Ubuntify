@@ -58,7 +58,18 @@ autoinstall:
       fi
       KVER="$(uname -r)"
       ABI_VER="${KVER%-generic}"
-      PKGS="/cdrom/macpro-pkgs"
+      # Discover macpro-pkgs mount point (may differ between USB and internal boot)
+      PKGS=""
+      for _mp in /cdrom /isodevice /mnt; do
+        if [ -d "$_mp/macpro-pkgs" ]; then
+          PKGS="$_mp/macpro-pkgs"
+          break
+        fi
+      done
+      if [ -z "$PKGS" ]; then
+        echo "[early] FATAL: Cannot find macpro-pkgs on any mount point" >> /run/macpro.log
+        exit 1
+      fi
       LOG="/run/macpro.log"
       WHURL="http://192.168.1.115:8080/webhook"
       echo "=== MAC PRO 2013 AUTOINSTALL ===" > "$LOG"
@@ -73,7 +84,7 @@ autoinstall:
         exit 1
       fi
       # Validate DKMS patches exist — driver WILL NOT compile on kernel 6.8+ without them
-      if [ ! -d /cdrom/macpro-pkgs/dkms-patches ] || [ ! -f /cdrom/macpro-pkgs/dkms-patches/series ]; then
+      if [ ! -d "$PKGS/dkms-patches" ] || [ ! -f "$PKGS/dkms-patches/series" ]; then
         echo "[early] FATAL: DKMS patches missing — broadcom-sta cannot compile on kernel 6.8+" >> "$LOG"
         curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":2,"stage":"prep-init","status":"failed","message":"FATAL: DKMS patches missing — driver compilation will fail"}' > /dev/null 2>&1 || true
         exit 1
@@ -110,18 +121,32 @@ autoinstall:
       # dkms add is handled by dpkg postinst (creates symlink /var/lib/dkms/.../source -> /usr/src/...)
       # Patches modify /usr/src/... which is visible through the symlink for dkms build
       # Apply DKMS patches for kernel 6.8+ compatibility from ISO
-      if [ -d /cdrom/macpro-pkgs/dkms-patches ]; then
+      if [ -d "$PKGS/dkms-patches" ]; then
         echo "[early] Applying DKMS compatibility patches..." >> "$LOG"
-        for patch in $(cat /cdrom/macpro-pkgs/dkms-patches/series); do
-          if [ -f "/cdrom/macpro-pkgs/dkms-patches/$patch" ]; then
+        # Pre-validate ALL patch files exist before applying any
+        _missing=0
+        for _p in $(cat "$PKGS/dkms-patches/series"); do
+          if [ ! -f "$PKGS/dkms-patches/$_p" ]; then
+            echo "[early] FATAL: Patch '$_p' listed in series but not found" >> "$LOG"
+            _missing=1
+          fi
+        done
+        if [ "$_missing" -eq 1 ]; then
+          curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":14,"stage":"prep-patch","status":"failed","message":"FATAL: DKMS patch files missing from series"}' > /dev/null 2>&1 || true
+          exit 1
+        fi
+        for patch in $(cat "$PKGS/dkms-patches/series"); do
+          if [ -f "$PKGS/dkms-patches/$patch" ]; then
             echo "[early] Applying $patch..." >> "$LOG"
-            if ! patch -p1 -d /usr/src/broadcom-sta-6.30.223.271 < "/cdrom/macpro-pkgs/dkms-patches/$patch" >> "$LOG" 2>&1; then
+            if ! patch -p1 -d /usr/src/broadcom-sta-6.30.223.271 < "$PKGS/dkms-patches/$patch" >> "$LOG" 2>&1; then
               echo "[early] FATAL: Patch $patch failed to apply" >> "$LOG"
               curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "{\"progress\":14,\"stage\":\"prep-patch\",\"status\":\"failed\",\"message\":\"FATAL: DKMS patch $patch failed\"}" > /dev/null 2>&1 || true
               exit 1
             fi
           else
-            echo "[early] WARN: Patch file $patch not found, skipping" >> "$LOG"
+            echo "[early] FATAL: Patch file $patch listed in series but not found" >> "$LOG"
+            curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "{\"progress\":14,\"stage\":\"prep-patch\",\"status\":\"failed\",\"message\":\"FATAL: DKMS patch $patch file missing\"}" > /dev/null 2>&1 || true
+            exit 1
           fi
         done
       else
@@ -180,7 +205,7 @@ autoinstall:
         [ -n "$WIFI_IFACE" ] && break
         WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wlan[0-9]+' | head -1)
         [ -n "$WIFI_IFACE" ] && break
-        WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'en[po][0-9]+s[0-9]+' | head -1)
+        WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wl[0-9]+' | head -1)
         [ -n "$WIFI_IFACE" ] && break
         sleep 1
       done
@@ -203,6 +228,27 @@ autoinstall:
       else
         echo "[early] WARNING: Could not start SSH server" >> "$LOG"
       fi
+
+      # Verify WiFi is associated (scan check for faster feedback)
+      WIFI_ASSOC=0
+      for _i in $(seq 1 6); do
+        if iwconfig "$WIFI_IFACE" 2>/dev/null | grep -q "ESSID:"; then
+          WIFI_ASSOC=1
+          break
+        fi
+        sleep 5
+      done
+      if [ "$WIFI_ASSOC" -ne 1 ]; then
+        iwlist "$WIFI_IFACE" scan 2>/dev/null | head -20 >> "$LOG" || true
+        echo "[early] WARN: WiFi not associated after 30s — check SSID/password" >> "$LOG"
+      fi
+      # Check for DHCP lease
+      for _i in $(seq 1 6); do
+        if ip addr show "$WIFI_IFACE" 2>/dev/null | grep -q "inet "; then
+          break
+        fi
+        sleep 5
+      done
 
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":26,"stage":"prep-netcheck","status":"verifying","message":"Verifying WiFi connectivity before storage"}' > /dev/null 2>&1 || true
       echo "[early] Verifying WiFi network connectivity..." >> "$LOG"
@@ -246,6 +292,10 @@ autoinstall:
     - libnss-mdns
     - efibootmgr
 
+  # DANGER: This template does NOT include preserve:true on existing partitions.
+  # The prepare-headless-deploy.sh script MUST inject preserve:true for all
+  # existing macOS/APFS partitions before use. Without that injection,
+  # curtin will WIPE existing partitions during autoinstall.
   storage:
     config:
       - type: disk
@@ -298,7 +348,18 @@ autoinstall:
     - |
       KVER="$(uname -r)"
       ABI_VER="${KVER%-generic}"
-      PKGS="/cdrom/macpro-pkgs"
+      # Discover macpro-pkgs mount point
+      PKGS=""
+      for _mp in /cdrom /isodevice /mnt /target/cdrom; do
+        if [ -d "$_mp/macpro-pkgs" ]; then
+          PKGS="$_mp/macpro-pkgs"
+          break
+        fi
+      done
+      if [ -z "$PKGS" ]; then
+        echo "[late] FATAL: Cannot find macpro-pkgs on any mount point" >> "$LOG"
+        exit 1
+      fi
       LOG="/run/macpro.log"
       WHURL="http://192.168.1.115:8080/webhook"
       echo "[late] Installing WiFi driver into target system..." >> "$LOG"
@@ -310,7 +371,7 @@ autoinstall:
         exit 1
       fi
       # Validate DKMS patches exist — driver WILL NOT compile on kernel 6.8+ without them
-      if [ ! -d /cdrom/macpro-pkgs/dkms-patches ] || [ ! -f /cdrom/macpro-pkgs/dkms-patches/series ]; then
+      if [ ! -d "$PKGS/dkms-patches" ] || [ ! -f "$PKGS/dkms-patches/series" ]; then
         echo "[late] FATAL: DKMS patches missing — broadcom-sta cannot compile on kernel 6.8+" >> "$LOG"
         curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":30,"stage":"late-init","status":"failed","message":"FATAL: DKMS patches missing in late-commands"}' > /dev/null 2>&1 || true
         exit 1
@@ -348,18 +409,29 @@ autoinstall:
       dpkg --root /target -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 4 (dkms/broadcom dpkg) failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":60,"stage":"late-dkms","status":"failed","message":"FATAL: DKMS package install failed"}' > /dev/null 2>&1 || true; exit 1; }
       # dkms add is handled by dpkg postinst (creates symlink in /var/lib/dkms/)
       # Apply DKMS patches for kernel 6.8+ compatibility (before dkms build, after dkms add)
-      if [ -d /cdrom/macpro-pkgs/dkms-patches ]; then
+      if [ -d "$PKGS/dkms-patches" ]; then
         echo "[late] Applying DKMS compatibility patches in target..." >> "$LOG"
-        for patch in $(cat /cdrom/macpro-pkgs/dkms-patches/series); do
-          if [ -f "/cdrom/macpro-pkgs/dkms-patches/$patch" ]; then
+        # Pre-validate ALL patch files exist before applying any
+        _missing=0
+        for _p in $(cat "$PKGS/dkms-patches/series"); do
+          if [ ! -f "$PKGS/dkms-patches/$_p" ]; then
+            echo "[late] FATAL: Patch '$_p' listed in series but not found" >> "$LOG"
+            _missing=1
+          fi
+        done
+        if [ "$_missing" -eq 1 ]; then exit 1; fi
+        for patch in $(cat "$PKGS/dkms-patches/series"); do
+          if [ -f "$PKGS/dkms-patches/$patch" ]; then
             echo "[late] Applying $patch..." >> "$LOG"
-            if ! chroot /target patch -p1 -d /usr/src/broadcom-sta-6.30.223.271 < "/cdrom/macpro-pkgs/dkms-patches/$patch" >> "$LOG" 2>&1; then
+            if ! chroot /target patch -p1 -d /usr/src/broadcom-sta-6.30.223.271 < "$PKGS/dkms-patches/$patch" >> "$LOG" 2>&1; then
               echo "[late] FATAL: Patch $patch failed to apply in target" >> "$LOG"
               curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "{\"progress\":61,\"stage\":\"late-patch\",\"status\":\"failed\",\"message\":\"FATAL: DKMS patch $patch failed in target\"}" > /dev/null 2>&1 || true
               exit 1
             fi
           else
-            echo "[late] WARN: Patch file $patch not found, skipping" >> "$LOG"
+            echo "[late] FATAL: Patch file $patch listed in series but not found" >> "$LOG"
+            curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "{\"progress\":61,\"stage\":\"late-patch\",\"status\":\"failed\",\"message\":\"FATAL: DKMS patch $patch file missing in late\"}" > /dev/null 2>&1 || true
+            exit 1
           fi
         done
       fi
@@ -391,8 +463,11 @@ autoinstall:
       fi
       umount /target/dev /target/sys /target/proc 2>/dev/null || true
       echo "wl" >> /target/etc/modules
-      echo "options wl wl_msglevel=0x1" > /target/etc/modprobe.d/wl.conf
+      printf '# Disable WiFi power management to prevent disconnects\noptions wl\n' > /target/etc/modprobe.d/wl.conf
       echo "options cfg80211 ieee80211_regdom=US" > /target/etc/modprobe.d/cfg80211.conf
+      # Create systemd service to run iwconfig power off on boot
+      printf '[Unit]\nDescription=Disable WiFi power management\nAfter=network.target\n\n[Service]\nType=oneshot\nExecStart=/sbin/iwconfig wl0 power off\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n' > /target/etc/systemd/system/wl-poweroff.service
+      chroot /target systemctl enable wl-poweroff.service 2>>"$LOG" || echo "[late] WARN: wl-poweroff service enable failed" >> "$LOG"
       echo "[late] WiFi driver installed into target" >> "$LOG"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":65,"stage":"late-dkms","status":"installed","message":"WiFi driver compiled and installed into target"}' > /dev/null 2>&1 || true
     - |
@@ -405,7 +480,10 @@ autoinstall:
       chmod 600 /target/etc/netplan/01-wifi.yaml
       # Validate netplan config before proceeding
       if command -v netplan 2>/dev/null >/dev/null; then
-        netplan generate 2>>/run/macpro.log || echo "[late] WARN: netplan generate failed" >> /run/macpro.log
+        if ! netplan generate 2>>/run/macpro.log; then
+          echo "[late] FATAL: netplan generate failed — invalid WiFi config" >> /run/macpro.log
+          exit 1
+        fi
       fi
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":73,"stage":"late-netplan","status":"configured","message":"WiFi netplan config written"}' > /dev/null 2>&1 || true
     - |
@@ -422,6 +500,9 @@ autoinstall:
       mkdir -p /target/usr/local/bin
       printf '#!/bin/bash\nset -e\nEFIVARS="/sys/firmware/efi/efivars"\nif [ ! -d "$EFIVARS" ]; then\n  echo "ERROR: EFI variables not available" >&2\n  exit 1\nfi\nMACOS_BOOT=$(efibootmgr | grep -i "macos\\|apple\\|boot0" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)\nif [ -z "$MACOS_BOOT" ]; then\n  echo "WARNING: macOS boot entry not found in EFI variables" >&2\n  echo "Use Apple Boot Manager (hold Option at boot) instead" >&2\n  exit 1\nfi\nefibootmgr --bootnext "$MACOS_BOOT"\necho "macOS set as next boot device. Reboot to start macOS."\n' > /target/usr/local/bin/boot-macos
       chmod +x /target/usr/local/bin/boot-macos
+      # Workaround for Apple EFI 1.1 bug (Bug #2040190)
+      # efibootmgr may fail on Mac Pro 2013 due to EFI 1.1 firmware quirks
+      echo 'LIBEFIVAR_OPS=efivarfs' >> /target/etc/environment
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":78,"stage":"late-grub","status":"configured","message":"GRUB bootloader configured with macOS entry"}' > /dev/null 2>&1 || true
     - |
       WHURL="http://192.168.1.115:8080/webhook"
@@ -463,18 +544,26 @@ autoinstall:
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":97,"stage":"late-verify","status":"verifying","message":"Verifying target system before reboot"}' > /dev/null 2>&1 || true
       echo "[late] Verifying target system integrity..." >> "$LOG"
       VERIFY_OK=true
+      WIFI_CRITICAL=true
       if [ ! -f /target/vmlinuz ] && [ ! -f /target/boot/vmlinuz-* ]; then
         echo "[late] WARN: No kernel found in /target" >> "$LOG"
         VERIFY_OK=false
       fi
       if [ ! -f /target/etc/netplan/01-wifi.yaml ]; then
-        echo "[late] WARN: Netplan WiFi config missing in /target" >> "$LOG"
+        echo "[late] FATAL: Netplan WiFi config missing in /target — no network after reboot" >> "$LOG"
+        WIFI_CRITICAL=false
         VERIFY_OK=false
       fi
-      if ! ls /target/lib/modules/*/kernel/net/wireless/ 2>/dev/null | head -1 > /dev/null 2>&1; then
-        if [ ! -d /target/lib/modules/"$(uname -r)"/updates/dkms/ ]; then
-          echo "[late] WARN: No WiFi driver module in /target kernel modules" >> "$LOG"
-        fi
+      WIFI_MODULE_FOUND=false
+      if ls /target/lib/modules/*/updates/dkms/wl.ko 2>/dev/null | head -1 > /dev/null 2>&1; then
+        WIFI_MODULE_FOUND=true
+      elif ls /target/lib/modules/*/kernel/net/wireless/ 2>/dev/null | head -1 > /dev/null 2>&1; then
+        WIFI_MODULE_FOUND=true
+      fi
+      if [ "$WIFI_MODULE_FOUND" = "false" ]; then
+        echo "[late] FATAL: No WiFi driver module in /target — no network after reboot" >> "$LOG"
+        WIFI_CRITICAL=false
+        VERIFY_OK=false
       fi
       if [ -f /target/etc/default/grub.d/macpro.cfg ]; then
         if ! grep -q 'nomodeset' /target/etc/default/grub.d/macpro.cfg; then
@@ -486,8 +575,20 @@ autoinstall:
         VERIFY_OK=false
       fi
       if [ "$VERIFY_OK" = "false" ]; then
-        echo "[late] WARN: Some verification checks failed — installation may not boot correctly" >> "$LOG"
-        curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":97,"stage":"late-verify","status":"warning","message":"WARN: Some verification checks failed"}' > /dev/null 2>&1 || true
+        if [ "$WIFI_CRITICAL" = "false" ]; then
+          # WiFi is broken in target — DON'T reboot, keep SSH alive for debugging
+          echo "[late] FATAL: Target system WiFi is broken — NOT rebooting to avoid headless brick" >> "$LOG"
+          curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":97,"stage":"late-verify","status":"failed","message":"FATAL: Target WiFi broken — SSH remains active, NOT rebooting"}' > /dev/null 2>&1 || true
+          # Keep SSH server running for remote debugging
+          if [ -f /usr/sbin/sshd ]; then
+            /usr/sbin/sshd -D -e &
+          fi
+          # Block indefinitely so system doesn't reboot into broken state
+          while true; do sleep 60; done
+        else
+          echo "[late] WARN: Some non-critical verification checks failed — proceeding with reboot" >> "$LOG"
+          curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":97,"stage":"late-verify","status":"warning","message":"WARN: Some verification checks failed but WiFi OK"}' > /dev/null 2>&1 || true
+        fi
       else
         echo "[late] All verification checks passed" >> "$LOG"
         curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":98,"stage":"late-verify","status":"verified","message":"Target system verification passed"}' > /dev/null 2>&1 || true
@@ -500,12 +601,13 @@ autoinstall:
       modprobe wl 2>/dev/null || true
       sleep 3
       WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wl[pw][^:]+' | head -1)
-      if [ -n "$WIFI_DEV" ]; then
-        ip link set "$WIFI_DEV" up 2>/dev/null || true
-      else
+      if [ -z "$WIFI_DEV" ]; then
         WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wlan[0-9]+' | head -1)
-        [ -n "$WIFI_DEV" ] && ip link set "$WIFI_DEV" up 2>/dev/null || true
       fi
+      if [ -z "$WIFI_DEV" ]; then
+        WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wl[0-9]+' | head -1)
+      fi
+      [ -n "$WIFI_DEV" ] && ip link set "$WIFI_DEV" up 2>/dev/null || true
     - |
       WHURL="http://192.168.1.115:8080/webhook"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" \
@@ -528,4 +630,8 @@ autoinstall:
   # (AMD FirePro needs cold boot for init) only affects macOS→Linux transitions,
   # not Linux→Linux reboots. If GPU issues occur on first boot, add
   # nomodeset amdgpu.si.modeset=0 to GRUB (already done in late-commands).
+  # SAFETY: If late-commands verification detects broken WiFi in /target,
+  # the system enters recovery mode (blocks reboot, keeps SSH alive) to
+  # prevent a headless brick scenario where the installed system has no
+  # network access.
   shutdown: reboot
