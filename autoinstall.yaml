@@ -244,6 +244,7 @@ autoinstall:
     - wireless-tools
     - avahi-daemon
     - libnss-mdns
+    - efibootmgr
 
   storage:
     config:
@@ -415,9 +416,12 @@ autoinstall:
       if ! grep -q '^GRUB_DISABLE_OS_PROBER=' /target/etc/default/grub; then
         echo 'GRUB_DISABLE_OS_PROBER=false' >> /target/etc/default/grub
       fi
-      printf '#!/bin/sh\nexec tail -n +3 "$0"\nmenuentry "macOS" {\n  insmod part_gpt\n  insmod hfsplus\n  search --no-floppy --set=root --file /System/Library/CoreServices/boot.efi\n  chainloader /System/Library/CoreServices/boot.efi\n}\n' > /target/etc/grub.d/40_macos
+      printf '#!/bin/sh\nexec tail -n +3 "$0"\nmenuentry "Reboot to Apple Boot Manager" {\n  fwsetup\n}\n' > /target/etc/grub.d/40_macos
       chmod +x /target/etc/grub.d/40_macos
       chroot /target update-grub 2>>/run/macpro.log || echo "[late] WARN: update-grub failed" >> /run/macpro.log
+      mkdir -p /target/usr/local/bin
+      printf '#!/bin/bash\nset -e\nEFIVARS="/sys/firmware/efi/efivars"\nif [ ! -d "$EFIVARS" ]; then\n  echo "ERROR: EFI variables not available" >&2\n  exit 1\nfi\nMACOS_BOOT=$(efibootmgr | grep -i "macos\\|apple\\|boot0" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)\nif [ -z "$MACOS_BOOT" ]; then\n  echo "WARNING: macOS boot entry not found in EFI variables" >&2\n  echo "Use Apple Boot Manager (hold Option at boot) instead" >&2\n  exit 1\nfi\nefibootmgr --bootnext "$MACOS_BOOT"\necho "macOS set as next boot device. Reboot to start macOS."\n' > /target/usr/local/bin/boot-macos
+      chmod +x /target/usr/local/bin/boot-macos
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":78,"stage":"late-grub","status":"configured","message":"GRUB bootloader configured with macOS entry"}' > /dev/null 2>&1 || true
     - |
       WHURL="http://192.168.1.115:8080/webhook"
