@@ -263,7 +263,155 @@ fi
 log "Creating cidata structure..."
 mkdir -p "$ESP_MOUNT/cidata"
 cp "$ISO_MOUNT/cidata/"* "$ESP_MOUNT/cidata/" 2>/dev/null || true
-[ -f "$ESP_MOUNT/cidata/user-data" ] || cp "$SCRIPT_DIR/autoinstall.yaml" "$ESP_MOUNT/cidata/user-data"
+
+# Generate dynamic autoinstall user-data with dual-boot storage config
+# We must preserve ALL existing macOS partitions with preserve: true
+# to prevent curtin from deleting them during install
+log "Generating dual-boot storage config..."
+
+python3 - "$SCRIPT_DIR/autoinstall.yaml" "$ESP_MOUNT/cidata/user-data" /dev/disk0 << 'PYEOF'
+import sys, yaml, subprocess
+
+template_path = sys.argv[1]
+output_path = sys.argv[2]
+disk_dev = sys.argv[3]
+
+with open(template_path) as f:
+    config = yaml.safe_load(f)
+
+# Read GPT partition table using sgdisk
+try:
+    result = subprocess.run(['sgdisk', '-p', disk_dev], capture_output=True, text=True)
+    part_lines = result.stdout.strip().split('\n')
+except Exception:
+    print("WARNING: Could not read partition table with sgdisk", file=sys.stderr)
+    with open(template_path) as f:
+        content = f.read()
+    with open(output_path, 'w') as f:
+        f.write(content)
+    sys.exit(0)
+
+# Parse existing partitions
+preserved = []
+max_part_num = 0
+for line in part_lines:
+    fields = line.split()
+    if len(fields) < 7:
+        continue
+    try:
+        part_num = int(fields[0])
+        max_part_num = max(max_part_num, part_num)
+    except (ValueError, IndexError):
+        continue
+    
+    # Extract partition details from sgdisk output
+    # Format: Number  Start (sector)  End (sector)  Size  Code  Name
+    try:
+        part_path = fields[-1] if fields[-1].startswith('/dev/') else f"{disk_dev}s{part_num}"
+        # Get detailed info with sgdisk -i
+        info = subprocess.run(['sgdisk', '-i', str(part_num), disk_dev], 
+                             capture_output=True, text=True)
+        info_text = info.stdout
+        
+        part_type_guid = ''
+        part_uuid = ''
+        offset_sectors = 0
+        size_bytes = 0
+        
+        for info_line in info_text.split('\n'):
+            if 'Partition type GUID code:' in info_line or 'Partition type code:' in info_line:
+                guid_match = __import__('re').search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', info_line)
+                if guid_match:
+                    part_type_guid = guid_match.group(1).upper()
+            elif 'Partition unique GUID:' in info_line or 'Partition GUID:' in info_line:
+                guid_match = __import__('re').search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', info_line)
+                if guid_match:
+                    part_uuid = guid_match.group(1)
+            elif 'First sector:' in info_line:
+                offset_match = __import__('re').search(r'(\d+)', info_line.split(':')[-1])
+                if offset_match:
+                    offset_sectors = int(offset_match.group(1))
+        
+        # Get size in bytes from block device
+        try:
+            size_result = subprocess.run(['blockdev', '--getsize64', part_path], 
+                                        capture_output=True, text=True)
+            size_bytes = int(size_result.stdout.strip()) if size_result.stdout.strip() else 0
+        except Exception:
+            size_bytes = 0
+        
+        if size_bytes == 0:
+            continue
+        
+        entry = {
+            'device': 'root-disk',
+            'size': size_bytes,
+            'number': part_num,
+            'preserve': True,
+            'grub_device': False,
+            'offset': offset_sectors * 512,
+            'partition_type': part_type_guid,
+            'path': part_path,
+            'uuid': part_uuid,
+            'id': f'preserved-partition-{part_num}',
+            'type': 'partition'
+        }
+        preserved.append(entry)
+    except Exception as e:
+        print(f"WARNING: Could not parse partition {part_num}: {e}", file=sys.stderr)
+        continue
+
+if not preserved:
+    print("WARNING: No preserved partitions found — copying template as-is", file=sys.stderr)
+    with open(template_path) as f:
+        content = f.read()
+    with open(output_path, 'w') as f:
+        f.write(content)
+    sys.exit(0)
+
+next_num = max_part_num + 1
+
+# Build new storage config
+new_config = [
+    {'type': 'disk', 'id': 'root-disk', 'path': '/dev/sda',
+     'ptable': 'gpt', 'preserve': True, 'wipe': 'superblock'},
+]
+new_config.extend(preserved)
+new_config.extend([
+    {'type': 'partition', 'id': 'efi-partition', 'device': 'root-disk',
+     'size': '512M', 'flag': 'boot',
+     'partition_type': 'C12A7328-F81F-11D2-BA4B-00A0C93EC93B',
+     'grub_device': True, 'number': next_num},
+    {'type': 'format', 'id': 'efi-format', 'volume': 'efi-partition',
+     'fstype': 'fat32'},
+    {'type': 'mount', 'id': 'efi-mount', 'device': 'efi-format',
+     'path': '/boot/efi'},
+    {'type': 'partition', 'id': 'boot-partition', 'device': 'root-disk',
+     'size': '1G', 'number': next_num + 1},
+    {'type': 'format', 'id': 'boot-format', 'volume': 'boot-partition',
+     'fstype': 'ext4'},
+    {'type': 'mount', 'id': 'boot-mount', 'device': 'boot-format',
+     'path': '/boot'},
+    {'type': 'partition', 'id': 'root-partition', 'device': 'root-disk',
+     'size': -1, 'number': next_num + 2},
+    {'type': 'format', 'id': 'root-format', 'volume': 'root-partition',
+     'fstype': 'ext4'},
+    {'type': 'mount', 'id': 'root-mount', 'device': 'root-format',
+     'path': '/'},
+])
+
+config['autoinstall']['storage'] = {'config': new_config}
+
+print(f"  Preserving {len(preserved)} existing partitions (macOS + installer ESP)")
+
+with open(output_path, 'w') as f:
+    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+PYEOF
+
+if [ ! -f "$ESP_MOUNT/cidata/user-data" ]; then
+    warn "Dynamic generation failed — falling back to template"
+    cp "$SCRIPT_DIR/autoinstall.yaml" "$ESP_MOUNT/cidata/user-data"
+fi
 [ -f "$ESP_MOUNT/cidata/meta-data" ] || echo "instance-id: macpro-linux-i1" > "$ESP_MOUNT/cidata/meta-data"
 [ -f "$ESP_MOUNT/cidata/vendor-data" ] || touch "$ESP_MOUNT/cidata/vendor-data"
 

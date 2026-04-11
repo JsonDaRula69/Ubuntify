@@ -51,6 +51,11 @@ autoinstall:
       if [ "$INTERNAL_COUNT" -gt 1 ]; then
         echo "[early] WARN: Multiple disks detected — verify /dev/sda is the correct target" >> /run/macpro.log
       fi
+      if lsblk -o FSTYPE /dev/sda 2>/dev/null | grep -q apfs; then
+        echo "[early] macOS APFS partition detected — dual-boot preserve mode active" >> /run/macpro.log
+      else
+        echo "[early] WARN: No macOS APFS partition found — dual-boot may not be configured" >> /run/macpro.log
+      fi
       KVER="$(uname -r)"
       ABI_VER="${KVER%-generic}"
       PKGS="/cdrom/macpro-pkgs"
@@ -244,18 +249,17 @@ autoinstall:
     config:
       - type: disk
         id: root-disk
-        path: /dev/sda    # Mac Pro 2013 Apple PCIe SSD (AHCI, not NVMe)
+        path: /dev/sda
         ptable: gpt
-        wipe: superblock-recursive
-        preserve: false
+        preserve: true
+        wipe: superblock
       - type: partition
         id: efi-partition
         device: root-disk
         size: 512M
         flag: boot
-        partition_type: EF00
+        partition_type: C12A7328-F81F-11D2-BA4B-00A0C93EC93B
         grub_device: true
-        number: 1
       - type: format
         id: efi-format
         volume: efi-partition
@@ -265,10 +269,21 @@ autoinstall:
         device: efi-format
         path: /boot/efi
       - type: partition
+        id: boot-partition
+        device: root-disk
+        size: 1G
+      - type: format
+        id: boot-format
+        volume: boot-partition
+        fstype: ext4
+      - type: mount
+        id: boot-mount
+        device: boot-format
+        path: /boot
+      - type: partition
         id: root-partition
         device: root-disk
         size: -1
-        number: 2
       - type: format
         id: root-format
         volume: root-partition
@@ -396,8 +411,14 @@ autoinstall:
       WHURL="http://192.168.1.115:8080/webhook"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":75,"stage":"late-grub","status":"configuring","message":"Configuring GRUB bootloader"}' > /dev/null 2>&1 || true
       echo 'GRUB_CMDLINE_LINUX_DEFAULT="nomodeset amdgpu.si.modeset=0"' >> /target/etc/default/grub.d/macpro.cfg
+      sed -i 's/^GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/' /target/etc/default/grub
+      if ! grep -q '^GRUB_DISABLE_OS_PROBER=' /target/etc/default/grub; then
+        echo 'GRUB_DISABLE_OS_PROBER=false' >> /target/etc/default/grub
+      fi
+      printf '#!/bin/sh\nexec tail -n +3 "$0"\nmenuentry "macOS" {\n  insmod part_gpt\n  insmod hfsplus\n  search --no-floppy --set=root --file /System/Library/CoreServices/boot.efi\n  chainloader /System/Library/CoreServices/boot.efi\n}\n' > /target/etc/grub.d/40_macos
+      chmod +x /target/etc/grub.d/40_macos
       chroot /target update-grub 2>>/run/macpro.log || echo "[late] WARN: update-grub failed" >> /run/macpro.log
-      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":78,"stage":"late-grub","status":"configured","message":"GRUB bootloader configured"}' > /dev/null 2>&1 || true
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":78,"stage":"late-grub","status":"configured","message":"GRUB bootloader configured with macOS entry"}' > /dev/null 2>&1 || true
     - |
       WHURL="http://192.168.1.115:8080/webhook"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":80,"stage":"late-mdns","status":"configuring","message":"Configuring mDNS hostname resolution"}' > /dev/null 2>&1 || true

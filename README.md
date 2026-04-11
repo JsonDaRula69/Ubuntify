@@ -14,8 +14,8 @@ Automated Ubuntu Server 24.04.4 deployment for a headless Mac Pro 2013 (MacPro6,
 ### Operational Constraints
 - **Zero physical access** — no keyboard, monitor, or mouse available
 - **macOS 12.7.6 running** — accessible only via SSH
-- **Cannot disable SIP** — stuck with Apple's default bootloader
-- **Must wipe macOS** — full disk install, no dual-boot
+- **Cannot disable SIP** — stuck with Apple's default bootloader (but `bless` works for dual-boot)
+- **Dual-boot: macOS preserved** — existing partitions marked `preserve: true`; Ubuntu installed in free space
 - **SSH access required during install** — need to debug if anything goes wrong
 - **MacBook available on network** — can serve as monitoring/webhook endpoint and fallback NetBoot host
 
@@ -224,7 +224,9 @@ The `prepare-headless-deploy.sh` script automates steps 3-10.
 
 ### Risk: No Recovery Without Physical Access
 
-If the installer fails or the partition setup is wrong, the Mac Pro becomes unreachable — no SSH, no monitor, no keyboard. **Important caveat about `bless --nextonly`**: it only reverts to macOS if the installer **never boots at all**. Once the installer boots and begins wiping the disk (autoinstall storage config with `wipe: superblock-recursive`), macOS is destroyed and there is no fall-back. The `--nextonly` flag helps only if the ESP boot files are corrupt and the firmware falls through to the next boot device.
+If the installer fails or the partition setup is wrong, the Mac Pro becomes unreachable — no SSH, no monitor, no keyboard. With the dual-boot configuration, macOS is **preserved** — all existing partitions are marked `preserve: true` in the autoinstall storage config. If Ubuntu installation fails in late-commands, macOS remains intact and `bless --nextonly` will revert the boot device on the next reboot. However, if the installer fails during the storage config phase (before partitions are created), macOS is still safe because `preserve: true` prevents curtin from modifying existing partitions.
+
+The `--nextonly` flag ensures the boot device reverts to macOS if the installer boot fails (corrupt ESP, missing GRUB). With dual-boot, this protection is even stronger — macOS survives even a successful Ubuntu install, so you can always boot back into macOS.
 
 Mitigations:
 - **`bless --nextonly`** — boot device falls back to macOS if the ESP boot files fail (but NOT if the installer succeeds in starting and then fails mid-process)

@@ -68,7 +68,7 @@ cd macpro-monitor && ./start.sh    # Start (port 8080)
 
 4. **Network matching**: Uses `wl0` interface ID with `match: driver: wl` in netplan. The late-commands generates netplan config using `printf` (not heredoc — indentation inside `|` blocks adds unwanted spaces). Uses `networkd` renderer (NOT NetworkManager) — networkd + wpa_supplicant works for WiFi on Ubuntu Server.
 
-5. **Storage**: Mac Pro 2013 uses Apple PCIe SSDs via AHCI (not NVMe), so internal disk is `/dev/sda`.
+5. **Storage (Dual-Boot)**: Mac Pro 2013 uses Apple PCIe SSDs via AHCI (not NVMe), so internal disk is `/dev/sda`. The deployment preserves macOS by using `preserve: true` on ALL existing partitions in the autoinstall storage config. The `prepare-headless-deploy.sh` script dynamically generates the `cidata/user-data` file after the APFS resize, using Python to read the GPT partition table and inject `preserve: true` entries for every existing partition (APFS container, macOS EFI, installer ESP). New Ubuntu partitions (EFI, /boot, /) are created in the free space ONLY. GRUB is configured with a custom macOS chainloader entry (`40_macos`) and os-prober enabled.
 
 6. **Remote boot via `bless`**: For zero-physical-access deployment, use `bless --setBoot --mount <esp> --nextonly` from macOS SSH. The `--nextonly` flag ensures the boot device reverts to macOS if the installer fails. GRUB parameters are pre-baked in `EFI/boot/grub.cfg` — no manual keyboard input needed.
 
@@ -179,7 +179,7 @@ Patches use `#if LINUX_VERSION_CODE >= KERNEL_VERSION(...)` guards and compile c
 - **No `dd` ISO to partition** — Mac EFI expects FAT32 ESP with `/EFI/BOOT/BOOTX64.EFI`, not ISO9660
 - **GRUB parameters must be pre-baked** — no manual keyboard input available during boot
 - **Shell commands run via `sh -c`** (dash) — use only POSIX-compatible syntax in autoinstall.yaml
-- **Risk of unrecoverable state** — if installer starts then fails mid-process (after wiping disk), no physical access to recover; `bless --nextonly` only reverts to macOS if the installer NEVER boots (e.g., corrupt ESP). Once installer boots and autoinstall storage begins, macOS is destroyed. Mitigations: webhook monitoring, SSH into installer, VirtualBox testing, Target Disk Mode fallback
+- **Risk of unrecoverable state** — mitigated by dual-boot: macOS is preserved with `preserve: true` on all existing partitions. If Ubuntu install fails, `bless --nextonly` reverts boot to macOS. Remaining risk: if curtin itself has a bug that ignores `preserve: true`, or if the GPT partition table gets corrupted. Mitigations: webhook monitoring, SSH into installer, VirtualBox testing, Target Disk Mode fallback
 
 ## Context Management Rules
 
