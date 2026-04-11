@@ -167,7 +167,7 @@ log "ISO mounted at: $ISO_MOUNT"
 # Copy EFI boot files — CRITICAL: do not silently ignore failures
 log "Copying EFI boot structure..."
 mkdir -p "$ESP_MOUNT/EFI/boot"
-cp "$ISO_MOUNT/EFI/boot/"* "$ESP_MOUNT/EFI/boot/" || die "Failed to copy EFI boot files — cannot boot without them"
+cp -r "$ISO_MOUNT/EFI/boot/"* "$ESP_MOUNT/EFI/boot/" || die "Failed to copy EFI boot files — cannot boot without them"
 
 # Verify the EFI bootloader exists immediately after copy
 [ -f "$ESP_MOUNT/EFI/boot/BOOTX64.EFI" ] || die "BOOTX64.EFI missing after copy — ISO may lack EFI support"

@@ -5,6 +5,8 @@ const os = require('os');
 const PORT = 8080;
 const HOST = '0.0.0.0';
 const MAX_BODY_SIZE = 256 * 1024;
+const RATE_LIMIT_WINDOW_MS = 1000;
+const RATE_LIMIT_MAX_REQUESTS = 10;
 
 const MAX_UPDATES = 200;
 const MAX_BUILT_IN_EVENTS = 500;
@@ -13,6 +15,8 @@ const PROGRESS_MIN = 0;
 const PROGRESS_MAX = 100;
 const STALL_WARNING_MS = 5 * 60 * 1000;
 const STALL_ERROR_MS = 15 * 60 * 1000;
+
+const rateLimitMap = new Map();
 
 // Progress data
 let data = {
@@ -427,16 +431,16 @@ function processBuiltInEvent(post) {
 
 function processCustomEvent(post) {
     if (typeof post.progress === 'number') {
-        data.progress = Math.max(PROGRESS_MIN, Math.min(PROGRESS_MAX, Math.floor(post.progress)));
+        data.progress = sanitizeProgress(post.progress);
     }
     if (post.stage !== undefined) {
-        data.stage = post.stage;
+        data.stage = sanitizeString(String(post.stage), 50);
     }
-    if (typeof post.status === 'string' && post.status.length < 100) {
-        data.status = post.status;
+    if (typeof post.status === 'string') {
+        data.status = sanitizeString(post.status, 100);
     }
-    if (typeof post.message === 'string' && post.message.length < 500) {
-        data.message = post.message;
+    if (typeof post.message === 'string') {
+        data.message = sanitizeString(post.message, 500);
     }
     
     const stageStr = String(post.stage);
@@ -465,10 +469,10 @@ function processCustomEvent(post) {
     }
     data.lastUpdate = new Date().toISOString();
     
-    if (post.hostname) data.hostname = String(post.hostname).slice(0, 100);
-    if (post.username) data.username = String(post.username).slice(0, 100);
-    if (post.wifi_ssid) data.wifi_ssid = String(post.wifi_ssid).slice(0, 100);
-    if (post.ip) data.ip = String(post.ip).slice(0, 50);
+    if (post.hostname) data.hostname = sanitizeString(String(post.hostname), 100);
+    if (post.username) data.username = sanitizeString(String(post.username), 100);
+    if (post.wifi_ssid) data.wifi_ssid = sanitizeString(String(post.wifi_ssid), 100);
+    if (post.ip) data.ip = sanitizeString(String(post.ip), 50);
     
     data.updates.push({ timestamp: new Date().toISOString(), ...post });
     if (data.updates.length > MAX_UPDATES) {
@@ -486,6 +490,16 @@ function processCustomEvent(post) {
     console.log(`[${new Date().toLocaleTimeString()}] [CUSTOM] [${phaseLabel}] ${post.stage || '?'} | ${post.status || '?'} | ${post.progress !== undefined ? post.progress + '%' : '?'} | ${post.message || '?'}`);
 }
 
+function sanitizeString(val, maxLen) {
+    if (typeof val !== 'string') return '';
+    return val.slice(0, maxLen);
+}
+
+function sanitizeProgress(val) {
+    if (typeof val !== 'number') return 0;
+    return Math.max(PROGRESS_MIN, Math.min(PROGRESS_MAX, Math.floor(val)));
+}
+
 const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -498,6 +512,20 @@ const server = http.createServer((req, res) => {
     }
     
     if (req.method === 'POST' && req.url === '/webhook') {
+        const clientIP = req.socket.remoteAddress || 'unknown';
+        const now = Date.now();
+        const clientHits = rateLimitMap.get(clientIP) || { count: 0, windowStart: now };
+        if (now - clientHits.windowStart > RATE_LIMIT_WINDOW_MS) {
+            clientHits.count = 0;
+            clientHits.windowStart = now;
+        }
+        clientHits.count++;
+        rateLimitMap.set(clientIP, clientHits);
+        if (clientHits.count > RATE_LIMIT_MAX_REQUESTS) {
+            res.writeHead(429, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({error: 'Rate limit exceeded'}));
+            return;
+        }
         let body = '';
         let tooLarge = false;
         req.on('data', chunk => {
@@ -558,6 +586,10 @@ load();
 
 setInterval(() => {
     checkStalled();
+    const now = Date.now();
+    for (const [ip, entry] of rateLimitMap) {
+        if (now - entry.windowStart > 60000) rateLimitMap.delete(ip);
+    }
 }, 60000);
 
 server.listen(PORT, HOST, () => {

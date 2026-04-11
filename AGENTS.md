@@ -173,11 +173,13 @@ Patches use `#if LINUX_VERSION_CODE >= KERNEL_VERSION(...)` guards and compile c
 - **`dpkg --root /target`** runs postinst scripts (chroots to target); must install in dependency order (Stage 1-4)
 - **Bind mounts required for chroot DKMS** — `/proc`, `/sys`, `/dev` must be bind-mounted into `/target` before `chroot /target dkms build`
 - **Netplan interface keys** must be actual names or logical IDs (not `wifi-iface`)
+- **Disk identification verified in early-commands** — `/dev/sda` existence is validated before autoinstall storage proceeds; multiple-disk scenarios log warnings
+- **Each `- |` block in autoinstall.yaml runs in a separate `sh -c`** — variables defined in one block (like `KVER`) are NOT available in other blocks. Each block that needs `KVER` must define it independently with `KVER="$(uname -r)"`
 - **Networkd renders WiFi** — `networkd` renderer + `wifis:` section works for WiFi on Ubuntu Server (wpa_supplicant integration)
 - **No `dd` ISO to partition** — Mac EFI expects FAT32 ESP with `/EFI/BOOT/BOOTX64.EFI`, not ISO9660
 - **GRUB parameters must be pre-baked** — no manual keyboard input available during boot
 - **Shell commands run via `sh -c`** (dash) — use only POSIX-compatible syntax in autoinstall.yaml
-- **Risk of unrecoverable state** — if installer fails, no physical access to recover; mitigations: `bless --nextonly` reverts to macOS, webhook monitoring with progress percentages, SSH into installer, VirtualBox testing first
+- **Risk of unrecoverable state** — if installer starts then fails mid-process (after wiping disk), no physical access to recover; `bless --nextonly` only reverts to macOS if the installer NEVER boots (e.g., corrupt ESP). Once installer boots and autoinstall storage begins, macOS is destroyed. Mitigations: webhook monitoring, SSH into installer, VirtualBox testing, Target Disk Mode fallback
 
 ## Context Management Rules
 

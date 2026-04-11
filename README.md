@@ -224,9 +224,10 @@ The `prepare-headless-deploy.sh` script automates steps 3-10.
 
 ### Risk: No Recovery Without Physical Access
 
-If the installer fails or the partition setup is wrong, the Mac Pro becomes unreachable — no SSH, no monitor, no keyboard. Mitigations:
+If the installer fails or the partition setup is wrong, the Mac Pro becomes unreachable — no SSH, no monitor, no keyboard. **Important caveat about `bless --nextonly`**: it only reverts to macOS if the installer **never boots at all**. Once the installer boots and begins wiping the disk (autoinstall storage config with `wipe: superblock-recursive`), macOS is destroyed and there is no fall-back. The `--nextonly` flag helps only if the ESP boot files are corrupt and the firmware falls through to the next boot device.
 
-- **`bless --nextonly`** — boot device reverts to macOS on next reboot if installer fails
+Mitigations:
+- **`bless --nextonly`** — boot device falls back to macOS if the ESP boot files fail (but NOT if the installer succeeds in starting and then fails mid-process)
 - **Webhook monitoring** — receive real-time status updates at each installation stage with progress percentages (2-100%)
 - **SSH into installer** — debug during installation before target system is written
 - **Test in VirtualBox first** — validate the entire flow before touching real hardware

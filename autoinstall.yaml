@@ -41,6 +41,15 @@ autoinstall:
 
   early-commands:
     - |
+      # Verify target disk exists and is the only internal disk
+      if [ ! -e /dev/sda ]; then
+        echo "[early] FATAL: /dev/sda not found — cannot proceed with storage config" >> /run/macpro.log
+        exit 1
+      fi
+      INTERNAL_COUNT=$(lsblk -d -n -o TYPE,NAME 2>/dev/null | grep -c 'disk' || echo "0")
+      if [ "$INTERNAL_COUNT" -gt 1 ]; then
+        echo "[early] WARN: Multiple disks detected — verify /dev/sda is the correct target" >> /run/macpro.log
+      fi
       KVER="$(uname -r)"
       ABI_VER="${KVER%-generic}"
       PKGS="/cdrom/macpro-pkgs"
@@ -288,12 +297,14 @@ autoinstall:
         done
       fi
       # Bind-mount /proc, /sys, /dev for chroot DKMS compilation
+      # Set up cleanup trap so mounts are always unmounted, even on failure
+      trap 'umount /target/dev /target/sys /target/proc 2>/dev/null || true' EXIT
       mount --bind /proc /target/proc 2>>"$LOG" || { echo "[late] FATAL: mount /proc failed" >> "$LOG"; exit 1; }
       mount --bind /sys /target/sys 2>>"$LOG" || { echo "[late] FATAL: mount /sys failed" >> "$LOG"; umount /target/proc 2>/dev/null || true; exit 1; }
-      mount --bind /dev /target/dev 2>>"$LOG" || { echo "[late] FATAL: mount /dev failed" >> "$LOG"; umount /target/sys 2>/dev/null || true; umount /target/proc 2>/dev/null || true; exit 1; }
+      mount --bind /dev /target/dev 2>>"$LOG" || { echo "[late] FATAL: mount /dev failed" >> "$LOG"; umount /target/sys /target/proc 2>/dev/null || true; exit 1; }
       # dkms add handled by dpkg postinst; patches applied above before bind mounts
-      chroot /target dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || { echo "[late] FATAL: dkms build failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":63,"stage":"late-dkms","status":"failed","message":"FATAL: dkms build failed in target"}' > /dev/null 2>&1 || true; umount /target/dev /target/sys /target/proc 2>/dev/null || true; exit 1; }
-      chroot /target dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || { echo "[late] FATAL: dkms install failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":64,"stage":"late-dkms","status":"failed","message":"FATAL: dkms install failed in target"}' > /dev/null 2>&1 || true; umount /target/dev /target/sys /target/proc 2>/dev/null || true; exit 1; }
+      chroot /target dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || { echo "[late] FATAL: dkms build failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":63,"stage":"late-dkms","status":"failed","message":"FATAL: dkms build failed in target"}' > /dev/null 2>&1 || true; exit 1; }
+      chroot /target dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || { echo "[late] FATAL: dkms install failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":64,"stage":"late-dkms","status":"failed","message":"FATAL: dkms install failed in target"}' > /dev/null 2>&1 || true; exit 1; }
       umount /target/dev /target/sys /target/proc 2>/dev/null || true
       echo "wl" >> /target/etc/modules
       echo "[late] WiFi driver installed into target" >> "$LOG"
@@ -306,6 +317,10 @@ autoinstall:
       mkdir -p /target/etc/netplan
       printf 'network:\n  version: 2\n  wifis:\n    wl0:\n      match:\n        driver: wl\n      dhcp4: true\n      optional: true\n      access-points:\n        "ATTj6pXatS":\n          password: "j75b39=z?mpg"\n' > /target/etc/netplan/01-wifi.yaml
       chmod 600 /target/etc/netplan/01-wifi.yaml
+      # Validate netplan config before proceeding
+      if command -v netplan 2>/dev/null >/dev/null; then
+        netplan generate 2>>/run/macpro.log || echo "[late] WARN: netplan generate failed" >> /run/macpro.log
+      fi
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":73,"stage":"late-netplan","status":"configured","message":"WiFi netplan config written"}' > /dev/null 2>&1 || true
     - |
       WHURL="http://192.168.1.115:8080/webhook"
@@ -324,6 +339,7 @@ autoinstall:
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":83,"stage":"late-mdns","status":"configured","message":"mDNS hostname resolution configured"}' > /dev/null 2>&1 || true
     - |
       WHURL="http://192.168.1.115:8080/webhook"
+      KVER="$(uname -r)"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":85,"stage":"late-hold","status":"configuring","message":"Pinning kernel version to prevent upgrades"}' > /dev/null 2>&1 || true
       chroot /target apt-mark hold "linux-image-${KVER}" 2>>/run/macpro.log || echo "[late] WARN: kernel hold failed" >> /run/macpro.log
       chroot /target apt-mark hold "linux-headers-${KVER}" 2>>/run/macpro.log || echo "[late] WARN: headers hold failed" >> /run/macpro.log
@@ -344,16 +360,25 @@ autoinstall:
   error-commands:
     - |
       WHURL="http://192.168.1.115:8080/webhook"
-      modprobe wl || true
-      WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wl[pw][^:]+' | head -1 || echo "wlan0")
-      ip link set "$WIFI_DEV" up 2>/dev/null || true
+      # Attempt WiFi recovery for error reporting
+      modprobe wl 2>/dev/null || true
+      sleep 3
+      WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wl[pw][^:]+' | head -1)
+      if [ -n "$WIFI_DEV" ]; then
+        ip link set "$WIFI_DEV" up 2>/dev/null || true
+        echo "[error] WiFi interface detected: $WIFI_DEV" >> /tmp/error-log
+      else
+        WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wlan[0-9]+' | head -1)
+        [ -n "$WIFI_DEV" ] && ip link set "$WIFI_DEV" up 2>/dev/null || true
+      fi
     - |
       WHURL="http://192.168.1.115:8080/webhook"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" \
         -d '{"progress":0,"stage":"error","status":"failed","message":"Installation failed — check logs on target system"}' > /dev/null 2>&1 || true
-    - |
-      dmesg > /tmp/error-dmesg.log
-      journalctl -b > /tmp/error-journalctl.log
+      # Save critical diagnostic info
+      dmesg > /tmp/error-dmesg.log 2>/dev/null || true
+      journalctl -b > /tmp/error-journalctl.log 2>/dev/null || true
+      cat /run/macpro.log > /tmp/error-macpro.log 2>/dev/null || true
 
   # NOTE: Using reboot (not poweroff) because headless deployment requires
   # remote access after installation completes. The GPU cold-boot quirk
