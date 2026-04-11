@@ -420,6 +420,7 @@ autoinstall:
       chmod 440 /target/etc/sudoers.d/teja
     - |
       WHURL="http://192.168.1.115:8080/webhook"
+      LOG="/run/macpro.log"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":95,"stage":"late-logs","status":"saving","message":"Saving installation logs"}' > /dev/null 2>&1 || true
       mkdir -p /target/var/log/macpro-install
       cp /run/macpro.log /target/var/log/macpro-install/early-commands.log || true

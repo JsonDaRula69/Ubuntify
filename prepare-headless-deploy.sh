@@ -5,7 +5,7 @@ set -o pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly ISO_PATH="${1:-${SCRIPT_DIR}/ubuntu-macpro.iso}"
 readonly ESP_NAME="UBUNTU_ESP"
-readonly ESP_SIZE="2g"
+readonly ESP_SIZE="5g"
 
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
@@ -193,6 +193,15 @@ mkdir -p "$ISO_MOUNT"
 hdiutil attach "$ISO_PATH" -mountpoint "$ISO_MOUNT" -readonly -quiet || die "Failed to mount ISO"
 log "ISO mounted at: $ISO_MOUNT"
 
+ESP_AVAIL=$(df -m "$ESP_MOUNT" | tail -1 | awk '{print $4}')
+ISO_TOTAL=$(du -sm "$ISO_MOUNT" 2>/dev/null | cut -f1 || echo "0")
+if [ -n "$ESP_AVAIL" ] && [ "$ESP_AVAIL" -gt 0 ] && [ -n "$ISO_TOTAL" ] && [ "$ISO_TOTAL" -gt 0 ]; then
+    if [ "$ESP_AVAIL" -lt "$ISO_TOTAL" ]; then
+        die "ESP too small: ${ESP_AVAIL}MB available, ${ISO_TOTAL}MB needed for ISO contents"
+    fi
+    log "Space check: ${ESP_AVAIL}MB available, ${ISO_TOTAL}MB needed"
+fi
+
 # Copy EFI boot files — CRITICAL: do not silently ignore failures
 log "Copying EFI boot structure..."
 mkdir -p "$ESP_MOUNT/EFI/boot"
@@ -202,12 +211,16 @@ cp -r "$ISO_MOUNT/EFI/boot/"* "$ESP_MOUNT/EFI/boot/" || die "Failed to copy EFI 
 [ -f "$ESP_MOUNT/EFI/boot/BOOTX64.EFI" ] || die "BOOTX64.EFI missing after copy — ISO may lack EFI support"
 
 # Copy casper (kernel + initrd + filesystem)
-log "Copying casper directory (~850MB)..."
+log "Copying casper directory (~2.5GB)..."
 mkdir -p "$ESP_MOUNT/casper"
 cp "$ISO_MOUNT/casper/"* "$ESP_MOUNT/casper/" || warn "Some casper files failed to copy (non-fatal if kernel+initrd present)"
 # Verify kernel and initrd — these are strictly required
 [ -f "$ESP_MOUNT/casper/vmlinuz" ] || die "casper/vmlinuz missing — cannot boot"
 [ -f "$ESP_MOUNT/casper/initrd" ] || die "casper/initrd missing — cannot boot"
+# Verify at least one squashfs layer exists — required for root filesystem
+if ! ls "$ESP_MOUNT/casper/"*.squashfs 1>/dev/null 2>&1; then
+    die "No .squashfs files in casper/ — root filesystem unavailable, installer will kernel panic"
+fi
 
 # Copy the autoinstall.yaml and macpro-pkgs
 log "Copying autoinstall configuration..."
@@ -235,7 +248,7 @@ elif [ -d "$SCRIPT_DIR/packages/dkms-patches" ]; then
     cp "$SCRIPT_DIR/packages/dkms-patches/"* "$ESP_MOUNT/macpro-pkgs/dkms-patches/" 2>/dev/null || \
         warn "Some DKMS patches may be missing"
 else
-    warn "No DKMS patches found — broadcom-sta will fail to compile on kernel 6.8+"
+    die "No DKMS patches found — broadcom-sta will fail to compile on kernel 6.8+"
 fi
 # Verify critical patch files exist
 if [ -d "$ESP_MOUNT/macpro-pkgs/dkms-patches" ]; then
