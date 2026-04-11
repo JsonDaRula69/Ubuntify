@@ -319,7 +319,7 @@ for line in part_lines:
             if 'Partition type GUID code:' in info_line or 'Partition type code:' in info_line:
                 guid_match = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', info_line)
                 if guid_match:
-                    part_type_guid = guid_match.group(1).upper()
+                    part_type_guid = guid_match.group(1).lower()
             elif 'Partition unique GUID:' in info_line or 'Partition GUID:' in info_line:
                 guid_match = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', info_line)
                 if guid_match:
