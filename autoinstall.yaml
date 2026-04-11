@@ -416,6 +416,15 @@ autoinstall:
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":88,"stage":"late-hold","status":"pinned","message":"Kernel version pinned"}' > /dev/null 2>&1 || true
     - |
       WHURL="http://192.168.1.115:8080/webhook"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":88,"stage":"late-firewall","status":"configuring","message":"Configuring firewall"}' > /dev/null 2>&1 || true
+      chroot /target apt-get -y install ufw 2>>/run/macpro.log || echo "[late] WARN: ufw install failed" >> /run/macpro.log
+      if chroot /target which ufw 2>/dev/null; then
+        chroot /target ufw default deny incoming 2>>/run/macpro.log || true
+        chroot /target ufw allow ssh 2>>/run/macpro.log || true
+        chroot /target ufw --force enable 2>>/run/macpro.log || true
+      fi
+    - |
+      WHURL="http://192.168.1.115:8080/webhook"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":90,"stage":"late-sudo","status":"configuring","message":"Configuring sudo for user teja"}' > /dev/null 2>&1 || true
       echo "teja ALL=(ALL) NOPASSWD:ALL" >> /target/etc/sudoers.d/teja
       chmod 440 /target/etc/sudoers.d/teja
