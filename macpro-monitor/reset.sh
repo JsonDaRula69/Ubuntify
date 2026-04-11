@@ -8,7 +8,7 @@ if [ -z "$pw" ]; then
     exit 1
 fi
 
-cd ~/Desktop/Mac/macpro-monitor || exit
+cd "$(dirname "$0")" || exit
 
 echo "$pw" | sudo -S ./stop.sh 2>/dev/null || true
 echo "$pw" | sudo -S pkill -f "node server.js" 2>/dev/null || true

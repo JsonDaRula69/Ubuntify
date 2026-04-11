@@ -4,12 +4,11 @@ const os = require('os');
 
 const PORT = 8080;
 const HOST = '0.0.0.0';
-const MAX_BODY_SIZE = 128 * 1024;
+const MAX_BODY_SIZE = 256 * 1024;
 
-// Constants
-const MAX_UPDATES = 100;
-const MAX_BUILT_IN_EVENTS = 50;
-const MAX_DISPLAY_UPDATES = 10;
+const MAX_UPDATES = 200;
+const MAX_BUILT_IN_EVENTS = 500;
+const MAX_DISPLAY_EVENTS = 50;
 const PROGRESS_MIN = 0;
 const PROGRESS_MAX = 100;
 const STALL_WARNING_MS = 5 * 60 * 1000;
@@ -113,7 +112,6 @@ function checkStalled() {
 // Format built-in event name for display
 function formatEventName(name) {
     if (!name) return 'Unknown';
-    // Convert "subiquity/Network/_send_update" to "Network: send_update"
     const parts = name.split('/');
     if (parts.length >= 2) {
         const module = parts[parts.length - 2];
@@ -128,6 +126,7 @@ function getLevelColor(level) {
     switch (level) {
         case 'ERROR': return '#dc3545';
         case 'WARNING': return '#ffc107';
+        case 'WARN': return '#ffc107';
         case 'INFO': return '#17a2b8';
         case 'DEBUG': return '#6c757d';
         default: return '#6c757d';
@@ -139,7 +138,39 @@ function getResultColor(result) {
     switch (result) {
         case 'SUCCESS': return '#28a745';
         case 'FAILURE': return '#dc3545';
+        case 'WARN': return '#ffc107';
         default: return '#6c757d';
+    }
+}
+
+function getStageColor(stage) {
+    if (!stage) return '#6c757d';
+    if (stage.startsWith('prep') || stage === 'early-init') return '#17a2b8';
+    if (stage.startsWith('late')) return '#28a745';
+    if (stage === 'complete' || stage === 'done') return '#28a745';
+    if (stage === 'error') return '#dc3545';
+    return '#6c757d';
+}
+
+function getStatusIcon(status) {
+    switch (status) {
+        case 'running': return '&#9654;';
+        case 'installing': return '&#9654;';
+        case 'building': return '&#9881;';
+        case 'loaded': return '&#10003;';
+        case 'online': return '&#10003;';
+        case 'ready': return '&#10003;';
+        case 'configured': return '&#10003;';
+        case 'pinned': return '&#128278;';
+        case 'installed': return '&#10003;';
+        case 'done': return '&#10003;';
+        case 'complete': return '&#10003;';
+        case 'detecting': return '&#128269;';
+        case 'starting': return '&#9654;';
+        case 'saving': return '&#128190;';
+        case 'warning': return '&#9888;';
+        case 'failed': return '&#10060;';
+        default: return '&#9679;';
     }
 }
 
@@ -151,7 +182,6 @@ function html() {
     const isPrep = data.phase === 'prep';
     const isInstall = data.phase === 'install';
     
-    // Use appropriate start time for elapsed calculation
     let elapsed = 0;
     if (isPrep && data.prepStartTime) {
         elapsed = Math.floor((Date.now() - new Date(data.prepStartTime)) / 1000);
@@ -170,51 +200,106 @@ function html() {
     let stallWarning = '';
     if (data.stalled && data.lastUpdate) {
         const stallTime = Math.floor((Date.now() - new Date(data.lastUpdate).getTime()) / 60000);
-        stallWarning = '<div style="background:#dc3545;color:white;padding:20px;border-radius:8px;margin:20px 0"><strong>⚠ STALLED INSTALLATION</strong><br>No update for ' + stallTime + ' minutes. Check Mac Pro status.</div>';
+        stallWarning = '<div style="background:#dc3545;color:white;padding:20px;border-radius:8px;margin:20px 0"><strong>&#9888; STALLED INSTALLATION</strong><br>No update for ' + stallTime + ' minutes. Check Mac Pro status.</div>';
     } else if (data.lastUpdate && data.phase !== 'waiting') {
         const elapsed2 = Date.now() - new Date(data.lastUpdate).getTime();
         if (elapsed2 >= STALL_WARNING_MS && elapsed2 < STALL_ERROR_MS) {
             const warnMins = Math.floor(elapsed2 / 60000);
-            stallWarning = '<div style="background:#ffc107;color:black;padding:15px;border-radius:8px;margin:20px 0"><strong>⚠ Warning:</strong> ' + warnMins + ' minutes since last update</div>';
+            stallWarning = '<div style="background:#ffc107;color:black;padding:15px;border-radius:8px;margin:20px 0"><strong>&#9888; Warning:</strong> ' + warnMins + ' minutes since last update</div>';
         }
     }
     
-    // Build built-in events timeline (last 10)
     let builtInHtml = '';
     if (data.builtInEvents && data.builtInEvents.length > 0) {
-        const recentEvents = data.builtInEvents.slice(-MAX_DISPLAY_UPDATES).reverse();
+        const recentEvents = data.builtInEvents.slice(-MAX_DISPLAY_EVENTS).reverse();
         builtInHtml = recentEvents.map(e => {
             const time = e.timestamp ? new Date(e.timestamp * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
             const eventDisplay = formatEventName(e.name);
             const levelColor = getLevelColor(e.level);
             const resultColor = getResultColor(e.result);
-            const resultBadge = e.result ? `<span style="background:${resultColor};color:white;padding:2px 6px;border-radius:3px;font-size:0.8em">${e.result}</span>` : '';
-            const levelBadge = e.level ? `<span style="background:${levelColor};color:white;padding:2px 6px;border-radius:3px;font-size:0.8em;margin-left:4px">${e.level}</span>` : '';
-            return `<div class="event-item" style="padding:8px;margin:5px 0;background:white;border-radius:4px;border-left:3px solid ${levelColor}">
-                <div style="font-size:0.85em;color:#999">${time}</div>
-                <div><strong>${escapeHtml(eventDisplay)}</strong> ${resultBadge} ${levelBadge}</div>
-                ${e.description ? `<div style="color:#666;font-size:0.9em">${escapeHtml(e.description)}</div>` : ''}
+            const resultBadge = e.result ? `<span style="background:${resultColor};color:white;padding:1px 5px;border-radius:3px;font-size:0.75em">${e.result}</span>` : '';
+            const levelBadge = e.level ? `<span style="background:${levelColor};color:white;padding:1px 5px;border-radius:3px;font-size:0.7em;margin-left:3px">${e.level}</span>` : '';
+            const typeBadge = e.event_type ? `<span style="background:#555;color:white;padding:1px 5px;border-radius:3px;font-size:0.7em;margin-left:3px">${e.event_type}</span>` : '';
+            return `<div style="padding:6px 8px;margin:3px 0;background:white;border-radius:4px;border-left:3px solid ${levelColor};font-size:0.85em">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <span style="color:#999;font-size:0.8em">${time}</span>
+                    <span>${resultBadge} ${levelBadge} ${typeBadge}</span>
+                </div>
+                <div><strong>${escapeHtml(eventDisplay)}</strong></div>
+                ${e.description ? `<div style="color:#666;font-size:0.85em;margin-top:2px">${escapeHtml(e.description)}</div>` : ''}
             </div>`;
         }).join('');
     } else {
-        builtInHtml = '<div style="color:#999;padding:10px">No built-in events received yet...</div>';
+        builtInHtml = '<div style="color:#999;padding:20px;text-align:center">No Subiquity/Curtin events received yet.</div>';
     }
     
-    // Build custom events timeline (last 10)
     let customHtml = '';
     if (data.updates && data.updates.length > 0) {
-        const recentUpdates = data.updates.slice(-MAX_DISPLAY_UPDATES).reverse();
+        const recentUpdates = data.updates.slice(-MAX_DISPLAY_EVENTS).reverse();
         customHtml = recentUpdates.map(u => {
             const time = u.timestamp ? new Date(u.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
-            return `<div class="update" style="padding:8px;margin:5px 0;background:white;border-radius:4px;border-left:3px solid #2196f3">
-                <div style="font-size:0.85em;color:#999">${time}</div>
-                <div>${escapeHtml(u.message || u.status || 'Status update')}</div>
-                ${u.progress !== undefined ? `<div style="color:#666;font-size:0.9em">Progress: ${u.progress}%</div>` : ''}
+            const stageColor = getStageColor(u.stage);
+            const icon = getStatusIcon(u.status);
+            const progressStr = u.progress !== undefined ? `<span style="color:#666;font-size:0.8em">[${u.progress}%]</span>` : '';
+            const stageStr = u.stage ? `<span style="background:${stageColor};color:white;padding:1px 6px;border-radius:3px;font-size:0.7em">${escapeHtml(u.stage)}</span>` : '';
+            const statusStr = u.status ? `<span style="color:#555;font-size:0.8em">${escapeHtml(u.status)}</span>` : '';
+            return `<div style="padding:8px;margin:4px 0;background:white;border-radius:4px;border-left:3px solid ${stageColor}">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <span style="color:#999;font-size:0.8em">${time}</span>
+                    <span>${stageStr}</span>
+                </div>
+                <div>${icon} <strong>${escapeHtml(u.message || u.status || 'Status update')}</strong> ${progressStr}</div>
             </div>`;
         }).join('');
     } else {
-        customHtml = '<div style="color:#999;padding:10px">No custom status received yet...</div>';
+        customHtml = '<div style="color:#999;padding:20px;text-align:center">No custom progress events received yet.</div>';
     }
+    
+    const lastBuiltIn = data.builtInEvents && data.builtInEvents.length > 0 
+        ? data.builtInEvents[data.builtInEvents.length - 1] 
+        : null;
+    const lastCustom = data.updates && data.updates.length > 0 
+        ? data.updates[data.updates.length - 1] 
+        : null;
+    const builtInCount = data.builtInEvents ? data.builtInEvents.length : 0;
+    const customCount = data.updates ? data.updates.length : 0;
+    
+    const errorCount = data.builtInEvents ? data.builtInEvents.filter(e => e.level === 'ERROR' || e.result === 'FAILURE').length : 0;
+    const warnCount = data.builtInEvents ? data.builtInEvents.filter(e => e.level === 'WARNING' || e.level === 'WARN').length : 0;
+    
+    let statusPanelHtml = `
+        <div style="margin-bottom:12px">
+            <div style="font-size:0.9em;color:#666;margin-bottom:4px">Last Built-in Event</div>
+            ${lastBuiltIn 
+                ? `<div style="font-size:0.85em"><strong>${escapeHtml(formatEventName(lastBuiltIn.name))}</strong><br><span style="color:#999">${escapeHtml(lastBuiltIn.description || 'No description')}</span></div>` 
+                : '<div style="color:#999;font-size:0.85em">None yet</div>'}
+        </div>
+        <div style="margin-bottom:12px">
+            <div style="font-size:0.9em;color:#666;margin-bottom:4px">Last Custom Event</div>
+            ${lastCustom 
+                ? `<div style="font-size:0.85em"><strong>${escapeHtml(lastCustom.message || lastCustom.status || '—')}</strong><br><span style="color:#999">${lastCustom.stage || '—'} · ${lastCustom.progress !== undefined ? lastCustom.progress + '%' : '—'}</span></div>` 
+                : '<div style="color:#999;font-size:0.85em">None yet</div>'}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+            <div style="background:#f0f0f0;padding:8px;border-radius:6px;text-align:center">
+                <div style="font-size:1.4em;font-weight:bold">${builtInCount}</div>
+                <div style="font-size:0.75em;color:#666">Subiquity Events</div>
+            </div>
+            <div style="background:#f0f0f0;padding:8px;border-radius:6px;text-align:center">
+                <div style="font-size:1.4em;font-weight:bold">${customCount}</div>
+                <div style="font-size:0.75em;color:#666">Progress Events</div>
+            </div>
+        </div>
+        ${errorCount > 0 ? `<div style="background:#f8d7da;padding:8px;border-radius:6px;margin-bottom:8px;font-size:0.85em"><strong>&#10060; ${errorCount} error(s)</strong></div>` : ''}
+        ${warnCount > 0 ? `<div style="background:#fff3cd;padding:8px;border-radius:6px;margin-bottom:8px;font-size:0.85em"><strong>&#9888; ${warnCount} warning(s)</strong></div>` : ''}
+        <div style="background:#f0f0f0;padding:8px;border-radius:6px;font-size:0.8em;color:#666">
+            <div><strong>Config:</strong></div>
+            ${data.hostname ? `<div>Hostname: ${escapeHtml(data.hostname)}</div>` : ''}
+            ${data.username ? `<div>Username: ${escapeHtml(data.username)}</div>` : ''}
+            ${data.wifi_ssid ? `<div>WiFi: ${escapeHtml(data.wifi_ssid)}</div>` : ''}
+            ${data.ip ? `<div>IP: ${escapeHtml(data.ip)}</div>` : ''}
+            ${!data.hostname && !data.username && !data.wifi_ssid && !data.ip ? '<div>Waiting for config data...</div>' : ''}
+        </div>`;
     
     return `<!DOCTYPE html>
 <html>
@@ -222,78 +307,77 @@ function html() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Mac Pro Installation Monitor</title>
-<meta http-equiv="refresh" content="5">
+<meta http-equiv="refresh" content="3">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#667eea,#764ba2);min-height:100vh;padding:20px;color:#333}
-.container{max-width:1100px;margin:0 auto;background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden}
-.header{background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:30px;text-align:center}
-.header h1{font-size:2em;margin-bottom:5px}
-.content{padding:20px}
-.progress{height:30px;background:#e9ecef;border-radius:15px;overflow:hidden;margin:15px 0}
-.progress-fill{height:100%;background:${color};width:${pct}%;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold}
-.info{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:15px 0}
-.info div{background:#f8f9fa;padding:12px;border-radius:8px;text-align:center}
-.info .label{color:#666;font-size:0.85em;margin-bottom:3px}
-.info .value{font-size:1.2em;font-weight:bold}
-.split-view{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin:20px 0}
-.panel{background:#f8f9fa;border-radius:8px;padding:15px;min-height:200px}
-.panel h3{margin-bottom:10px;color:#333;font-size:1em;border-bottom:2px solid #667eea;padding-bottom:5px}
-.events-list{max-height:250px;overflow-y:auto}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#667eea,#764ba2);min-height:100vh;padding:15px;color:#333}
+.container{max-width:1400px;margin:0 auto;background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden}
+.header{background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:20px 30px;display:flex;justify-content:space-between;align-items:center}
+.header h1{font-size:1.6em;margin:0}
+.header .elapsed{font-size:1em;opacity:0.9}
+.content{padding:15px 20px}
+.progress{height:24px;background:#e9ecef;border-radius:12px;overflow:hidden;margin:10px 0}
+.progress-fill{height:100%;background:${color};display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:0.85em;transition:width 0.3s}
+.info-bar{display:flex;gap:15px;align-items:center;margin:8px 0;padding:8px 15px;background:#f8f9fa;border-radius:8px;font-size:0.9em;flex-wrap:wrap}
+.info-bar .phase{background:${isPrep ? '#17a2b8' : isInstall ? '#28a745' : '#6c757d'};color:white;padding:4px 12px;border-radius:15px;font-size:0.85em}
+.info-bar .status{color:#555}
+.three-col{display:grid;grid-template-columns:1fr 1fr 280px;gap:12px;margin:12px 0}
+.panel{background:#f8f9fa;border-radius:8px;padding:12px;min-height:300px;display:flex;flex-direction:column}
+.panel h3{margin-bottom:8px;color:#333;font-size:0.95em;border-bottom:2px solid #667eea;padding-bottom:5px;display:flex;justify-content:space-between;align-items:center}
+.panel h3 .count{font-size:0.75em;background:#667eea;color:white;padding:2px 8px;border-radius:10px}
+.events-scroll{flex:1;overflow-y:auto;max-height:420px}
 .waiting{text-align:center;padding:60px 20px}
 .waiting h2{color:#333;margin:20px 0}
 .phase-badge{display:inline-block;padding:8px 16px;background:#2196f3;color:white;border-radius:20px;font-size:0.9em;margin-bottom:15px}
 .config-info{background:#f8f9fa;padding:12px;border-radius:8px;margin:12px 0;font-size:0.9em}
 .config-info div{margin:4px 0}
-.stats{display:flex;gap:20px;margin:15px 0;justify-content:center}
+.stats{display:flex;gap:20px;margin:10px 0;justify-content:center}
 .stat{text-align:center}
 .stat-value{font-size:2em;font-weight:bold;color:${color}}
 .stat-label{color:#666;font-size:0.85em}
-@media(max-width:768px){.split-view{grid-template-columns:1fr}}
+@media(max-width:900px){.three-col{grid-template-columns:1fr}.panel{min-height:200px}}
 </style>
 </head>
 <body>
 <div class="container">
 <div class="header">
+<div>
 <h1>Mac Pro Installation Monitor</h1>
-<div style="opacity:0.9">Ubuntu Server Installation Progress</div>
+<div style="opacity:0.85;font-size:0.85em;margin-top:3px">Ubuntu Server 24.04 — Headless Deploy</div>
+</div>
+<div class="elapsed">${data.phase !== 'waiting' ? `${mins}m ${secs}s elapsed` : 'Not started'}</div>
 </div>
 <div class="content">
 ${data.phase === 'waiting' ? 
-'<div class="waiting"><div style="font-size:4em">[WAITING]</div><h2>Waiting for Installation to Start</h2><p>The Mac Pro hasn\'t started installation yet.</p></div>' : 
-((data.phase === 'prep' ? '<div class="phase-badge">PREP Phase</div>' : '<div class="phase-badge">INSTALL Phase</div>') +
-(data.hostname || data.username || data.wifi_ssid ? 
-'<div class="config-info">' +
-(data.hostname ? '<div><strong>Hostname:</strong> ' + escapeHtml(data.hostname) + '</div>' : '') +
-(data.username ? '<div><strong>Username:</strong> ' + escapeHtml(data.username) + '</div>' : '') +
-(data.wifi_ssid ? '<div><strong>WiFi:</strong> ' + escapeHtml(data.wifi_ssid) + '</div>' : '') +
-'</div>' : ''))}
-${data.phase !== 'waiting' ? `
+'<div class="waiting"><div style="font-size:4em">&#9200;</div><h2>Waiting for Installation to Start</h2><p style="color:#666;margin-top:10px">The Mac Pro hasn\'t started installation yet. Ensure the ISO is booted and autoinstall is running.</p></div>' : 
+`${stallWarning}
 <div class="stats">
 <div class="stat"><div class="stat-value">${pct}%</div><div class="stat-label">${escapeHtml(data.message)}</div></div>
 </div>
-${stallWarning}
-<div class="progress"><div class="progress-fill">${pct}%</div></div>
-<div class="info">
-<div><div class="label">Phase</div><div class="value" style="font-size:0.95em">${stageLabel}</div></div>
-<div><div class="label">Stage</div><div class="value">${currentStage}/${totalStages}</div></div>
-<div><div class="label">Time</div><div class="value">${mins}m ${secs}s</div></div>
-<div><div class="label">Status</div><div class="value" style="font-size:0.9em">${escapeHtml(data.status)}</div></div>
-${data.ip ? `<div><div class="label">IP</div><div class="value" style="font-size:0.9em">${data.ip}</div></div>` : ''}
+<div class="progress"><div class="progress-fill" style="width:${pct}%">${pct}%</div></div>
+<div class="info-bar">
+<span class="phase">${stageLabel}</span>
+<span class="status">${escapeHtml(data.status)}</span>
+${data.ip ? `<span>IP: ${escapeHtml(data.ip)}</span>` : ''}
+<span>Last update: ${data.lastUpdate ? new Date(data.lastUpdate).toLocaleTimeString() : 'n/a'}</span>
 </div>
-<div class="split-view">
+<div class="three-col">
 <div class="panel">
-<h3>[Built-in Events] Subiquity/Curtin</h3>
-<div class="events-list">${builtInHtml}</div>
+<h3>Subiquity/Curtin Events <span class="count">${builtInCount}</span></h3>
+<div class="events-scroll">${builtInHtml}</div>
 </div>
 <div class="panel">
-<h3>[Custom Status] Broadcom/WiFi</h3>
-<div class="events-list">${customHtml}</div>
+<h3>Custom Progress <span class="count">${customCount}</span></h3>
+<div class="events-scroll">${customHtml}</div>
 </div>
-</div>` : ''}
+<div class="panel">
+<h3>Status</h3>
+${statusPanelHtml}
+</div>
+</div>`}
 </div>
 </div>
-<script>setTimeout(()=>location.reload(),5000)</script>
+<script>setTimeout(function(){location.reload()},3000)</script>
 </body>
 </html>`;
 }
@@ -322,7 +406,6 @@ function processBuiltInEvent(post) {
         data.builtInEvents = data.builtInEvents.slice(-MAX_BUILT_IN_EVENTS);
     }
     
-    // Update phase based on subiquity events
     const eventName = String(post.name || '');
     if (eventName.includes('subiquity')) {
         if (data.phase === 'waiting') {
@@ -333,20 +416,16 @@ function processBuiltInEvent(post) {
         }
     }
     
-    // Log significant events
-    if (event.level === 'ERROR' || event.result === 'FAILURE') {
-        console.log('\n[' + event.level + '] ' + event.name + ': ' + event.description);
-    } else if (event.level === 'WARNING') {
-        console.log('[WARNING] ' + event.name + ': ' + event.description);
-    }
+    const levelTag = event.level || 'INFO';
+    const resultTag = event.result ? ` [${event.result}]` : '';
+    const typeTag = event.event_type ? ` <${event.event_type}>` : '';
+    console.log(`[${new Date().toLocaleTimeString()}] [BUILTIN] [${levelTag}]${typeTag}${resultTag} ${event.name}: ${event.description}`);
     
     data.lastUpdate = new Date().toISOString();
     save();
 }
 
-// Process custom curl event from early/late commands
 function processCustomEvent(post) {
-    // Input validation
     if (typeof post.progress === 'number') {
         data.progress = Math.max(PROGRESS_MIN, Math.min(PROGRESS_MAX, Math.floor(post.progress)));
     }
@@ -360,16 +439,15 @@ function processCustomEvent(post) {
         data.message = post.message;
     }
     
-    // Detect phase based on stage
     const stageStr = String(post.stage);
-    if (stageStr === 'init' || stageStr.startsWith('prep')) {
+    if (stageStr === 'init' || stageStr.startsWith('prep') || stageStr === 'early-init') {
         data.phase = 'prep';
         if (!data.prepStartTime) {
             data.prepStartTime = new Date().toISOString();
             console.log('\n[PREP] Preparation phase started!');
         }
         data.startTime = new Date(data.prepStartTime);
-    } else if (/^[0-9]+$/.test(stageStr) || stageStr === '1' || stageStr === '2' || stageStr === 'late' || stageStr === 'early') {
+    } else if (/^[0-9]+$/.test(stageStr) || stageStr === '1' || stageStr === '2' || stageStr === 'late' || stageStr === 'early' || stageStr.startsWith('late-')) {
         if (data.phase !== 'install' && data.progress > 0) {
             console.log('\n[INSTALL] Installation phase started!');
         }
@@ -387,7 +465,6 @@ function processCustomEvent(post) {
     }
     data.lastUpdate = new Date().toISOString();
     
-    // Store config info (escaped for display)
     if (post.hostname) data.hostname = String(post.hostname).slice(0, 100);
     if (post.username) data.username = String(post.username).slice(0, 100);
     if (post.wifi_ssid) data.wifi_ssid = String(post.wifi_ssid).slice(0, 100);
@@ -406,10 +483,9 @@ function processCustomEvent(post) {
     save();
     
     const phaseLabel = data.phase === 'prep' ? 'PREP' : data.phase === 'install' ? 'INST' : 'WAIT';
-    console.log(`[${new Date().toLocaleTimeString()}] [${phaseLabel}] ${data.message} (${data.progress}%)`);
+    console.log(`[${new Date().toLocaleTimeString()}] [CUSTOM] [${phaseLabel}] ${post.stage || '?'} | ${post.status || '?'} | ${post.progress !== undefined ? post.progress + '%' : '?'} | ${post.message || '?'}`);
 }
 
-// Request handler
 const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -445,7 +521,6 @@ const server = http.createServer((req, res) => {
             try {
                 const post = JSON.parse(body);
                 
-                // Detect event type and route accordingly
                 if (isBuiltInEvent(post)) {
                     processBuiltInEvent(post);
                     res.writeHead(200, {'Content-Type': 'application/json'});
@@ -487,9 +562,9 @@ setInterval(() => {
 
 server.listen(PORT, HOST, () => {
     const ips = getIPs();
-    console.log('\n+=========================================+');
-    console.log('|   Mac Pro Installation Monitor           |');
-    console.log('+=========================================+\n');
+    console.log('\n+============================================+');
+    console.log('|  Mac Pro Installation Monitor               |');
+    console.log('+============================================+\n');
     console.log('Server running!\n');
     console.log('Dashboard:\n');
     console.log('   http://localhost:' + PORT);
@@ -497,10 +572,10 @@ server.listen(PORT, HOST, () => {
     console.log('\nWebhook URL (copy this for autoinstall.yaml):\n');
     ips.forEach(ip => console.log('   http://' + ip + ':' + PORT + '/webhook'));
     console.log('\nFeatures:');
-    console.log('   - Receives built-in events from Subiquity/Curtin');
-    console.log('   - Receives custom status from early/late commands');
-    console.log('   - Split view showing both event types');
+    console.log('   - Receives ALL Subiquity/Curtin events (DEBUG level)');
+    console.log('   - Receives custom progress from early/late commands');
+    console.log('   - 3-pane view: Subiquity | Custom Progress | Status');
     console.log('   - Monitors PREP and INSTALL phases');
-    console.log('   - Shows hostname, username, WiFi config');
+    console.log('   - Console logs all events for debugging');
     console.log('');
 });

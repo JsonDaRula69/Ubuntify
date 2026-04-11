@@ -37,7 +37,7 @@ autoinstall:
     macpro-monitor:
       type: webhook
       endpoint: "http://192.168.1.115:8080/webhook"
-      level: INFO
+      level: DEBUG
 
   early-commands:
     - |
@@ -45,22 +45,26 @@ autoinstall:
       ABI_VER="${KVER%-generic}"
       PKGS="/cdrom/macpro-pkgs"
       LOG="/run/macpro.log"
+      WHURL="http://192.168.1.115:8080/webhook"
       echo "=== MAC PRO 2013 AUTOINSTALL ===" > "$LOG"
       echo "Kernel: $(uname -r)" >> "$LOG"
       echo "Target: $KVER" >> "$LOG"
       echo "Packages: $(ls $PKGS/*.deb 2>/dev/null | wc -l) debs" >> "$LOG"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":2,"stage":"prep-init","status":"running","message":"Autoinstall started — validating kernel headers"}' > /dev/null 2>&1 || true
       # Validate kernel headers exist for running kernel
       if ! ls $PKGS/linux-headers-${ABI_VER}_*.deb 1>/dev/null 2>&1; then
         echo "[early] FATAL: No kernel headers for $KVER in $PKGS" >> "$LOG"
+        curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":2,"stage":"prep-init","status":"failed","message":"FATAL: No kernel headers for running kernel"}' > /dev/null 2>&1 || true
         exit 1
       fi
 
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":5,"stage":"prep-headers","status":"installing","message":"Installing kernel headers"}' > /dev/null 2>&1 || true
       echo "[early] Installing kernel headers..." >> "$LOG"
       dpkg -i $PKGS/linux-headers-${ABI_VER}_*.deb \
               $PKGS/linux-headers-${KVER}_*.deb \
-              $PKGS/linux-libc-dev_*.deb \
-              $PKGS/linux-modules-${KVER}_*.deb 2>>"$LOG" || { echo "[early] FATAL: kernel headers failed" >> "$LOG"; exit 1; }
+              $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { echo "[early] FATAL: kernel headers failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":5,"stage":"prep-headers","status":"failed","message":"FATAL: kernel headers install failed"}' > /dev/null 2>&1 || true; exit 1; }
 
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":10,"stage":"prep-toolchain","status":"installing","message":"Installing build toolchain (gcc, make, binutils)"}' > /dev/null 2>&1 || true
       echo "[early] Installing build toolchain..." >> "$LOG"
       dpkg -i $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
               $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
@@ -77,15 +81,17 @@ autoinstall:
               $PKGS/perl-base_*.deb \
               $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
               $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb \
-              $PKGS/patch_2.7.6-7build3_amd64.deb 2>>"$LOG" || { echo "[early] FATAL: build toolchain failed" >> "$LOG"; exit 1; }
+              $PKGS/patch_*.deb 2>>"$LOG" || { echo "[early] FATAL: build toolchain failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":10,"stage":"prep-toolchain","status":"failed","message":"FATAL: build toolchain install failed"}' > /dev/null 2>&1 || true; exit 1; }
 
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":13,"stage":"prep-dkms","status":"installing","message":"Installing DKMS and Broadcom driver source"}' > /dev/null 2>&1 || true
       echo "[early] Installing DKMS and Broadcom driver source..." >> "$LOG"
       dpkg -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || { echo "[early] ERROR: dkms/broadcom install failed" >> "$LOG"; }
 
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":15,"stage":"prep-build","status":"building","message":"Compiling wl driver via DKMS"}' > /dev/null 2>&1 || true
       echo "[early] Building wl driver via DKMS..." >> "$LOG"
-      dkms add broadcom-sta/6.30.223.271 2>>"$LOG" || echo "[early] WARN: dkms add failed" >> "$LOG"
-      dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || echo "[early] WARN: dkms build failed" >> "$LOG"
-      dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || echo "[early] WARN: dkms install failed" >> "$LOG"
+      dkms add broadcom-sta/6.30.223.271 2>>"$LOG" || { echo "[early] FATAL: dkms add failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":15,"stage":"prep-dkms","status":"failed","message":"FATAL: dkms add failed"}' > /dev/null 2>&1 || true; exit 1; }
+      dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || { echo "[early] FATAL: dkms build failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":15,"stage":"prep-build","status":"failed","message":"FATAL: dkms build failed"}' > /dev/null 2>&1 || true; exit 1; }
+      dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || { echo "[early] FATAL: dkms install failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":15,"stage":"prep-build","status":"failed","message":"FATAL: dkms install failed"}' > /dev/null 2>&1 || true; exit 1; }
 
       for drv in b43 ssb bcma brcmsmac; do
           echo "blacklist $drv" >> /etc/modprobe.d/blacklist-bcm.conf
@@ -102,10 +108,14 @@ autoinstall:
       fi
       if lsmod | grep -q wl; then
         echo "[early] SUCCESS: wl module loaded" >> "$LOG"
+        curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":18,"stage":"prep-wifi","status":"loaded","message":"WiFi driver loaded successfully"}' > /dev/null 2>&1 || true
       else
-        echo "[early] FATAL: wl module not in lsmod — cannot continue without WiFi driver" >> "$LOG"; exit 1
+        echo "[early] FATAL: wl module not in lsmod — cannot continue without WiFi driver" >> "$LOG"
+        curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":18,"stage":"prep-wifi","status":"failed","message":"FATAL: WiFi driver failed to load"}' > /dev/null 2>&1 || true
+        exit 1
       fi
 
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":20,"stage":"prep-wifi","status":"detecting","message":"Detecting WiFi interface"}' > /dev/null 2>&1 || true
       echo "[early] Detecting WiFi interface..." >> "$LOG"
       WIFI_IFACE=""
       for i in $(seq 1 30); do
@@ -118,17 +128,23 @@ autoinstall:
       echo "WiFi interface: ${WIFI_IFACE:-not found}" >> "$LOG"
       if [ -z "$WIFI_IFACE" ]; then
         echo "[early] WARNING: No WiFi interface detected — installation may fail" >> "$LOG"
+        curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":20,"stage":"prep-wifi","status":"warning","message":"WARNING: No WiFi interface detected"}' > /dev/null 2>&1 || true
+      else
+        curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "{\"progress\":22,\"stage\":\"prep-wifi\",\"status\":\"online\",\"message\":\"WiFi interface detected: ${WIFI_IFACE}\"}" > /dev/null 2>&1 || true
       fi
 
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":23,"stage":"prep-ssh","status":"starting","message":"Starting SSH server for remote debugging"}' > /dev/null 2>&1 || true
       echo "[early] Starting SSH server for remote debugging..." >> "$LOG"
-      # Try installing openssh-server via apt (needs network) or from ISO pool
-      apt-get -y install openssh-server 2>>"$LOG" || dpkg -i /cdrom/pool/restricted/o/openssh/openssh-server_*.deb /cdrom/pool/restricted/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
+      # Try installing openssh-server via apt (needs network) or from ISO pool with force-depends
+      apt-get -y install openssh-server 2>>"$LOG" || dpkg --force-depends -i /cdrom/pool/restricted/o/openssh/openssh-server_*.deb /cdrom/pool/restricted/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
       if [ -f /usr/sbin/sshd ]; then
         mkdir -p /run/sshd
         /usr/sbin/sshd -D -e &
         echo "[early] SSH server started (installer user: ubuntu, pass: ubuntu; target user: teja)" >> "$LOG"
+        curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":25,"stage":"prep-ssh","status":"ready","message":"SSH server ready — early-commands complete"}' > /dev/null 2>&1 || true
       else
         echo "[early] WARNING: Could not start SSH server" >> "$LOG"
+        curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":25,"stage":"prep-ssh","status":"warning","message":"SSH server could not start — but WiFi may work"}' > /dev/null 2>&1 || true
       fi
 
   network:
@@ -195,19 +211,23 @@ autoinstall:
       ABI_VER="${KVER%-generic}"
       PKGS="/cdrom/macpro-pkgs"
       LOG="/run/macpro.log"
+      WHURL="http://192.168.1.115:8080/webhook"
       echo "[late] Installing WiFi driver into target system..." >> "$LOG"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":30,"stage":"late-init","status":"running","message":"Late commands started — validating kernel headers"}' > /dev/null 2>&1 || true
       # Validate kernel headers exist before attempting install
       if ! ls $PKGS/linux-headers-${ABI_VER}_*.deb 1>/dev/null 2>&1; then
         echo "[late] FATAL: No matching kernel headers for $KVER in $PKGS" >> "$LOG"
+        curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":30,"stage":"late-init","status":"failed","message":"FATAL: No kernel headers for running kernel"}' > /dev/null 2>&1 || true
         exit 1
       fi
       # Stage 1: Kernel headers (no deps)
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":35,"stage":"late-headers","status":"installing","message":"Stage 1/4: Installing kernel headers into target"}' > /dev/null 2>&1 || true
       dpkg --root /target -i \
         $PKGS/linux-headers-${ABI_VER}_*.deb \
         $PKGS/linux-headers-${KVER}_*.deb \
-        $PKGS/linux-libc-dev_*.deb \
-        $PKGS/linux-modules-${KVER}_*.deb 2>>"$LOG" || echo "[late] WARN: Stage 1 (headers) had errors" >> "$LOG"
+        $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 1 (headers) failed — cannot proceed without kernel headers" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":35,"stage":"late-headers","status":"failed","message":"FATAL: Stage 1 kernel headers install failed"}' > /dev/null 2>&1 || true; exit 1; }
       # Stage 2: Base libraries first, then binaries that depend on them
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":45,"stage":"late-libs","status":"installing","message":"Stage 2/4: Installing base libraries into target"}' > /dev/null 2>&1 || true
       dpkg --root /target -i \
         $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
         $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
@@ -221,50 +241,80 @@ autoinstall:
         $PKGS/binutils_*.deb $PKGS/binutils-x86-64-linux-gnu_*.deb \
         $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb $PKGS/gcc-13_*.deb 2>>"$LOG" || echo "[late] WARN: Stage 2 (libs) had errors" >> "$LOG"
       # Stage 3: Build tools (depend on stage 2)
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":55,"stage":"late-tools","status":"installing","message":"Stage 3/4: Installing build tools into target"}' > /dev/null 2>&1 || true
       dpkg --root /target -i \
         $PKGS/make_*.deb $PKGS/build-essential_*.deb \
         $PKGS/perl-base_*.deb \
         $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb \
         $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
-        $PKGS/patch_2.7.6-7build3_amd64.deb 2>>"$LOG" || echo "[late] WARN: Stage 3 (tools) had errors" >> "$LOG"
+        $PKGS/patch_*.deb 2>>"$LOG" || echo "[late] WARN: Stage 3 (tools) had errors" >> "$LOG"
       # Stage 4: DKMS and driver (depend on stage 3)
-      dpkg --root /target -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || echo "[late] WARN: Stage 4 (dkms) had errors" >> "$LOG"
-      chroot /target dkms add broadcom-sta/6.30.223.271 2>>"$LOG" || true
-      chroot /target dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || true
-      chroot /target dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || true
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":60,"stage":"late-dkms","status":"building","message":"Stage 4/4: Installing DKMS and compiling WiFi driver for target"}' > /dev/null 2>&1 || true
+      dpkg --root /target -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 4 (dkms/broadcom dpkg) failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":60,"stage":"late-dkms","status":"failed","message":"FATAL: DKMS package install failed"}' > /dev/null 2>&1 || true; exit 1; }
+      # Bind-mount /proc, /sys, /dev for chroot DKMS compilation
+      mount --bind /proc /target/proc 2>>"$LOG" || { echo "[late] FATAL: mount /proc failed" >> "$LOG"; exit 1; }
+      mount --bind /sys /target/sys 2>>"$LOG" || { echo "[late] FATAL: mount /sys failed" >> "$LOG"; umount /target/proc 2>/dev/null || true; exit 1; }
+      mount --bind /dev /target/dev 2>>"$LOG" || { echo "[late] FATAL: mount /dev failed" >> "$LOG"; umount /target/sys 2>/dev/null || true; umount /target/proc 2>/dev/null || true; exit 1; }
+      chroot /target dkms add broadcom-sta/6.30.223.271 2>>"$LOG" || { echo "[late] FATAL: dkms add failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":62,"stage":"late-dkms","status":"failed","message":"FATAL: dkms add failed in target"}' > /dev/null 2>&1 || true; umount /target/dev /target/sys /target/proc 2>/dev/null || true; exit 1; }
+      chroot /target dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || { echo "[late] FATAL: dkms build failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":63,"stage":"late-dkms","status":"failed","message":"FATAL: dkms build failed in target"}' > /dev/null 2>&1 || true; umount /target/dev /target/sys /target/proc 2>/dev/null || true; exit 1; }
+      chroot /target dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG" || { echo "[late] FATAL: dkms install failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":64,"stage":"late-dkms","status":"failed","message":"FATAL: dkms install failed in target"}' > /dev/null 2>&1 || true; umount /target/dev /target/sys /target/proc 2>/dev/null || true; exit 1; }
+      umount /target/dev /target/sys /target/proc 2>/dev/null || true
       echo "wl" >> /target/etc/modules
       echo "[late] WiFi driver installed into target" >> "$LOG"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":65,"stage":"late-dkms","status":"installed","message":"WiFi driver compiled and installed into target"}' > /dev/null 2>&1 || true
     - |
+      WHURL="http://192.168.1.115:8080/webhook"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":70,"stage":"late-netplan","status":"configuring","message":"Writing WiFi network configuration"}' > /dev/null 2>&1 || true
       # Remove autoinstall-generated netplan to avoid conflict, write match-based version
       rm -f /target/etc/netplan/50-cloud-init.yaml 2>/dev/null || true
       mkdir -p /target/etc/netplan
       printf 'network:\n  version: 2\n  wifis:\n    wl0:\n      match:\n        driver: wl\n      dhcp4: true\n      optional: true\n      access-points:\n        "ATTj6pXatS":\n          password: "j75b39=z?mpg"\n' > /target/etc/netplan/01-wifi.yaml
       chmod 600 /target/etc/netplan/01-wifi.yaml
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":73,"stage":"late-netplan","status":"configured","message":"WiFi netplan config written"}' > /dev/null 2>&1 || true
     - |
+      WHURL="http://192.168.1.115:8080/webhook"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":75,"stage":"late-grub","status":"configuring","message":"Configuring GRUB bootloader"}' > /dev/null 2>&1 || true
       echo 'GRUB_CMDLINE_LINUX_DEFAULT="nomodeset amdgpu.si.modeset=0"' >> /target/etc/default/grub.d/macpro.cfg
       chroot /target update-grub 2>>/run/macpro.log || echo "[late] WARN: update-grub failed" >> /run/macpro.log
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":78,"stage":"late-grub","status":"configured","message":"GRUB bootloader configured"}' > /dev/null 2>&1 || true
     - |
-      sed -i 's/^hosts:.*/hosts: files mdns_minimal [NOTFOUND=return] dns/' /target/etc/nsswitch.conf
+      WHURL="http://192.168.1.115:8080/webhook"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":80,"stage":"late-mdns","status":"configuring","message":"Configuring mDNS hostname resolution"}' > /dev/null 2>&1 || true
+      if grep -q '^hosts:' /target/etc/nsswitch.conf; then
+        sed -i 's/^hosts:.*/hosts: files mdns_minimal [NOTFOUND=return] dns/' /target/etc/nsswitch.conf
+      else
+        echo 'hosts: files mdns_minimal [NOTFOUND=return] dns' >> /target/etc/nsswitch.conf
+      fi
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":83,"stage":"late-mdns","status":"configured","message":"mDNS hostname resolution configured"}' > /dev/null 2>&1 || true
     - |
+      WHURL="http://192.168.1.115:8080/webhook"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":85,"stage":"late-hold","status":"configuring","message":"Pinning kernel version to prevent upgrades"}' > /dev/null 2>&1 || true
       chroot /target apt-mark hold "linux-image-${KVER}" 2>>/run/macpro.log || echo "[late] WARN: kernel hold failed" >> /run/macpro.log
       chroot /target apt-mark hold "linux-headers-${KVER}" 2>>/run/macpro.log || echo "[late] WARN: headers hold failed" >> /run/macpro.log
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":88,"stage":"late-hold","status":"pinned","message":"Kernel version pinned"}' > /dev/null 2>&1 || true
     - |
+      WHURL="http://192.168.1.115:8080/webhook"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":90,"stage":"late-sudo","status":"configuring","message":"Configuring sudo for user teja"}' > /dev/null 2>&1 || true
       echo "teja ALL=(ALL) NOPASSWD:ALL" >> /target/etc/sudoers.d/teja
       chmod 440 /target/etc/sudoers.d/teja
     - |
+      WHURL="http://192.168.1.115:8080/webhook"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":95,"stage":"late-logs","status":"saving","message":"Saving installation logs"}' > /dev/null 2>&1 || true
       mkdir -p /target/var/log/macpro-install
       cp /run/macpro.log /target/var/log/macpro-install/early-commands.log || true
       dmesg > /target/var/log/macpro-install/dmesg.log || true
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":100,"stage":"complete","status":"done","message":"Installation complete — rebooting"}' > /dev/null 2>&1 || true
 
   error-commands:
     - |
+      WHURL="http://192.168.1.115:8080/webhook"
       modprobe wl || true
       WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wl[pw][^:]+' | head -1 || echo "wlan0")
       ip link set "$WIFI_DEV" up 2>/dev/null || true
     - |
-      curl -X POST http://192.168.1.115:8080/webhook \
-        -H "Content-Type: application/json" \
-        -d '{"event": "error", "stage": "autoinstall", "message": "Installation failed"}' || true
+      WHURL="http://192.168.1.115:8080/webhook"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" \
+        -d '{"progress":0,"stage":"error","status":"failed","message":"Installation failed — check logs on target system"}' > /dev/null 2>&1 || true
     - |
       dmesg > /tmp/error-dmesg.log
       journalctl -b > /tmp/error-journalctl.log

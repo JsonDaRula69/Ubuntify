@@ -24,15 +24,15 @@ Mac Pro has no Ethernet. Broadcom BCM4360 WiFi requires a proprietary `wl` drive
 
 ## Solution Overview
 
-**Minimal ISO modification + remote boot via `bless`**:
+**Extract-and-repack ISO modification + remote boot via `bless`**:
 
-1. Build a modified Ubuntu Server ISO with `autoinstall.yaml` and a `packages/` directory injected
-2. Extract ISO contents to an EFI System Partition on the Mac Pro's internal disk (via SSH)
-3. Use `bless --setBoot` via SSH to set the ESP as next boot device
+1. Build a modified Ubuntu Server ISO: extract original ISO, overlay custom files, repack preserving original EFI boot structure
+2. Transfer ISO to Mac Pro, run `prepare-headless-deploy.sh` via SSH — shrinks APFS, creates ESP, extracts ISO contents, sets boot device
+3. `bless --setBoot --nextonly` sets ESP as next boot device (reverts to macOS if installer fails)
 4. Reboot → Mac Pro boots into Ubuntu installer from internal disk → autoinstall runs headlessly
 
 ```
-SSH into macOS → repartition disk → extract ISO to ESP → bless --setBoot → reboot → autoinstall completes
+SSH into macOS → repartition disk → extract ISO to ESP → bless --setBoot --nextonly → reboot → autoinstall completes
 ```
 
 The autoinstall config compiles the WiFi driver, starts SSH for remote debugging, and runs headlessly. The `autoinstall` kernel parameter bypasses the confirmation prompt (required for zero-touch deployment). SSH is available during install at `installer@<ip>` or via the configured SSH keys.
@@ -42,12 +42,11 @@ The autoinstall config compiles the WiFi driver, starts SSH for remote debugging
 | File | Purpose |
 |------|---------|
 | `autoinstall.yaml` | Ubuntu autoinstall configuration — WiFi driver compilation, SSH, storage layout |
-| `build-iso.sh` | Builds modified ISO with autoinstall.yaml + packages + GRUB config + cidata |
+| `build-iso.sh` | Builds modified ISO: extracts original, overlays custom files, repacks preserving EFI boot |
 | `packages/` | .deb files needed to compile and install WiFi driver (~36 packages, ~75MB) |
-| `prepare-headless-deploy.sh` | macOS-side script: repartition, extract ISO to ESP, bless, reboot (zero physical access) |
+| `prepare-headless-deploy.sh` | macOS-side script: repartition, extract ISO to ESP, bless, verify, reboot |
 | `prereqs/` | Stock Ubuntu 24.04.4 Server ISO (`*.iso` gitignored) |
-| `macpro-monitor/` | Node.js webhook server for headless install monitoring |
-| `PLAN.md` | Implementation plan for the full headless deployment workflow |
+| `macpro-monitor/` | Node.js webhook server for headless install monitoring (3-pane dashboard) |
 
 ## Quick Start
 
@@ -56,6 +55,8 @@ The autoinstall config compiles the WiFi driver, starts SSH for remote debugging
 ```bash
 # 1. Build the ISO (place stock ISO in prereqs/ first)
 sudo ./build-iso.sh
+# The script extracts the original ISO, overlays custom files,
+# and repacks preserving the original EFI boot structure.
 
 # 2. Write to USB
 diskutil list  # find your USB drive
@@ -80,26 +81,40 @@ cd macpro-monitor && ./start.sh
 ssh macpro
 sudo ./prepare-headless-deploy.sh ~/ubuntu-macpro.iso
 
+# The script will:
+#   - Auto-delete APFS snapshots (no interactive confirmation needed)
+#   - Shrink APFS, create ESP, extract ISO contents
+#   - Set boot device with bless --nextonly (safe: reverts to macOS if installer fails)
+#   - Verify bless succeeded with bless --info
+#   - Auto-reboot in 5 seconds in non-interactive (piped SSH) mode
+#   - Or prompt for confirmation in interactive mode
+
 # 4. Monitor installation via webhook; SSH into installer for debugging
 ```
 
-### Start Webhook Monitor (optional but recommended)
+### Start Webhook Monitor (recommended for headless deploy)
 
 ```bash
 cd macpro-monitor && ./start.sh
-# Webhook at http://<your-ip>:8080/webhook
+# Dashboard: http://<your-ip>:8080
+# Webhook:   http://<your-ip>:8080/webhook
+# Auto-refreshes every 3 seconds
+# 3-pane view: Subiquity Events | Custom Progress | Status
+# Receives ALL events (DEBUG level) from Subiquity/Curtin
+# Receives custom progress events from autoinstall early/late commands
 ```
 
 ## How It Works
 
 ### What's Added to the ISO
 
-Four things are injected into the stock ISO:
+The build process extracts the original ISO, overlays custom files, then repacks using the original boot parameters (preserved via `xorriso -report_el_torito as_mkisofs`). Five things are overlaid:
 
 1. `/autoinstall.yaml` — installation configuration
 2. `/cidata/` — NoCloud datasource (`user-data`, `meta-data`, `vendor-data`) for `ds=nocloud` discovery
 3. `/macpro-pkgs/` — flat directory of ~36 .deb files for driver compilation
 4. `/EFI/boot/grub.cfg` and `/boot/grub/grub.cfg` — GRUB config with pre-baked `autoinstall ds=nocloud nomodeset amdgpu.si.modeset=0` kernel parameters (no manual keyboard input needed)
+5. Volume label `cidata` — for NoCloud datasource discovery
 
 ### Why Packages Must Be Included
 
@@ -116,26 +131,35 @@ We include all needed debs in `packages/` to avoid fragile dependency resolution
 ### autoinstall.yaml Key Sections
 
 **early-commands** (runs before network config, in the installer environment):
-1. Installs kernel headers and modules from `/cdrom/macpro-pkgs/`
-2. Installs build toolchain (gcc, make, binutils, libc-dev, etc.)
-3. Installs `broadcom-sta-dkms` and `dkms`
-4. Compiles `wl.ko` via DKMS against the running kernel (6.8.0-100-generic)
-5. Loads driver with `modprobe wl`
-6. Verifies module loaded (`lsmod | grep wl`) and logs result
-7. Waits for WiFi interface to appear (up to 30 seconds, checks `wl[pw]*` and `wlan*` patterns)
-8. Starts SSH server for remote debugging via `apt-get install openssh-server`
+1. Detects running kernel version dynamically (`KVER="$(uname -r)"`) — no hardcoded version
+2. Validates kernel headers exist for running kernel; exits if not found
+3. Installs kernel headers and modules from `/cdrom/macpro-pkgs/`
+4. Installs build toolchain (gcc, make, binutils, libc-dev, etc.)
+5. Installs `broadcom-sta-dkms` and `dkms`
+6. Compiles `wl.ko` via DKMS against the detected kernel
+7. Loads driver with `modprobe wl`; exits if module fails to load (WiFi is critical)
+8. Waits for WiFi interface to appear (up to 30 seconds, checks `wl[pw]*` and `wlan*` patterns)
+9. Starts SSH server — tries `apt-get install openssh-server` first, falls back to ISO pool `.deb`s
+
+Each step sends a progress webhook with `{progress, stage, status, message}` to the monitoring server.
 
 **network**: Uses `wl0` interface with `match: driver: wl`, connects to configured WiFi
 
 **late-commands** (runs after install, installs into target system):
-1. Installs kernel headers, build toolchain, and DKMS into `/target` in 4 dependency-ordered stages
-2. Compiles `wl.ko` via DKMS in the target chroot (ensures persistence across reboots)
-3. Writes netplan WiFi config for target system
-4. Pins kernel version to 6.8.0-100 via `apt-mark hold`
-5. Configures mDNS for `macpro-linux.local` hostname resolution
-6. Saves install logs to `/var/log/macpro-install/`
+1. Detects running kernel version dynamically (`KVER="$(uname -r)"`)
+2. Validates kernel headers exist for running kernel; exits if not found
+3. Installs kernel headers, build toolchain, and DKMS into `/target` in 4 dependency-ordered stages
+4. Compiles `wl.ko` via DKMS in the target chroot (ensures persistence across reboots)
+5. Writes netplan WiFi config for target system (uses `printf` to avoid heredoc indentation issues)
+6. Pins kernel and headers to `$KVER` via `apt-mark hold` (dynamic, not hardcoded)
+7. Configures mDNS for `macpro-linux.local` hostname resolution
+8. Saves install logs to `/var/log/macpro-install/`
 
-**error-commands**: Attempts to load driver and send webhook notification on failure
+Each step sends a progress webhook (30-100%) to the monitoring server.
+
+**error-commands**: Attempts to load driver and sends webhook error notification
+
+**reporting**: Sends Subiquity/Curtin events to the webhook at `DEBUG` level (captures all events including network and storage details). Custom curl calls in early/late commands send progress updates with stage-specific identifiers (`prep-init`, `prep-headers`, `late-dkms`, etc.).
 
 ### AMD FirePro GPU
 
@@ -153,7 +177,7 @@ For the headless scenario, the USB boot method above requires physical access. T
 
 | Approach | Feasible? | Notes |
 |----------|-----------|-------|
-| Repartition + `bless` via SSH | ✅ | `diskutil resizeVolume` + `bless --setBoot` works from SSH |
+| Repartition + `bless` via SSH | ✅ | `diskutil resizeVolume` + `bless --setBoot --nextonly` works from SSH; auto-reverts to macOS if installer fails |
 | `dd` ISO to partition | ❌ | Mac EFI expects FAT32 ESP with `/EFI/BOOT/BOOTX64.EFI`, not ISO9660 |
 | Extract ISO to ESP + `bless` | ✅ | AsahiLinux uses this exact pattern for Mac Linux installs |
 | NetBoot/NetInstall | ❌ | Requires macOS Server + BSDP protocol; Ubuntu doesn't speak BSDP |
@@ -165,27 +189,64 @@ For the headless scenario, the USB boot method above requires physical access. T
 ```
 1. SSH into macOS
 2. Transfer ISO to Mac Pro via scp
-3. Shrink APFS partition: diskutil resizeVolume
-4. Create partitions: ESP (FAT32) + root (ext4 placeholder)
-5. Mount ISO, extract EFI boot files + casper + autoinstall.yaml + packages to ESP
-6. Modify GRUB config to include: autoinstall ds=nocloud nomodeset amdgpu.si.modeset=0
-7. bless --setBoot --mount /Volumes/ESP
-8. Reboot → autoinstall runs headlessly
-9. Monitor via webhook + SSH into installer environment
+3. Delete APFS snapshots (automatically, for headless operation)
+4. Shrink APFS partition: diskutil apfs resizeContainer
+5. Create ESP partition via diskutil addPartition (detected via before/after diffing)
+6. Format ESP as FAT32, mount ISO, extract all contents to ESP
+7. Write GRUB config with: autoinstall ds=nocloud nomodeset amdgpu.si.modeset=0
+8. bless --setBoot --nextonly (reverts to macOS if installer fails)
+9. Verify bless with --info
+10. Reboot → autoinstall runs headlessly (non-interactive reboot with 5s delay)
+11. Monitor via webhook + SSH into installer environment
 ```
 
-See `PLAN.md` for the detailed implementation plan.
+The `prepare-headless-deploy.sh` script automates steps 3-10.
 
 ### Risk: No Recovery Without Physical Access
 
 If the installer fails or the partition setup is wrong, the Mac Pro becomes unreachable — no SSH, no monitor, no keyboard. Mitigations:
 
-- **Webhook monitoring** — receive status updates at each autoinstall stage
+- **`bless --nextonly`** — boot device reverts to macOS on next reboot if installer fails
+- **Webhook monitoring** — receive real-time status updates at each installation stage with progress percentages (2-100%)
 - **SSH into installer** — debug during installation before target system is written
 - **Test in VirtualBox first** — validate the entire flow before touching real hardware
 - **Fallback: Target Disk Mode** — MacBook on network + Thunderbolt cable for emergency recovery
 
-## Configuration
+## Monitoring
+
+The `macpro-monitor/` Node.js server provides a real-time dashboard for headless installation monitoring:
+
+**Two event sources:**
+1. **Subiquity/Curtin built-in events** — sent automatically via the `reporting.macpro-monitor` webhook config at DEBUG level. These include network configuration, storage operations, package installation, and other installer events.
+2. **Custom progress events** — sent via `curl` calls in `early-commands` and `late-commands` with `{progress, stage, status, message}` payloads. These track WiFi driver compilation, SSH startup, DKMS build, netplan config, GRUB setup, etc.
+
+**Dashboard layout:**
+- **Subiquity Events pane** — all built-in installer events with level badges (DEBUG/INFO/WARN/ERROR) and result badges (SUCCESS/FAIL)
+- **Custom Progress pane** — stage-specific progress events with progress percentages and status icons
+- **Status panel** — last event summaries, event counts, error/warning counts, config info
+
+**Progress stages reported:**
+
+| Stage | Range | Description |
+|-------|-------|-------------|
+| `prep-init` | 2% | Autoinstall started, validating kernel headers |
+| `prep-headers` | 5% | Installing kernel headers |
+| `prep-toolchain` | 10% | Installing build toolchain |
+| `prep-dkms` | 13-15% | Installing DKMS, building wl driver |
+| `prep-wifi` | 18-22% | WiFi driver loaded, interface detected |
+| `prep-ssh` | 23-25% | SSH server ready for debugging |
+| `late-init` | 30% | Late commands started |
+| `late-headers` | 35% | Stage 1/4: kernel headers into target |
+| `late-libs` | 45% | Stage 2/4: base libraries into target |
+| `late-tools` | 55% | Stage 3/4: build tools into target |
+| `late-dkms` | 60-65% | Stage 4/4: DKMS compile WiFi driver for target |
+| `late-netplan` | 70-73% | Writing WiFi network configuration |
+| `late-grub` | 75-78% | Configuring GRUB bootloader |
+| `late-mdns` | 80-83% | Configuring mDNS hostname resolution |
+| `late-hold` | 85-88% | Pinning kernel version |
+| `late-sudo` | 90% | Configuring sudo |
+| `late-logs` | 95% | Saving installation logs |
+| `complete` | 100% | Installation complete, rebooting |
 
 Edit `autoinstall.yaml` to change:
 
@@ -197,6 +258,7 @@ Edit `autoinstall.yaml` to change:
 | Username | `identity.username` | `teja` |
 | SSH keys | `ssh.authorized-keys` | 4 keys |
 | Webhook URL | `reporting.macpro-monitor.endpoint` | `http://192.168.1.115:8080/webhook` |
+| Reporting level | `reporting.macpro-monitor.level` | `DEBUG` (captures all Subiquity events) |
 
 ## Updating Packages
 
@@ -204,10 +266,13 @@ If you need to refresh the `packages/` directory (e.g., for a different kernel v
 
 ```bash
 # Download packages from Ubuntu packages archive
-# For kernel 6.8.0-100-generic, you need:
+# Kernel headers must match the ISO's kernel version
+# For example, if the ISO ships with 6.8.0-100-generic, you need:
 # - linux-headers-6.8.0-100 (all + generic)
 # - broadcom-sta-dkms, dkms
 # - gcc-13, make, build-essential, and all build dependencies
+# The autoinstall config detects the running kernel dynamically via KVER="$(uname -r)"
+# and validates that matching headers exist in /cdrom/macpro-pkgs/
 ```
 
 ## Troubleshooting
@@ -216,6 +281,8 @@ If you need to refresh the `packages/` directory (e.g., for a different kernel v
 ```bash
 dmesg | grep -i 'dkms\|wl\|broadcom'
 cat /run/macpro.log
+# Check that kernel headers match running kernel:
+ls /cdrom/macpro-pkgs/linux-headers-$(uname -r)_*.deb
 ```
 
 ### WiFi doesn't connect
@@ -232,7 +299,7 @@ ssh teja@macpro-linux.local
 ```
 
 ### Kernel updates break WiFi
-Kernel is pinned to 6.8.0-100 via `apt-mark hold`. If you must update, recompile the driver:
+Kernel is pinned to the ISO's kernel version via `apt-mark hold`. If you must update, recompile the driver:
 ```bash
 sudo dkms remove broadcom-sta/6.30.223.271 -k <new-kernel>
 sudo dkms install broadcom-sta/6.30.223.271 -k <new-kernel>
