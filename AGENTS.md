@@ -27,7 +27,7 @@ Headless Ubuntu 24.04.4 LTS Server deployment for Mac Pro 2013 (MacPro6,1) with 
 │   ├── broadcom-sta-dkms_*.deb      # Broadcom WiFi driver source
 │   ├── dkms_*.deb                   # Dynamic Kernel Module Support
 │   ├── linux-headers-6.8.0-100*     # Kernel headers matching ISO kernel (6.8.0-100-generic)
-│   ├── gcc-13_*, make_*, etc.       # Build toolchain
+│   ├── gcc-13_*, gcc-13-x86-64-linux-gnu_*, make_*, etc.       # Build toolchain (13.3.0 matching ISO kernel)
 │   ├── dkms-patches/               # 6 kernel 6.8+ compatibility patches (series file + *.patch)
 │   │   ├── series                   # Ordered patch list
 │   │   ├── 29-*.patch               # Fix kernel version parsing
@@ -42,6 +42,11 @@ Headless Ubuntu 24.04.4 LTS Server deployment for Mac Pro 2013 (MacPro6,1) with 
 │   ├── server.js
 │   ├── start.sh / stop.sh / reset.sh
 │   └── logs/
+├── vm-test/                         # VirtualBox test environment
+│   ├── autoinstall-vm.yaml          # VM-specific autoinstall (Ethernet, non-fatal driver init)
+│   ├── build-iso-vm.sh              # VM ISO builder
+│   ├── create-vm.sh                 # VirtualBox VM creation
+│   └── test-vm.sh                   # Run/monitor/SSH/stop
 └── prereqs/                         # Stock Ubuntu ISO (*.iso gitignored)
 ```
 
@@ -56,6 +61,11 @@ sudo ./build-iso.sh
 ```bash
 cd macpro-monitor && ./start.sh    # Start (port 8080)
 ./macpro-monitor/stop.sh           # Stop
+```
+
+### VM Test
+```bash
+cd vm-test && sudo ./build-iso-vm.sh && ./create-vm.sh && ./test-vm.sh
 ```
 
 ## Core Design Decisions
@@ -104,6 +114,35 @@ cd macpro-monitor && ./start.sh    # Start (port 8080)
 25. **Self-healing DKMS**: If the initial DKMS build fails, the system automatically attempts a clean rebuild: removes the broken build directory, reapplies patches, and retries. If the retry also fails, it exits with FATAL.
 26. **WiFi reconnect self-healing**: If WiFi connectivity is lost (early-commands curl test or late-commands IP check), the system automatically reloads the `wl` driver (rmmod conflicting modules + modprobe wl) and retries connectivity for up to 60 seconds. If reconnect also fails, the early-commands version exits with FATAL before storage begins; the late-commands version enters recovery mode (keeps SSH alive, blocks reboot).
 27. **Netplan fallback regeneration**: If `netplan generate` fails on the primary config (which includes `match: driver: wl`), the system regenerates with a simplified config (no match clause) and retries. If the simplified config also fails, exits with FATAL.
+28. **DKMS patch paths for Ubuntu**: The Ubuntu `broadcom-sta-dkms` package (6.30.223.271-23ubuntu1) has a flat source tree — `Makefile` at root, not under `amd64/`. DKMS patches from Debian must have `amd64/` and `i386/` prefixes stripped. Patch 29 fixes SUBLEVEL parsing in the Makefile using sed `;t;s/...` syntax (not shell `'; s/...'` which causes "Unterminated quoted string").
+29. **gcc must match ISO kernel build**: Kernel 6.8.0-100-generic was built with gcc-13 13.3.0-6ubuntu2~24.04. Bundled packages at older versions (13.2.0) cause DKMS build failures. The `gcc-13-x86-64-linux-gnu` package provides `x86_64-linux-gnu-gcc-13` (the exact binary the kernel was compiled with). The `cc` symlink points to `x86_64-linux-gnu-gcc-13` with fallback to `gcc-13`.
+30. **dpkg --skip-same-version prevents downgrades**: The ISO's live environment contains base packages (libgcc-s1, libstdc++6, perl-base, kmod) at newer versions than our bundled debs. Using `dpkg --force-depends --skip-same-version -i` skips already-installed packages instead of downgrading and breaking the live environment.
+31. **dkms/broadcom dpkg non-zero is expected**: `dpkg -i dkms broadcom-sta-dkms` returns non-zero because the broadcom postinst auto-runs `dkms add` which tries (and fails) to build without patches. This is WARN (not FATAL) — we apply patches AFTER dpkg and build manually.
+
+## VirtualBox Test Environment
+
+The `vm-test/` folder provides a full VM-based test of the DKMS compilation pipeline without requiring Mac Pro hardware.
+
+| File | Purpose |
+|------|---------|
+| `autoinstall-vm.yaml` | VM-specific autoinstall — DKMS compiles (fatal on failure), but driver init is non-fatal (no Broadcom HW). Uses Ethernet `enp0s3` instead of WiFi. Webhook targets `10.0.2.2` (host via NAT). |
+| `build-iso-vm.sh` | Builds `ubuntu-vmtest.iso` from the same `../packages/` with VM config |
+| `create-vm.sh` | Creates VirtualBox VM: EFI firmware, 4 CPUs, 4.5GB RAM, 25GB disk, NAT networking, SSH port forward (2222→22), webhook forward (8081→8080) |
+| `test-vm.sh` | Run/monitor/SSH/grab logs/stop/destroy the VM |
+
+**Key VM vs production differences:**
+- Toolchain installed via `chroot /target apt-get` (VM has network) instead of `dpkg --root /target -i` (production is offline)
+- `cp /etc/resolv.conf /target/etc/resolv.conf` needed before chroot apt-get
+- `useradd ubuntu` + `chpasswd` in early-commands for installer SSH access
+- Serial port (UART1) configured for console logging
+- `modprobe wl` failure is non-fatal (no Broadcom hardware)
+- WiFi interface detection falls through to Ethernet
+- Single disk, no dual-boot preserve
+
+**Usage:**
+```bash
+cd vm-test && sudo ./build-iso-vm.sh && ./create-vm.sh && ./test-vm.sh
+```
 
 ## Boot Methods
 
@@ -144,7 +183,7 @@ Use `RED`, `GREEN`, `NC` color constants. Log to file with `tee`.
 
 ### JavaScript (Node.js)
 ```javascript
-const PORT = 8080;
+const PORT = parseInt(process.env.PORT || '8080', 10);
 const MAX_UPDATES = 200;
 const MAX_BUILT_IN_EVENTS = 500;
 const MAX_DISPLAY_EVENTS = 50;
@@ -189,6 +228,7 @@ Patches use `#if LINUX_VERSION_CODE >= KERNEL_VERSION(...)` guards and compile c
 - `prepare-headless-deploy.sh` - macOS-side script for zero-physical-access deployment via bless; dynamically generates dual-boot storage config
 - `prereqs/` - Stock Ubuntu ISO directory (only `*.iso` files, gitignored)
 - `macpro-monitor/` - Node.js webhook monitor for installation progress (3-pane dashboard: Subiquity Events | Custom Progress | Status)
+- `vm-test/` - VirtualBox test environment for validating DKMS compilation without Mac Pro hardware
 - `.gitignore` - Excludes `*.iso`, `*.qcow2`, `ssh-*/`, `.sisyphus/`, `.DS_Store`
 
 ## Key Constraints
@@ -196,7 +236,7 @@ Patches use `#if LINUX_VERSION_CODE >= KERNEL_VERSION(...)` guards and compile c
 - **Zero physical access** — all operations must be performed remotely via SSH
 - **Cannot disable SIP** — cannot install custom bootloader into `/System`; must use Apple's `bless` command on ESP
 - **GRUB cannot read APFS** — no APFS filesystem module exists in GRUB; use `fwsetup` (Apple Boot Manager) or `efibootmgr` to switch to macOS
-- **WiFi-only networking** — no Ethernet; must compile `wl` driver before any network access
+- **WiFi-only networking** — no Ethernet; must compile `wl` driver before any network access (hardware has 2 Ethernet ports but they're unplugged)
 - **Kernel version dynamically detected** — `KVER="$(uname -r)"` in early-commands and late-commands; `packages/` must contain headers matching the ISO's kernel (currently 6.8.0-100-generic)
 - **DKMS cross-kernel build**: `dkms build -k <version>` compiles against the specified kernel's headers, not the running kernel
 - **DKMS add handled by postinst** — broadcom-sta-dkms postinst auto-runs `dkms add`; do NOT call it explicitly
@@ -214,6 +254,8 @@ Patches use `#if LINUX_VERSION_CODE >= KERNEL_VERSION(...)` guards and compile c
 - **Partition type GUIDs must be lowercase** — curtin normalizes GUIDs to lowercase for verification; using uppercase causes `preserve: true` verification mismatches
 - **Autoinstall YAML must use string-based replacement** — `yaml.dump` converts `|` block scalars to quoted strings with `\n` escapes, breaking subiquity; use regex replacement to preserve formatting
 - **Dual-boot safety** — macOS is preserved with `preserve: true` on all existing partitions. If Ubuntu install fails, `bless --nextonly` reverts boot to macOS. Remaining risk: if curtin itself has a bug that ignores `preserve: true`, or if the GPT partition table gets corrupted. Mitigations: webhook monitoring, SSH into installer, VirtualBox testing, Target Disk Mode fallback
+- **gcc-13 must match ISO kernel** — packages must provide `gcc-13 13.3.0-6ubuntu2~24.04` and `gcc-13-x86-64-linux-gnu` (provides `x86_64-linux-gnu-gcc-13`). Older versions cause DKMS build failures (`cc: not found`, library ABI mismatches). `cc` symlink must point to `x86_64-linux-gnu-gcc-13` with fallback to `gcc-13`
+- **dpkg --skip-same-version** — the ISO live environment has base packages (libgcc-s1, libstdc++6, perl-base, kmod) at newer versions than our bundles; without `--skip-same-version`, dpkg downgrades them and breaks the live environment
 
 ## Context Management Rules
 
