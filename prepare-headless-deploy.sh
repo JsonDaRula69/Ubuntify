@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 set -o pipefail
+export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly ISO_PATH="${1:-${SCRIPT_DIR}/ubuntu-macpro.iso}"
