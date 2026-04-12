@@ -17,7 +17,7 @@ autoinstall:
     hostname: macpro-linux
     username: teja
     realname: Teja
-    password: "$6$5lfs60hrQzxFujuL$fcH6DoOnHyz7s42c7R2qTZQrZ/kE8uQMmD8NIga3cbr3nYDuKZBJphpzFJcutF/A4orsicOUt4258XGEw6c4W0"
+    password: "$6$8PBS0yfUxUSfQKeT$E/vFyIsiCGGe3iJ5GskGXYRdf4/9FSE1KugDfQvjf2Rp3ZwCprpDgVRKyzCZIZJKBKX2iEB6T5krscDlnRqq81"
 
   ssh:
     install-server: true
