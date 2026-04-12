@@ -11,28 +11,7 @@ autoinstall:
 
   apt:
     preserve_sources_list: true
-    preferences:
-      # Block ALL kernel package updates from Ubuntu repos (pin-priority: -1 = never install)
-      # Then explicitly allow only our pinned 6.8.0-100 kernel (pin-priority: 1001 = always install)
-      # This two-tier approach prevents kernel updates that would break the WiFi driver
-      - package: "linux-image-*"
-        pin: "release o=Ubuntu"
-        pin-priority: -1
-      - package: "linux-headers-*"
-        pin: "release o=Ubuntu"
-        pin-priority: -1
-      - package: "linux-modules-*"
-        pin: "release o=Ubuntu"
-        pin-priority: -1
-      - package: "linux-image-6.8.0-100*"
-        pin: "release o=Ubuntu"
-        pin-priority: 1001
-      - package: "linux-headers-6.8.0-100*"
-        pin: "release o=Ubuntu"
-        pin-priority: 1001
-      - package: "linux-modules-6.8.0-100*"
-        pin: "release o=Ubuntu"
-        pin-priority: 1001
+    # Kernel pin preferences moved to late-commands — pin-priority: -1 here blocks curtin from installing the kernel
 
   identity:
     hostname: macpro-linux
@@ -124,10 +103,11 @@ autoinstall:
               $PKGS/libgcc-s1_*.deb $PKGS/gcc-13-base_*.deb \
               $PKGS/libisl23_*.deb $PKGS/libmpc3_*.deb $PKGS/libmpfr6_*.deb \
               $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb \
+              $PKGS/libcc1-0_*.deb $PKGS/cpp-13-x86-64-linux-gnu_*.deb \
               $PKGS/gcc-13-x86-64-linux-gnu_*.deb $PKGS/gcc-13_*.deb \
               $PKGS/libstdc++6_*.deb $PKGS/libstdc++-13-dev_*.deb \
               $PKGS/libc-dev-bin_*.deb $PKGS/libc6-dev_*.deb \
-              $PKGS/libc-devtools_*.deb $PKGS/libcrypt-dev_*.deb \
+              $PKGS/libc-devtools_*.deb $PKGS/crypt-dev_*.deb \
               $PKGS/rpcsvc-proto_*.deb \
               $PKGS/make_*.deb $PKGS/build-essential_*.deb \
               $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
@@ -474,6 +454,7 @@ autoinstall:
         $PKGS/libc-devtools_*.deb \
         $PKGS/binutils_*.deb $PKGS/binutils-x86-64-linux-gnu_*.deb \
         $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb \
+        $PKGS/libcc1-0_*.deb $PKGS/cpp-13-x86-64-linux-gnu_*.deb \
         $PKGS/gcc-13-x86-64-linux-gnu_*.deb $PKGS/gcc-13_*.deb 2>>"$LOG" || { die "Stage 2 (libs) failed" 45; }
 
       # Stage 3: Build tools (depend on stage 2)
@@ -568,22 +549,30 @@ autoinstall:
       log() { echo "[late] $1" >> "$LOG"; }
 
       wh '{"progress":70,"stage":"late-netplan","status":"configuring","message":"Writing WiFi network configuration"}'
-      # Remove autoinstall-generated netplan to avoid conflict, write match-based version
+      # Remove autoinstall-generated netplan to avoid conflict
       rm -f /target/etc/netplan/50-cloud-init.yaml 2>/dev/null || true
       mkdir -p /target/etc/netplan
-      printf 'network:\n  version: 2\n  renderer: networkd\n  wifis:\n    wl0:\n      match:\n        driver: wl\n      dhcp4: true\n      optional: true\n      access-points:\n        "ATTj6pXatS":\n          password: "j75b39=z?mpg"\n' > /target/etc/netplan/01-wifi.yaml
-      chmod 600 /target/etc/netplan/01-wifi.yaml
-      if command -v netplan 2>/dev/null >/dev/null; then
-          if ! netplan generate --root-dir /target 2>>"$LOG"; then
-            log "WARN: netplan generate failed, attempting simplified config..."
-            rm -f /target/etc/netplan/01-wifi.yaml
-            printf 'network:\n  version: 2\n  renderer: networkd\n  wifis:\n    wl0:\n      dhcp4: true\n      optional: true\n      access-points:\n        "ATTj6pXatS":\n          password: "j75b39=z?mpg"\n' > /target/etc/netplan/01-wifi.yaml
-            chmod 600 /target/etc/netplan/01-wifi.yaml
+      # Auto-detect WiFi interface name — networkd does not support match: for wifis
+      # (produces "networkd backend does not support wifi with match:" error)
+      _wifi_iface=""
+      _wcnt=0
+      while [ -z "$_wifi_iface" ] && [ "$_wcnt" -lt 30 ]; do
+        _wifi_iface=$(ip link show 2>/dev/null | grep -oE 'wl[^:]+' | head -1)
+        [ -n "$_wifi_iface" ] && break
+        _wcnt=$((_wcnt + 1))
+        sleep 1
+      done
+      if [ -n "$_wifi_iface" ]; then
+        { printf "network:\n"; printf "  version: 2\n"; printf "  renderer: networkd\n"; printf "  wifis:\n"; printf "    %s:\n" "$_wifi_iface"; printf "      dhcp4: true\n"; printf "      optional: true\n"; printf "      access-points:\n"; printf "        ATTj6pXatS:\n"; printf "          password: j75b39=z?mpg\n"; } > /target/etc/netplan/01-wifi.yaml
+        chmod 600 /target/etc/netplan/01-wifi.yaml
+        log "WiFi netplan written for interface: $_wifi_iface"
+        if command -v netplan 2>/dev/null >/dev/null; then
             if ! netplan generate --root-dir /target 2>>"$LOG"; then
-              die "netplan generate failed even with simplified config" 73
+              die "netplan generate failed" 73
             fi
-            log "Netplan regenerated with simplified config (no match clause)"
-          fi
+        fi
+      else
+        die "No WiFi interface detected — cannot configure networking" 73
       fi
       wh '{"progress":73,"stage":"late-netplan","status":"configured","message":"WiFi netplan config written"}'
 
@@ -670,6 +659,9 @@ autoinstall:
       if chroot /target which snap 2>/dev/null; then
         chroot /target snap refresh --hold=forever 2>>"$LOG" || true
       fi
+      # Kernel pin preferences applied post-install (pin-priority: -1 in apt.preferences blocks curtin kernel install)
+      mkdir -p /target/etc/apt/preferences.d
+      printf 'Package: linux-image-*\nPin: release o=Ubuntu\nPin-Priority: -1\n\nPackage: linux-headers-*\nPin: release o=Ubuntu\nPin-Priority: -1\n\nPackage: linux-modules-*\nPin: release o=Ubuntu\nPin-Priority: -1\n\nPackage: linux-image-6.8.0-100*\nPin: release o=Ubuntu\nPin-Priority: 1001\n\nPackage: linux-headers-6.8.0-100*\nPin: release o=Ubuntu\nPin-Priority: 1001\n\nPackage: linux-modules-6.8.0-100*\nPin: release o=Ubuntu\nPin-Priority: 1001\n' > /target/etc/apt/preferences.d/99-pin-kernel
       wh '{"progress":87,"stage":"late-hold","status":"pinned","message":"Kernel version pinned, all auto-updates disabled, apt sources commented out"}'
 
     - |
@@ -723,8 +715,8 @@ autoinstall:
         log "WARN: No kernel found in /target"
         VERIFY_OK=false
       fi
-      if [ ! -f /target/etc/netplan/01-wifi.yaml ]; then
-        log "FATAL: Netplan WiFi config missing in /target — no network after reboot"
+      if [ ! -f /target/etc/netplan/01-wifi.yaml ] && ! ls /target/etc/netplan/*-wifi*.yaml >/dev/null 2>&1; then
+        log "FATAL: No WiFi netplan config in /target — no network after reboot"
         WIFI_OK=false
         VERIFY_OK=false
       fi

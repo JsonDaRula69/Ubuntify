@@ -951,3 +951,29 @@ For an AI agent converting a production `build-iso.sh` + `autoinstall.yaml` to V
 - [ ] Keep UFW firewall **configuration** — unchanged (but remove `apt-get` install line, UFW comes from `packages:` section)
 - [ ] Keep sudo config — unchanged
 - [ ] Keep log persistence — unchanged
+
+---
+
+## 8. VM Test Findings (Validated)
+
+These issues were discovered and fixed during VM testing. Apply the same fixes to production:
+
+### 8.1 Missing cc1 compiler (CRITICAL)
+
+`cpp-13-x86-64-linux-gnu` and `libcc1-0` must be added to packages/ and both early-commands and late-commands toolchain stages. Without `cc1`, gcc-13 cannot compile anything — the DKMS build fails with "cannot execute 'cc1': execvp: No such file or directory".
+
+### 8.2 Kernel apt pin blocks curtin install (CRITICAL)
+
+`pin-priority: -1` in `apt.preferences` blocks curtin from installing the kernel during the curthooks step. The kernel package needs to be installable during curtin. **Move kernel pin preferences to late-commands** (write `/etc/apt/preferences.d/99-pin-kernel` file after curtin completes).
+
+### 8.3 networkd doesn't support match: for wifis (CRITICAL)
+
+`netplan generate` fails with "networkd backend does not support wifi with match:, only by interface name". The `match: driver: wl` pattern only works in subiquity's internal renderer. For the target system netplan (late-commands), auto-detect the WiFi interface name and use it directly.
+
+### 8.4 printf quoting in sh -c blocks (IMPORTANT)
+
+Inside YAML `|` blocks, `\"` in `printf` format strings produces literal backslash-quote in the output. Use line-by-line `printf` calls or single-quoted format strings instead.
+
+### 8.5 Missing fi in netplan if block (IMPORTANT)
+
+Shell `if` statements require matching `fi`. Each `if` needs its own `fi`. Omitting `fi` causes exit status 2 and autoinstall failure.

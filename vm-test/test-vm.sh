@@ -112,21 +112,21 @@ case "${1:-run}" in
         echo "Waiting for installation to complete..."
         echo "(This can take 5-15 minutes. The VM auto-reboots when done.)"
         echo ""
+        echo "Use './test-vm.sh serial' to check serial log"
+        echo "Use './test-vm.sh monitor' to start webhook monitor on port 8081"
+        echo ""
 
-        read -p "Wait for SSH connectivity? [Y/n] " -r
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            if wait_for_ssh 90; then
-                echo ""
-                echo "SSH is available! Grabbing logs..."
-                grab_logs
-                echo ""
-                echo -e "${GREEN}VM test installation appears complete!${NC}"
-                echo "To check the installed system: ssh -p 2222 teja@localhost"
-            else
-                echo ""
-                echo "SSH not reachable. Take a screenshot to check status:"
-                echo "  ./test-vm.sh screenshot"
-            fi
+        if wait_for_ssh 180; then
+            echo ""
+            echo "SSH is available! Grabbing logs..."
+            grab_logs
+            echo ""
+            echo -e "${GREEN}VM test installation appears complete!${NC}"
+            echo "To check the installed system: ssh -p 2222 teja@localhost"
+        else
+            echo ""
+            echo "SSH not reachable. Take a screenshot to check status:"
+            echo "  ./test-vm.sh screenshot"
         fi
         ;;
 
@@ -181,8 +181,35 @@ case "${1:-run}" in
         echo -e "${GREEN}VM destroyed.${NC}"
         ;;
 
+    serial)
+        check_vm
+        if [ -f /tmp/vmtest-serial.log ]; then
+            echo "=== Last 100 lines of serial log ==="
+            tail -100 /tmp/vmtest-serial.log
+        else
+            echo "No serial log found at /tmp/vmtest-serial.log"
+        fi
+        ;;
+
+    monitor)
+        MONITOR_DIR="/Users/djtchill/Desktop/Mac/macpro-monitor"
+        if [ -f "$MONITOR_DIR/server.js" ]; then
+            echo "Starting installation monitor on port 8081..."
+            PORT=8081 nohup node "$MONITOR_DIR/server.js" > /tmp/vm-monitor.log 2>&1 &
+            VM_MONITOR_PID=$!
+            echo "Monitor started (PID: $VM_MONITOR_PID)"
+            echo "Dashboard: http://localhost:8081"
+            echo "Webhook:   http://localhost:8081/webhook"
+            echo "Logs:      /tmp/vm-monitor.log"
+            echo ""
+            echo "To stop: kill $VM_MONITOR_PID"
+        else
+            echo "ERROR: Monitor server not found"
+        fi
+        ;;
+
     *)
-        echo "Usage: $0 {run|ssh|logs|screenshot|stop|reset|destroy}"
+        echo "Usage: $0 {run|ssh|logs|screenshot|stop|reset|destroy|serial|monitor}"
         echo ""
         echo "Commands:"
         echo "  run        Start VM and wait for SSH (default)"
@@ -192,5 +219,7 @@ case "${1:-run}" in
         echo "  stop       Power off the VM"
         echo "  reset      Reset VM disk (power off + medium reset)"
         echo "  destroy    Delete the VM entirely"
+        echo "  serial     Show last 100 lines of serial log"
+        echo "  monitor    Start webhook monitor on port 8081"
         ;;
 esac
