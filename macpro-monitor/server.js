@@ -520,6 +520,10 @@ const server = http.createServer((req, res) => {
             clientHits.count = 0;
             clientHits.windowStart = now;
         }
+        if (rateLimitMap.size >= RATE_LIMIT_MAX_ENTRIES) {
+            const entries = [...rateLimitMap.entries()].sort((a, b) => a[1].windowStart - b[1].windowStart);
+            rateLimitMap.delete(entries[0][0]);
+        }
         clientHits.count++;
         rateLimitMap.set(clientIP, clientHits);
         if (clientHits.count > RATE_LIMIT_MAX_REQUESTS) {
@@ -607,7 +611,7 @@ setInterval(() => {
 server.listen(PORT, HOST, () => {
     const ips = getIPs();
     console.log('\n+============================================+');
-    console.log('|  Mac Pro Installation Monitor               |');
+    console.log('|        Mac Pro Installation Monitor        |');
     console.log('+============================================+\n');
     console.log('Server running!\n');
     console.log('Dashboard:\n');
