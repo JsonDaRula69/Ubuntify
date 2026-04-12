@@ -98,26 +98,29 @@ autoinstall:
 
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":10,"stage":"prep-toolchain","status":"installing","message":"Installing build toolchain (gcc, make, binutils)"}' > /dev/null 2>&1 || true
       echo "[early] Installing build toolchain..." >> "$LOG"
-      dpkg --force-depends -i $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
+      dpkg --force-depends --skip-same-version -i $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
               $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
               $PKGS/libsframe1_*.deb $PKGS/libgprofng0_*.deb \
               $PKGS/binutils_*.deb $PKGS/binutils-x86-64-linux-gnu_*.deb \
               $PKGS/libgcc-s1_*.deb $PKGS/gcc-13-base_*.deb \
               $PKGS/libisl23_*.deb $PKGS/libmpc3_*.deb $PKGS/libmpfr6_*.deb \
-              $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb $PKGS/gcc-13_*.deb \
+              $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb \
+              $PKGS/gcc-13-x86-64-linux-gnu_*.deb $PKGS/gcc-13_*.deb \
               $PKGS/libstdc++6_*.deb $PKGS/libstdc++-13-dev_*.deb \
               $PKGS/libc-dev-bin_*.deb $PKGS/libc6-dev_*.deb \
               $PKGS/libc-devtools_*.deb $PKGS/libcrypt-dev_*.deb \
               $PKGS/rpcsvc-proto_*.deb \
               $PKGS/make_*.deb $PKGS/build-essential_*.deb \
-              $PKGS/perl-base_*.deb \
               $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
-              $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb \
               $PKGS/patch_*.deb 2>>"$LOG" || { echo "[early] FATAL: build toolchain failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":10,"stage":"prep-toolchain","status":"failed","message":"FATAL: build toolchain install failed"}' > /dev/null 2>&1 || true; exit 1; }
+      ln -sf /usr/bin/x86_64-linux-gnu-gcc-13 /usr/bin/cc 2>/dev/null || true
 
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":13,"stage":"prep-dkms","status":"installing","message":"Installing DKMS and Broadcom driver source"}' > /dev/null 2>&1 || true
       echo "[early] Installing DKMS and Broadcom driver source..." >> "$LOG"
-      dpkg --force-depends -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || { echo "[early] FATAL: dkms/broadcom install failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":13,"stage":"prep-dkms","status":"failed","message":"FATAL: DKMS and Broadcom driver package install failed"}' > /dev/null 2>&1 || true; exit 1; }
+      # broadcom-sta-dkms postinst auto-runs 'dkms add' which may try to build
+      # without patches, returning non-zero. This is expected — we apply patches
+      # after dpkg and build manually. So || true here, not fatal.
+      dpkg --force-depends -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || echo "[early] WARN: dkms/broadcom dpkg returned non-zero (expected if postinst dkms build fails before patches)" >> "$LOG"
       # dkms add is handled by dpkg postinst (creates symlink /var/lib/dkms/.../source -> /usr/src/...)
       # Patches modify /usr/src/... which is visible through the symlink for dkms build
       # Apply DKMS patches for kernel 6.8+ compatibility from ISO
@@ -155,8 +158,8 @@ autoinstall:
 
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":15,"stage":"prep-build","status":"building","message":"Compiling wl driver via DKMS"}' > /dev/null 2>&1 || true
       echo "[early] Building wl driver via DKMS..." >> "$LOG"
+      ln -sf /usr/bin/x86_64-linux-gnu-gcc-13 /usr/bin/cc 2>/dev/null || ln -sf /usr/bin/gcc-13 /usr/bin/cc 2>/dev/null || true
       if ! dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
-        echo "[early] WARN: dkms build failed, retrying after clean..." >> "$LOG"
         dkms remove broadcom-sta/6.30.223.271 -k "$KVER" 2>/dev/null || true
         sleep 2
         if ! dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
@@ -423,13 +426,13 @@ autoinstall:
       fi
       # Stage 1: Kernel headers (no deps)
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":35,"stage":"late-headers","status":"installing","message":"Stage 1/4: Installing kernel headers into target"}' > /dev/null 2>&1 || true
-      dpkg --root /target --force-depends -i \
+      dpkg --root /target --force-depends --skip-same-version -i \
         $PKGS/linux-headers-${ABI_VER}_*.deb \
         $PKGS/linux-headers-${KVER}_*.deb \
         $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 1 (headers) failed — cannot proceed without kernel headers" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":35,"stage":"late-headers","status":"failed","message":"FATAL: Stage 1 kernel headers install failed"}' > /dev/null 2>&1 || true; exit 1; }
       # Stage 2: Base libraries first, then binaries that depend on them
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":45,"stage":"late-libs","status":"installing","message":"Stage 2/4: Installing base libraries into target"}' > /dev/null 2>&1 || true
-      dpkg --root /target --force-depends -i \
+      dpkg --root /target --force-depends --skip-same-version -i \
         $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
         $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
         $PKGS/libsframe1_*.deb $PKGS/libgprofng0_*.deb \
@@ -440,18 +443,20 @@ autoinstall:
         $PKGS/libc6-dev_*.deb $PKGS/rpcsvc-proto_*.deb \
         $PKGS/libc-devtools_*.deb \
         $PKGS/binutils_*.deb $PKGS/binutils-x86-64-linux-gnu_*.deb \
-        $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb $PKGS/gcc-13_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 2 (libs) failed — cannot proceed without base libraries" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":45,"stage":"late-libs","status":"failed","message":"FATAL: Stage 2 base libraries install failed"}' > /dev/null 2>&1 || true; exit 1; }
+        $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb \
+        $PKGS/gcc-13-x86-64-linux-gnu_*.deb $PKGS/gcc-13_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 2 (libs) failed — cannot proceed without base libraries" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":45,"stage":"late-libs","status":"failed","message":"FATAL: Stage 2 base libraries install failed"}' > /dev/null 2>&1 || true; exit 1; }
       # Stage 3: Build tools (depend on stage 2)
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":55,"stage":"late-tools","status":"installing","message":"Stage 3/4: Installing build tools into target"}' > /dev/null 2>&1 || true
-      dpkg --root /target --force-depends -i \
+      dpkg --root /target --force-depends --skip-same-version -i \
         $PKGS/make_*.deb $PKGS/build-essential_*.deb \
-        $PKGS/perl-base_*.deb \
-        $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb \
         $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
         $PKGS/patch_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 3 (tools) failed — cannot proceed without build tools" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":55,"stage":"late-tools","status":"failed","message":"FATAL: Stage 3 build tools install failed"}' > /dev/null 2>&1 || true; exit 1; }
       # Stage 4: DKMS and driver (depend on stage 3)
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":60,"stage":"late-dkms","status":"building","message":"Stage 4/4: Installing DKMS and compiling WiFi driver for target"}' > /dev/null 2>&1 || true
-      dpkg --root /target --force-depends -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 4 (dkms/broadcom dpkg) failed" >> "$LOG"; curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":60,"stage":"late-dkms","status":"failed","message":"FATAL: DKMS package install failed"}' > /dev/null 2>&1 || true; exit 1; }
+      # broadcom-sta-dkms postinst auto-runs 'dkms add' which may try to build
+      # without patches, returning non-zero. This is expected — we apply patches
+      # after dpkg and build manually. So non-fatal here.
+      dpkg --root /target --force-depends -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || echo "[late] WARN: dkms/broadcom dpkg returned non-zero (expected if postinst dkms build fails before patches)" >> "$LOG"
       # dkms add is handled by dpkg postinst (creates symlink in /var/lib/dkms/)
       # Apply DKMS patches for kernel 6.8+ compatibility (before dkms build, after dkms add)
       if [ -d "$PKGS/dkms-patches" ]; then
@@ -487,6 +492,7 @@ autoinstall:
       mount --bind /sys /target/sys 2>>"$LOG" || { echo "[late] FATAL: mount /sys failed" >> "$LOG"; umount /target/proc 2>/dev/null || true; exit 1; }
       mount --bind /dev /target/dev 2>>"$LOG" || { echo "[late] FATAL: mount /dev failed" >> "$LOG"; umount /target/sys /target/proc 2>/dev/null || true; exit 1; }
       # dkms add handled by dpkg postinst; patches applied above before bind mounts
+      chroot /target ln -sf /usr/bin/x86_64-linux-gnu-gcc-13 /usr/bin/cc 2>/dev/null || chroot /target ln -sf /usr/bin/gcc-13 /usr/bin/cc 2>/dev/null || true
       if ! chroot /target dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
         echo "[late] WARN: dkms build failed in target, retrying after clean..." >> "$LOG"
         chroot /target dkms remove broadcom-sta/6.30.223.271 -k "$KVER" 2>/dev/null || true
