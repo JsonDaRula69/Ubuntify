@@ -287,7 +287,7 @@ cp "$ISO_MOUNT/cidata/"* "$ESP_MOUNT/cidata/" 2>/dev/null || true
 log "Generating dual-boot storage config..."
 
 python3 - "$SCRIPT_DIR/autoinstall.yaml" "$ESP_MOUNT/cidata/user-data" "$INTERNAL_DISK" << 'PYEOF'
-import sys, subprocess, re
+import sys, subprocess, re, os
 
 template_path = sys.argv[1]
 output_path = sys.argv[2]
@@ -329,7 +329,7 @@ for line in part_lines:
 
         part_type_guid = ''
         part_uuid = ''
-        offset_bytes = 0
+        offset_bytes = None
         size_bytes = 0
 
         for info_line in info_text.split('\n'):
@@ -340,30 +340,34 @@ for line in part_lines:
             elif 'Partition unique GUID:' in info_line or 'Partition GUID:' in info_line:
                 guid_match = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', info_line)
                 if guid_match:
-                    part_uuid = guid_match.group(1)
+                    part_uuid = guid_match.group(1).lower()
             elif 'First sector:' in info_line:
                 sector_match = re.search(r'(\d+)', info_line.split(':')[-1])
                 if sector_match:
                     offset_bytes = int(sector_match.group(1)) * 512
 
-        # Determine partition path
-        # sgdisk -p shows partition paths for the specified disk device
-        # e.g., /dev/disk0 -> /dev/disk0s1, /dev/disk1 -> /dev/disk1s1
-        disk_name=$(basename "$disk_dev")
-        part_path = f"/dev/{disk_name}s{part_num}"
+        if offset_bytes is None:
+            print(f"WARNING: Could not parse First sector for partition {part_num}, skipping preserve", file=sys.stderr)
+            continue
+
+        # Determine partition path for Linux (autoinstall sees /dev/sda, not macOS /dev/disk0)
+        part_path = f"/dev/sda{part_num}"
 
         # Get size in bytes from sgdisk sector info (macOS has no blockdev)
         # We already parsed First sector above; also parse Last sector
-        last_sector = offset_bytes // 512  # offset_bytes = first_sector * 512 from above
+        last_sector = None
         for info_line in info_text.split('\n'):
             if 'Last sector:' in info_line:
                 sector_match = re.search(r'(\d+)', info_line.split(':')[-1])
                 if sector_match:
                     last_sector = int(sector_match.group(1))
                     break
+        if last_sector is None:
+            print(f"WARNING: Could not parse Last sector for partition {part_num}, skipping preserve", file=sys.stderr)
+            continue
         size_bytes = (last_sector - (offset_bytes // 512) + 1) * 512
 
-        if size_bytes == 0:
+        if size_bytes < 1048576:
             continue
 
         preserved_yaml += f"""    - device: root-disk
@@ -405,7 +409,7 @@ new_storage = f"""  storage:
       device: root-disk
       size: 512M
       flag: boot
-      partition_type: C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+      partition_type: c12a7328-f81f-11d2-ba4b-00a0c93ec93b
       grub_device: true
       number: {next_num}
     - type: format

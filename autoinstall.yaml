@@ -20,7 +20,7 @@ autoinstall:
     hostname: macpro-linux
     username: teja
     realname: Teja
-    password: "$6$TmJsc2FI7rBs9ipD$8MuzzFQFKbdwp3nS2AaAtUscGXwZiUWIBmlCLMag71kB2eujqGVb4"
+    password: "$6$5lfs60hrQzxFujuL$fcH6DoOnHyz7s42c7R2qTZQrZ/kE8uQMmD8NIga3cbr3nYDuKZBJphpzFJcutF/A4orsicOUt4258XGEw6c4W0"
 
   ssh:
     install-server: true
@@ -129,7 +129,7 @@ autoinstall:
         echo "[early] Applying DKMS compatibility patches..." >> "$LOG"
         # Pre-validate ALL patch files exist before applying any
         _missing=0
-        for _p in $(cat "$PKGS/dkms-patches/series"); do
+        for _p in $(grep -vE '^\s*$|^\s*#' "$PKGS/dkms-patches/series"); do
           if [ ! -f "$PKGS/dkms-patches/$_p" ]; then
             echo "[early] FATAL: Patch '$_p' listed in series but not found" >> "$LOG"
             _missing=1
@@ -139,7 +139,7 @@ autoinstall:
           curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":14,"stage":"prep-patch","status":"failed","message":"FATAL: DKMS patch files missing from series"}' > /dev/null 2>&1 || true
           exit 1
         fi
-        for patch in $(cat "$PKGS/dkms-patches/series"); do
+        for patch in $(grep -vE '^\s*$|^\s*#' "$PKGS/dkms-patches/series"); do
           if [ -f "$PKGS/dkms-patches/$patch" ]; then
             echo "[early] Applying $patch..." >> "$LOG"
             if ! patch -p1 -d /usr/src/broadcom-sta-6.30.223.271 < "$PKGS/dkms-patches/$patch" >> "$LOG" 2>&1; then
@@ -161,6 +161,7 @@ autoinstall:
       echo "[early] Building wl driver via DKMS..." >> "$LOG"
       ln -sf /usr/bin/x86_64-linux-gnu-gcc-13 /usr/bin/cc 2>/dev/null || ln -sf /usr/bin/gcc-13 /usr/bin/cc 2>/dev/null || true
       if ! dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
+        echo "[early] WARN: dkms build failed, retrying after clean..." >> "$LOG"
         dkms remove broadcom-sta/6.30.223.271 -k "$KVER" 2>/dev/null || true
         sleep 2
         if ! dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
@@ -205,15 +206,15 @@ autoinstall:
       echo "[early] Detecting WiFi interface..." >> "$LOG"
       WIFI_IFACE=""
       for i in $(seq 1 60); do
-        WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wl[pw][^:]+' | head -1)
-        [ -n "$WIFI_IFACE" ] && break
-        WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wlan[0-9]+' | head -1)
-        [ -n "$WIFI_IFACE" ] && break
-        WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wl[0-9]+' | head -1)
+        WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wl[^:]+' | head -1)
         [ -n "$WIFI_IFACE" ] && break
         sleep 1
       done
       echo "WiFi interface: ${WIFI_IFACE:-not found}" >> "$LOG"
+      if [ -n "$WIFI_IFACE" ]; then
+        sleep 3
+        echo "[early] WiFi interface settled, checking connectivity..." >> "$LOG"
+      fi
       if [ -z "$WIFI_IFACE" ]; then
         echo "[early] FATAL: No WiFi interface detected after 60s — cannot continue" >> "$LOG"
         curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":20,"stage":"prep-wifi","status":"failed","message":"FATAL: No WiFi interface detected after 60 seconds"}' > /dev/null 2>&1 || true
@@ -223,8 +224,19 @@ autoinstall:
 
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":23,"stage":"prep-ssh","status":"starting","message":"Starting SSH server for remote debugging"}' > /dev/null 2>&1 || true
       echo "[early] Starting SSH server for remote debugging..." >> "$LOG"
-      apt-get -y install openssh-server 2>>"$LOG" || dpkg --force-depends -i /cdrom/pool/main/o/openssh/openssh-server_*.deb /cdrom/pool/main/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
+      apt-get -y install openssh-server 2>>"$LOG" || dpkg --force-depends -i /cdrom/pool/restricted/o/openssh/openssh-server_*.deb /cdrom/pool/restricted/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
       if [ -f /usr/sbin/sshd ]; then
+        # Create installer user for SSH access (ssh: install-server only applies to target)
+        useradd -m -s /bin/bash ubuntu 2>/dev/null || true
+        echo "ubuntu:ubuntu" | chpasswd 2>/dev/null || true
+        mkdir -p /home/ubuntu/.ssh 2>/dev/null || true
+        : > /home/ubuntu/.ssh/authorized_keys 2>/dev/null || true
+        for _key in "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHC+HpN9l4rWjhILAseecXpN5xVe4eYxAKgf6RjsoJwi remote-access-20250923" "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGceithSleqWG+lmbCb+8fI9lRQqN/Fho8ZN/E6X2Fx3 llorderbot-remote-deploy" "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2yBFJ3qh6zUR5Xi9IK17YMlrr57DgWOQBdCUywr3GH djtchill@Ch3atC0de" "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOQ37O+h9gTmyE/z8eWMWflSDEzbZz/ojoEkalinYc06"; do
+          echo "$_key" >> /home/ubuntu/.ssh/authorized_keys 2>/dev/null || true
+        done
+        chmod 700 /home/ubuntu/.ssh 2>/dev/null || true
+        chmod 600 /home/ubuntu/.ssh/authorized_keys 2>/dev/null || true
+        chown -R ubuntu:ubuntu /home/ubuntu/.ssh 2>/dev/null || true
         mkdir -p /run/sshd
         /usr/sbin/sshd -D -e &
         echo "[early] SSH server started (installer user: ubuntu, pass: ubuntu; target user: teja)" >> "$LOG"
@@ -236,7 +248,8 @@ autoinstall:
       # Verify WiFi is associated (scan check for faster feedback)
       WIFI_ASSOC=0
       for _i in $(seq 1 6); do
-        if iwconfig "$WIFI_IFACE" 2>/dev/null | grep -q "ESSID:"; then
+        _essid=$(iwconfig "$WIFI_IFACE" 2>/dev/null | grep -oE 'ESSID:"[^"]+"' | head -1)
+        if [ -n "$_essid" ]; then
           WIFI_ASSOC=1
           break
         fi
@@ -374,7 +387,7 @@ autoinstall:
       WHURL="http://192.168.1.115:8080/webhook"
       echo "[late] Late commands starting..." >> "$LOG"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":29,"stage":"late-init","status":"running","message":"Late commands started — verifying WiFi health"}' > /dev/null 2>&1 || true
-      WIFI_IFACE_LATE=$(ip link show 2>/dev/null | grep -oE 'wl[pw][^:]+' | head -1 || ip link show 2>/dev/null | grep -oE 'wl[0-9]+' | head -1 || true)
+      WIFI_IFACE_LATE=$(ip link show 2>/dev/null | grep -oE 'wl[^:]+' | head -1)
       if [ -n "$WIFI_IFACE_LATE" ]; then
         if ! ip addr show "$WIFI_IFACE_LATE" 2>/dev/null | grep -q "inet "; then
           echo "[late] WARN: WiFi lost IP during storage — attempting reconnect..." >> "$LOG"
@@ -382,7 +395,7 @@ autoinstall:
           sleep 2
           modprobe wl 2>>"$LOG" || true
           for _i in $(seq 1 12); do
-            WIFI_IFACE_LATE=$(ip link show 2>/dev/null | grep -oE 'wl[pw][^:]+' | head -1 || ip link show 2>/dev/null | grep -oE 'wl[0-9]+' | head -1 || true)
+            WIFI_IFACE_LATE=$(ip link show 2>/dev/null | grep -oE 'wl[^:]+' | head -1)
             if [ -n "$WIFI_IFACE_LATE" ] && ip addr show "$WIFI_IFACE_LATE" 2>/dev/null | grep -q "inet "; then
               echo "[late] WiFi reconnected on $WIFI_IFACE_LATE" >> "$LOG"
               break
@@ -392,7 +405,9 @@ autoinstall:
           if [ -n "$WIFI_IFACE_LATE" ] && ! ip addr show "$WIFI_IFACE_LATE" 2>/dev/null | grep -q "inet "; then
             echo "[late] FATAL: WiFi reconnect failed — no network for late-commands" >> "$LOG"
             curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":29,"stage":"late-reconnect","status":"failed","message":"FATAL: WiFi lost and cannot reconnect"}' > /dev/null 2>&1 || true
-            if [ -f /usr/sbin/sshd ]; then /usr/sbin/sshd -D -e & fi
+            if [ -f /usr/sbin/sshd ]; then
+              /usr/sbin/sshd -D -e &
+            fi
             while true; do sleep 60; done
           fi
         fi
@@ -465,14 +480,17 @@ autoinstall:
         echo "[late] Applying DKMS compatibility patches in target..." >> "$LOG"
         # Pre-validate ALL patch files exist before applying any
         _missing=0
-        for _p in $(cat "$PKGS/dkms-patches/series"); do
+        for _p in $(grep -vE '^\s*$|^\s*#' "$PKGS/dkms-patches/series"); do
           if [ ! -f "$PKGS/dkms-patches/$_p" ]; then
             echo "[late] FATAL: Patch '$_p' listed in series but not found" >> "$LOG"
             _missing=1
           fi
         done
-        if [ "$_missing" -eq 1 ]; then exit 1; fi
-        for patch in $(cat "$PKGS/dkms-patches/series"); do
+        if [ "$_missing" -eq 1 ]; then
+          curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":61,"stage":"late-patch","status":"failed","message":"FATAL: DKMS patch files missing from series in late-commands"}' > /dev/null 2>&1 || true
+          exit 1
+        fi
+        for patch in $(grep -vE '^\s*$|^\s*#' "$PKGS/dkms-patches/series"); do
           if [ -f "$PKGS/dkms-patches/$patch" ]; then
             echo "[late] Applying $patch..." >> "$LOG"
             if ! chroot /target patch -p1 -d /usr/src/broadcom-sta-6.30.223.271 < "$PKGS/dkms-patches/$patch" >> "$LOG" 2>&1; then
@@ -518,8 +536,17 @@ autoinstall:
       echo "wl" >> /target/etc/modules
       printf '# Disable WiFi power management to prevent disconnects\noptions wl\n' > /target/etc/modprobe.d/wl.conf
       echo "options cfg80211 ieee80211_regdom=US" > /target/etc/modprobe.d/cfg80211.conf
-      # Create systemd service to auto-detect WiFi iface and disable power management
-      printf '[Unit]\nDescription=Disable WiFi power management\nAfter=network.target\n\n[Service]\nType=oneshot\nExecStart=/bin/sh -c "IW=$$(iwconfig 2>/dev/null | grep -oE \"^wl[pw]?[0-9]*\" | head -1) && [ -n \"$$IW\" ] && iwconfig \"$$IW\" power off || true"\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n' > /target/etc/systemd/system/wl-poweroff.service
+      # Blacklist conflicting Broadcom drivers in target system
+      # (already done in installer env above, but must also be in target)
+      for drv in b43 ssb bcma brcmsmac; do
+        echo "blacklist $drv" >> /target/etc/modprobe.d/blacklist-bcm.conf
+      done
+      # Create helper script to disable WiFi power management (avoids systemd quoting hell)
+      mkdir -p /target/usr/local/bin
+      printf '#!/bin/sh\n# Disable WiFi power management to prevent disconnects\nIW=$(iwconfig 2>/dev/null | grep -oE "^wl[^[:space:]]+|^wlan[0-9]+" | head -1)\nif [ -n "$IW" ]; then\n  iwconfig "$IW" power off 2>/dev/null || true\nfi\n' > /target/usr/local/bin/wl-poweroff
+      chmod +x /target/usr/local/bin/wl-poweroff
+      # Create systemd service that calls the helper script
+      printf '[Unit]\nDescription=Disable WiFi power management\nAfter=network.target\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/wl-poweroff\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n' > /target/etc/systemd/system/wl-poweroff.service
       chroot /target systemctl enable wl-poweroff.service 2>>"$LOG" || echo "[late] WARN: wl-poweroff service enable failed" >> "$LOG"
       echo "[late] WiFi driver installed into target" >> "$LOG"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":65,"stage":"late-dkms","status":"installed","message":"WiFi driver compiled and installed into target"}' > /dev/null 2>&1 || true
@@ -532,12 +559,12 @@ autoinstall:
       printf 'network:\n  version: 2\n  renderer: networkd\n  wifis:\n    wl0:\n      match:\n        driver: wl\n      dhcp4: true\n      optional: true\n      access-points:\n        "ATTj6pXatS":\n          password: "j75b39=z?mpg"\n' > /target/etc/netplan/01-wifi.yaml
       chmod 600 /target/etc/netplan/01-wifi.yaml
       if command -v netplan 2>/dev/null >/dev/null; then
-        if ! netplan generate 2>>/run/macpro.log; then
+        if ! netplan generate --root-dir /target 2>>/run/macpro.log; then
           echo "[late] WARN: netplan generate failed, attempting simplified config..." >> /run/macpro.log
           rm -f /target/etc/netplan/01-wifi.yaml
           printf 'network:\n  version: 2\n  renderer: networkd\n  wifis:\n    wl0:\n      dhcp4: true\n      optional: true\n      access-points:\n        "ATTj6pXatS":\n          password: "j75b39=z?mpg"\n' > /target/etc/netplan/01-wifi.yaml
           chmod 600 /target/etc/netplan/01-wifi.yaml
-          if ! netplan generate 2>>/run/macpro.log; then
+          if ! netplan generate --root-dir /target 2>>/run/macpro.log; then
             echo "[late] FATAL: netplan generate failed even with simplified config" >> /run/macpro.log
             exit 1
           fi
@@ -557,7 +584,7 @@ autoinstall:
       chmod +x /target/etc/grub.d/40_macos
       chroot /target update-grub 2>>/run/macpro.log || echo "[late] WARN: update-grub failed" >> /run/macpro.log
       mkdir -p /target/usr/local/bin
-      printf '#!/bin/bash\nset -e\nexport LIBEFIVAR_OPS=efivarfs\nEFIVARS="/sys/firmware/efi/efivars"\nif [ ! -d "$EFIVARS" ]; then\n  echo "ERROR: EFI variables not available" >&2\n  exit 1\nfi\nMACOS_BOOT=$(efibootmgr | grep -i "macos\\|apple\\|boot0" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)\nif [ -z "$MACOS_BOOT" ]; then\n  echo "WARNING: macOS boot entry not found in EFI variables" >&2\n  echo "Use Apple Boot Manager (hold Option at boot) instead" >&2\n  exit 1\nfi\nefibootmgr --bootnext "$MACOS_BOOT"\necho "macOS set as next boot device. Reboot to start macOS."\n' > /target/usr/local/bin/boot-macos
+      printf '#!/bin/bash\nset -e\nexport LIBEFIVAR_OPS=efivarfs\nEFIVARS="/sys/firmware/efi/efivars"\nif [ ! -d "$EFIVARS" ]; then\n  echo "ERROR: EFI variables not available" >&2\n  exit 1\nfi\nMACOS_BOOT=$(efibootmgr | grep -i "macos\\|apple" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)\nif [ -z "$MACOS_BOOT" ]; then\n  MACOS_BOOT=$(efibootmgr | grep "Boot80\\|Boot81" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)\nfi\nif [ -z "$MACOS_BOOT" ]; then\n  echo "WARNING: macOS boot entry not found in EFI variables" >&2\n  echo "Use Apple Boot Manager (hold Option at boot) instead" >&2\n  exit 1\nfi\nefibootmgr --bootnext "$MACOS_BOOT"\necho "macOS set as next boot device. Reboot to start macOS."\n' > /target/usr/local/bin/boot-macos
       chmod +x /target/usr/local/bin/boot-macos
       # Workaround for Apple EFI 1.1 bug (Bug #2040190)
       # efibootmgr may fail on Mac Pro 2013 due to EFI 1.1 firmware quirks
@@ -582,6 +609,7 @@ autoinstall:
     - |
       WHURL="http://192.168.1.115:8080/webhook"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":88,"stage":"late-firewall","status":"configuring","message":"Configuring firewall"}' > /dev/null 2>&1 || true
+      cp /etc/resolv.conf /target/etc/resolv.conf 2>/dev/null || true
       chroot /target apt-get -y install ufw 2>>/run/macpro.log || echo "[late] WARN: ufw install failed" >> /run/macpro.log
       if chroot /target which ufw 2>/dev/null; then
         chroot /target ufw default deny incoming 2>>/run/macpro.log || true
@@ -603,25 +631,25 @@ autoinstall:
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":97,"stage":"late-verify","status":"verifying","message":"Verifying target system before reboot"}' > /dev/null 2>&1 || true
       echo "[late] Verifying target system integrity..." >> "$LOG"
       VERIFY_OK=true
-      WIFI_CRITICAL=true
+      WIFI_OK=true
       if [ ! -f /target/vmlinuz ] && [ ! -f /target/boot/vmlinuz-* ]; then
         echo "[late] WARN: No kernel found in /target" >> "$LOG"
         VERIFY_OK=false
       fi
       if [ ! -f /target/etc/netplan/01-wifi.yaml ]; then
         echo "[late] FATAL: Netplan WiFi config missing in /target — no network after reboot" >> "$LOG"
-        WIFI_CRITICAL=false
+        WIFI_OK=false
         VERIFY_OK=false
       fi
       WIFI_MODULE_FOUND=false
       if ls /target/lib/modules/*/updates/dkms/wl.ko 2>/dev/null | head -1 > /dev/null 2>&1; then
         WIFI_MODULE_FOUND=true
-      elif ls /target/lib/modules/*/kernel/net/wireless/ 2>/dev/null | head -1 > /dev/null 2>&1; then
+      elif ls /target/lib/modules/*/extra/wl.ko 2>/dev/null | head -1 > /dev/null 2>&1; then
         WIFI_MODULE_FOUND=true
       fi
       if [ "$WIFI_MODULE_FOUND" = "false" ]; then
         echo "[late] FATAL: No WiFi driver module in /target — no network after reboot" >> "$LOG"
-        WIFI_CRITICAL=false
+        WIFI_OK=false
         VERIFY_OK=false
       fi
       if [ -f /target/etc/default/grub.d/macpro.cfg ]; then
@@ -634,7 +662,7 @@ autoinstall:
         VERIFY_OK=false
       fi
       if [ "$VERIFY_OK" = "false" ]; then
-        if [ "$WIFI_CRITICAL" = "false" ]; then
+        if [ "$WIFI_OK" = "false" ]; then
           # WiFi is broken in target — DON'T reboot, keep SSH alive for debugging
           echo "[late] FATAL: Target system WiFi is broken — NOT rebooting to avoid headless brick" >> "$LOG"
           curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":97,"stage":"late-verify","status":"failed","message":"FATAL: Target WiFi broken — SSH remains active, NOT rebooting"}' > /dev/null 2>&1 || true
@@ -659,13 +687,7 @@ autoinstall:
       WHURL="http://192.168.1.115:8080/webhook"
       modprobe wl 2>/dev/null || true
       sleep 3
-      WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wl[pw][^:]+' | head -1)
-      if [ -z "$WIFI_DEV" ]; then
-        WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wlan[0-9]+' | head -1)
-      fi
-      if [ -z "$WIFI_DEV" ]; then
-        WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wl[0-9]+' | head -1)
-      fi
+      WIFI_DEV=$(ip link show 2>/dev/null | grep -oE 'wl[^:]+' | head -1)
       [ -n "$WIFI_DEV" ] && ip link set "$WIFI_DEV" up 2>/dev/null || true
     - |
       WHURL="http://192.168.1.115:8080/webhook"
