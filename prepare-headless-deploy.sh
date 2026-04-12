@@ -115,11 +115,22 @@ log "Internal disk: $INTERNAL_DISK"
 diskutil list "$INTERNAL_DISK"
 echo ""
 
-# Check APFS container and free space
-APFS_CONTAINER=$(diskutil apfs list | grep -A2 "Container.*${INTERNAL_DISK}" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+# Find APFS container — the partition table shows "Container diskN" but
+# diskutil apfs list references containers by their container disk (e.g. disk1),
+# not the physical disk (e.g. disk0). We need the container disk reference.
+APFS_PARTITION=$(diskutil list "$INTERNAL_DISK" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+if [ -n "$APFS_PARTITION" ]; then
+    # Extract the container reference from diskutil info (e.g. "Container Identifier: disk1")
+    APFS_CONTAINER=$(diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head -1 || true)
+fi
+# Fallback: find the APFS container disk via diskutil list
+if [ -z "$APFS_CONTAINER" ]; then
+    APFS_CONTAINER=$(diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head -1 || true)
+fi
 if [ -n "$APFS_CONTAINER" ]; then
     APFS_INFO=$(diskutil apfs list 2>/dev/null)
     FREE_SPACE=$(echo "$APFS_INFO" | grep -A5 "Capacity" | grep "Available" | grep -oE '[0-9]+.*B' | head -1 || true)
+    log "APFS partition: /dev/${APFS_PARTITION:-unknown}"
     log "APFS container: /dev/$APFS_CONTAINER"
     log "Free space: ${FREE_SPACE:-unknown}"
 fi
