@@ -1,0 +1,437 @@
+autoinstall:
+  version: 1
+
+  refresh-installer:
+    update: no
+
+  kernel:
+    package: linux-image-6.8.0-100-generic
+
+  timezone: America/Los_Angeles
+
+  apt:
+    preserve_sources_list: true
+    preferences:
+      - package: "linux-image-6.8.0-100*"
+        pin: "release o=Ubuntu"
+        pin-priority: 1001
+
+  identity:
+    hostname: vmtest
+    username: teja
+    realname: Teja
+    password: "$6$TmJsc2FI7rBs9ipD$8MuzzFQFKbdwp3nS2AaAtUscGXwZiUWIBmlCLMag71kB2eujqGVb4"
+
+  ssh:
+    install-server: true
+    allow-pw: true
+    authorized-keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHC+HpN9l4rWjhILAseecXpN5xVe4eYxAKgf6RjsoJwi remote-access-20250923
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGceithSleqWG+lmbCb+8fI9lRQqN/Fho8ZN/E6X2Fx3 llorderbot-remote-deploy
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2yBFJ3qh6zUR5Xi9IK17YMlrr57DgWOQBdCUywr3GH djtchill@Ch3atC0de
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOQ37O+h9gTmyE/z8eWMWflSDEzbZz/ojoEkalinYc06
+
+  reporting:
+    builtin:
+      type: print
+    macpro-monitor:
+      type: webhook
+      endpoint: "http://10.0.2.2:8080/webhook"
+      level: DEBUG
+
+  early-commands:
+    - |
+      set -x
+      KVER="$(uname -r)"
+      ABI_VER="${KVER%-generic}"
+      # Discover macpro-pkgs mount point
+      PKGS=""
+      for _mp in /cdrom /isodevice /mnt; do
+        if [ -d "$_mp/macpro-pkgs" ]; then
+          PKGS="$_mp/macpro-pkgs"
+          break
+        fi
+      done
+      if [ -z "$PKGS" ]; then
+        echo "[early] FATAL: Cannot find macpro-pkgs on any mount point" >> /run/macpro.log
+        exit 1
+      fi
+      LOG="/run/macpro.log"
+      WHURL="http://10.0.2.2:8080/webhook"
+      echo "=== VM TEST AUTOINSTALL ===" > "$LOG"
+      echo "Kernel: $(uname -r)" >> "$LOG"
+      echo "Packages: $(ls $PKGS/*.deb 2>/dev/null | wc -l) debs" >> "$LOG"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":2,"stage":"prep-init","status":"running","message":"VM test autoinstall started"}' > /dev/null 2>&1 || true
+
+      # Validate kernel headers exist
+      if ! ls $PKGS/linux-headers-${ABI_VER}_*.deb 1>/dev/null 2>&1; then
+        echo "[early] FATAL: No kernel headers for $KVER in $PKGS" >> "$LOG"
+        exit 1
+      fi
+      if [ ! -d "$PKGS/dkms-patches" ] || [ ! -f "$PKGS/dkms-patches/series" ]; then
+        echo "[early] FATAL: DKMS patches missing" >> "$LOG"
+        exit 1
+      fi
+
+      # Install kernel headers
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":5,"stage":"prep-headers","status":"installing","message":"Installing kernel headers"}' > /dev/null 2>&1 || true
+      echo "[early] Installing kernel headers..." >> "$LOG"
+      dpkg --force-depends -i $PKGS/linux-headers-${ABI_VER}_*.deb \
+              $PKGS/linux-headers-${KVER}_*.deb \
+              $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { echo "[early] FATAL: kernel headers failed" >> "$LOG"; exit 1; }
+
+      # Install build toolchain
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":10,"stage":"prep-toolchain","status":"installing","message":"Installing build toolchain"}' > /dev/null 2>&1 || true
+      echo "[early] Installing build toolchain..." >> "$LOG"
+      dpkg --force-depends -i $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
+              $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
+              $PKGS/libsframe1_*.deb $PKGS/libgprofng0_*.deb \
+              $PKGS/binutils_*.deb $PKGS/binutils-x86-64-linux-gnu_*.deb \
+              $PKGS/libgcc-s1_*.deb $PKGS/gcc-13-base_*.deb \
+              $PKGS/libisl23_*.deb $PKGS/libmpfr6_*.deb $PKGS/libmpc3_*.deb \
+              $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb $PKGS/gcc-13_*.deb \
+              $PKGS/libstdc++6_*.deb $PKGS/libstdc++-13-dev_*.deb \
+              $PKGS/libc-dev-bin_*.deb $PKGS/libc6-dev_*.deb \
+              $PKGS/libc-devtools_*.deb $PKGS/libcrypt-dev_*.deb \
+              $PKGS/rpcsvc-proto_*.deb \
+              $PKGS/make_*.deb $PKGS/build-essential_*.deb \
+              $PKGS/perl-base_*.deb \
+              $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
+              $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb \
+              $PKGS/patch_*.deb 2>>"$LOG" || { echo "[early] FATAL: build toolchain failed" >> "$LOG"; exit 1; }
+
+      # Install DKMS and broadcom-sta source
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":13,"stage":"prep-dkms","status":"installing","message":"Installing DKMS and Broadcom driver source"}' > /dev/null 2>&1 || true
+      echo "[early] Installing DKMS and Broadcom driver source..." >> "$LOG"
+      dpkg --force-depends -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || { echo "[early] FATAL: dkms/broadcom install failed" >> "$LOG"; exit 1; }
+
+      # Apply DKMS patches for kernel 6.8+ compatibility
+      if [ -d "$PKGS/dkms-patches" ]; then
+        echo "[early] Applying DKMS compatibility patches..." >> "$LOG"
+        _missing=0
+        for _p in $(cat "$PKGS/dkms-patches/series"); do
+          if [ ! -f "$PKGS/dkms-patches/$_p" ]; then
+            echo "[early] FATAL: Patch '$_p' listed in series but not found" >> "$LOG"
+            _missing=1
+          fi
+        done
+        if [ "$_missing" -eq 1 ]; then exit 1; fi
+        for patch in $(cat "$PKGS/dkms-patches/series"); do
+          if [ -f "$PKGS/dkms-patches/$patch" ]; then
+            echo "[early] Applying $patch..." >> "$LOG"
+            if ! patch -p1 -d /usr/src/broadcom-sta-6.30.223.271 < "$PKGS/dkms-patches/$patch" >> "$LOG" 2>&1; then
+              echo "[early] FATAL: Patch $patch failed to apply" >> "$LOG"
+              exit 1
+            fi
+          else
+            echo "[early] FATAL: Patch file $patch not found" >> "$LOG"
+            exit 1
+          fi
+        done
+      fi
+
+      # BUILD the driver — this tests DKMS compilation (critical test)
+      # In a VM, the wl module won't load (no Broadcom hardware), but
+      # compilation must succeed to validate patches + toolchain
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":15,"stage":"prep-build","status":"building","message":"Compiling wl driver via DKMS (build test)"}' > /dev/null 2>&1 || true
+      echo "[early] Building wl driver via DKMS..." >> "$LOG"
+      if ! dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
+        echo "[early] WARN: dkms build failed, retrying after clean..." >> "$LOG"
+        dkms remove broadcom-sta/6.30.223.271 -k "$KVER" 2>/dev/null || true
+        sleep 2
+        if ! dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
+          echo "[early] FATAL: dkms build failed on retry" >> "$LOG"
+          curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":15,"stage":"prep-build","status":"failed","message":"FATAL: dkms build failed"}' > /dev/null 2>&1 || true
+          exit 1
+        fi
+      fi
+      if ! dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
+        echo "[early] WARN: dkms install failed, retrying..." >> "$LOG"
+        sleep 2
+        if ! dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
+          echo "[early] FATAL: dkms install failed on retry" >> "$LOG"
+          exit 1
+        fi
+      fi
+
+      # Load wl module — NON-FATAL in VM (no Broadcom hardware)
+      modprobe wl 2>>"$LOG" || echo "[early] WARN: modprobe wl failed (expected in VM — no Broadcom hardware)" >> "$LOG"
+      if lsmod | grep -q wl; then
+        echo "[early] wl module loaded (Broadcom hardware present)" >> "$LOG"
+      else
+        echo "[early] WARN: wl module not loaded — VM has no Broadcom hardware, skipping WiFi setup" >> "$LOG"
+      fi
+
+      # WiFi detection — NON-FATAL in VM
+      WIFI_IFACE=""
+      for i in $(seq 1 10); do
+        WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wl[pw][^:]+' | head -1)
+        [ -n "$WIFI_IFACE" ] && break
+        WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wlan[0-9]+' | head -1)
+        [ -n "$WIFI_IFACE" ] && break
+        WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wl[0-9]+' | head -1)
+        [ -n "$WIFI_IFACE" ] && break
+        sleep 1
+      done
+      if [ -n "$WIFI_IFACE" ]; then
+        echo "[early] WiFi interface detected: $WIFI_IFACE" >> "$LOG"
+      else
+        echo "[early] WARN: No WiFi interface — VM test mode, using Ethernet" >> "$LOG"
+      fi
+
+      # Start SSH server (always needed for debugging)
+      apt-get -y install openssh-server 2>>"$LOG" || dpkg --force-depends -i /cdrom/pool/restricted/o/openssh/openssh-server_*.deb /cdrom/pool/restricted/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
+      if [ -f /usr/sbin/sshd ]; then
+        mkdir -p /run/sshd
+        /usr/sbin/sshd -D -e &
+        echo "[early] SSH server started (user: ubuntu, pass: ubuntu)" >> "$LOG"
+      fi
+
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":28,"stage":"prep-netcheck","status":"verified","message":"VM test setup complete"}' > /dev/null 2>&1 || true
+      set +x
+
+  network:
+    version: 2
+    renderer: networkd
+    ethernets:
+      enp0s3:
+        dhcp4: true
+
+  packages:
+    - openssh-server
+    - curl
+    - efibootmgr
+
+  storage:
+    config:
+      - type: disk
+        id: root-disk
+        path: /dev/sda
+        ptable: gpt
+        wipe: superblock
+      - type: partition
+        id: efi-partition
+        device: root-disk
+        size: 512M
+        flag: boot
+        partition_type: C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+        grub_device: true
+      - type: format
+        id: efi-format
+        volume: efi-partition
+        fstype: fat32
+      - type: mount
+        id: efi-mount
+        device: efi-format
+        path: /boot/efi
+      - type: partition
+        id: boot-partition
+        device: root-disk
+        size: 1G
+      - type: format
+        id: boot-format
+        volume: boot-partition
+        fstype: ext4
+      - type: mount
+        id: boot-mount
+        device: boot-format
+        path: /boot
+      - type: partition
+        id: root-partition
+        device: root-disk
+        size: -1
+      - type: format
+        id: root-format
+        volume: root-partition
+        fstype: ext4
+      - type: mount
+        id: root-mount
+        device: root-format
+        path: /
+
+  late-commands:
+    - |
+      KVER="$(uname -r)"
+      ABI_VER="${KVER%-generic}"
+      LOG="/run/macpro.log"
+      WHURL="http://10.0.2.2:8080/webhook"
+      echo "[late] Late commands starting..." >> "$LOG"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":29,"stage":"late-init","status":"running","message":"VM late commands started"}' > /dev/null 2>&1 || true
+      # Discover macpro-pkgs mount point
+      PKGS=""
+      for _mp in /cdrom /isodevice /mnt /target/cdrom; do
+        if [ -d "$_mp/macpro-pkgs" ]; then
+          PKGS="$_mp/macpro-pkgs"
+          break
+        fi
+      done
+      if [ -z "$PKGS" ]; then
+        echo "[late] FATAL: Cannot find macpro-pkgs" >> "$LOG"
+        exit 1
+      fi
+      echo "[late] Installing WiFi driver into target system (DKMS build test)..." >> "$LOG"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":30,"stage":"late-init","status":"running","message":"Installing kernel headers into target"}' > /dev/null 2>&1 || true
+      if ! ls $PKGS/linux-headers-${ABI_VER}_*.deb 1>/dev/null 2>&1; then
+        echo "[late] FATAL: No kernel headers for $KVER" >> "$LOG"
+        exit 1
+      fi
+      if [ ! -d "$PKGS/dkms-patches" ] || [ ! -f "$PKGS/dkms-patches/series" ]; then
+        echo "[late] FATAL: DKMS patches missing" >> "$LOG"
+        exit 1
+      fi
+      # Stage 1: Kernel headers
+      dpkg --root /target --force-depends -i \
+        $PKGS/linux-headers-${ABI_VER}_*.deb \
+        $PKGS/linux-headers-${KVER}_*.deb \
+        $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 1 (headers) failed" >> "$LOG"; exit 1; }
+      # Stage 2: Base libraries
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":45,"stage":"late-libs","status":"installing","message":"Stage 2/4: Installing base libraries"}' > /dev/null 2>&1 || true
+      dpkg --root /target --force-depends -i \
+        $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
+        $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
+        $PKGS/libsframe1_*.deb $PKGS/libgprofng0_*.deb \
+        $PKGS/libgcc-s1_*.deb $PKGS/gcc-13-base_*.deb \
+        $PKGS/libisl23_*.deb $PKGS/libmpfr6_*.deb $PKGS/libmpc3_*.deb \
+        $PKGS/libstdc++6_*.deb $PKGS/libstdc++-13-dev_*.deb \
+        $PKGS/libcrypt-dev_*.deb $PKGS/libc-dev-bin_*.deb \
+        $PKGS/libc6-dev_*.deb $PKGS/rpcsvc-proto_*.deb \
+        $PKGS/libc-devtools_*.deb \
+        $PKGS/binutils_*.deb $PKGS/binutils-x86-64-linux-gnu_*.deb \
+        $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb $PKGS/gcc-13_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 2 failed" >> "$LOG"; exit 1; }
+      # Stage 3: Build tools
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":55,"stage":"late-tools","status":"installing","message":"Stage 3/4: Build tools"}' > /dev/null 2>&1 || true
+      dpkg --root /target --force-depends -i \
+        $PKGS/make_*.deb $PKGS/build-essential_*.deb \
+        $PKGS/perl-base_*.deb \
+        $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb \
+        $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
+        $PKGS/patch_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 3 failed" >> "$LOG"; exit 1; }
+      # Stage 4: DKMS and driver
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":60,"stage":"late-dkms","status":"building","message":"Stage 4/4: DKMS + WiFi driver"}' > /dev/null 2>&1 || true
+      dpkg --root /target --force-depends -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 4 (dkms) failed" >> "$LOG"; exit 1; }
+      # Apply DKMS patches in target
+      if [ -d "$PKGS/dkms-patches" ]; then
+        echo "[late] Applying DKMS compatibility patches in target..." >> "$LOG"
+        _missing=0
+        for _p in $(cat "$PKGS/dkms-patches/series"); do
+          if [ ! -f "$PKGS/dkms-patches/$_p" ]; then
+            echo "[late] FATAL: Patch '$_p' not found" >> "$LOG"
+            _missing=1
+          fi
+        done
+        if [ "$_missing" -eq 1 ]; then exit 1; fi
+        for patch in $(cat "$PKGS/dkms-patches/series"); do
+          if [ -f "$PKGS/dkms-patches/$patch" ]; then
+            echo "[late] Applying $patch..." >> "$LOG"
+            if ! chroot /target patch -p1 -d /usr/src/broadcom-sta-6.30.223.271 < "$PKGS/dkms-patches/$patch" >> "$LOG" 2>&1; then
+              echo "[late] FATAL: Patch $patch failed in target" >> "$LOG"
+              exit 1
+            fi
+          else
+            echo "[late] FATAL: Patch file $patch not found" >> "$LOG"
+            exit 1
+          fi
+        done
+      fi
+      # Bind-mount for chroot DKMS compilation
+      trap 'umount /target/dev /target/sys /target/proc 2>/dev/null || true' EXIT
+      mount --bind /proc /target/proc 2>>"$LOG" || { echo "[late] FATAL: mount /proc failed" >> "$LOG"; exit 1; }
+      mount --bind /sys /target/sys 2>>"$LOG" || { echo "[late] FATAL: mount /sys failed" >> "$LOG"; umount /target/proc 2>/dev/null || true; exit 1; }
+      mount --bind /dev /target/dev 2>>"$LOG" || { echo "[late] FATAL: mount /dev failed" >> "$LOG"; umount /target/sys /target/proc 2>/dev/null || true; exit 1; }
+      # DKMS build in target — the critical compile test
+      if ! chroot /target dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
+        echo "[late] WARN: dkms build failed, retrying..." >> "$LOG"
+        chroot /target dkms remove broadcom-sta/6.30.223.271 -k "$KVER" 2>/dev/null || true
+        sleep 2
+        if ! chroot /target dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
+          echo "[late] FATAL: dkms build failed in target on retry" >> "$LOG"
+          exit 1
+        fi
+      fi
+      if ! chroot /target dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
+        echo "[late] WARN: dkms install failed, retrying..." >> "$LOG"
+        sleep 2
+        if ! chroot /target dkms install broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
+          echo "[late] FATAL: dkms install failed in target on retry" >> "$LOG"
+          exit 1
+        fi
+      fi
+      umount /target/dev /target/sys /target/proc 2>/dev/null || true
+      # Add wl module — will load on real hardware, silently skip in VM
+      echo "wl" >> /target/etc/modules
+      printf '# Disable WiFi power management\noptions wl\n' > /target/etc/modprobe.d/wl.conf
+      echo "options cfg80211 ieee80211_regdom=US" > /target/etc/modprobe.d/cfg80211.conf
+      # Auto-detect WiFi iface for power management service
+      printf '[Unit]\nDescription=Disable WiFi power management\nAfter=network.target\n\n[Service]\nType=oneshot\nExecStart=/bin/sh -c "IW=$$(iwconfig 2>/dev/null | grep -oE \"^wl[pw]?[0-9]*\" | head -1) && [ -n \"$$IW\" ] && iwconfig \"$$IW\" power off || true"\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n' > /target/etc/systemd/system/wl-poweroff.service
+      chroot /target systemctl enable wl-poweroff.service 2>>"$LOG" || echo "[late] WARN: wl-poweroff service enable failed" >> "$LOG"
+      echo "[late] WiFi driver installed into target" >> "$LOG"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":65,"stage":"late-dkms","status":"installed","message":"WiFi driver compiled and installed into target"}' > /dev/null 2>&1 || true
+    - |
+      WHURL="http://10.0.2.2:8080/webhook"
+      # Write Ethernet netplan for VM (no WiFi hardware)
+      mkdir -p /target/etc/netplan
+      printf 'network:\n  version: 2\n  renderer: networkd\n  ethernets:\n    enp0s3:\n      dhcp4: true\n' > /target/etc/netplan/01-ethernet.yaml
+      chmod 600 /target/etc/netplan/01-ethernet.yaml
+      # Also write WiFi config for real hardware (will activate if wl driver loads)
+      printf 'network:\n  version: 2\n  renderer: networkd\n  wifis:\n    wl0:\n      match:\n        driver: wl\n      dhcp4: true\n      optional: true\n      access-points:\n        "ATTj6pXatS":\n          password: "j75b39=z?mpg"\n' > /target/etc/netplan/02-wifi.yaml
+      chmod 600 /target/etc/netplan/02-wifi.yaml
+      if command -v netplan 2>/dev/null >/dev/null; then
+        netplan generate 2>>/run/macpro.log || echo "[late] WARN: netplan generate failed" >> /run/macpro.log
+      fi
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":73,"stage":"late-netplan","status":"configured","message":"Network config written (Ethernet primary, WiFi fallback)"}' > /dev/null 2>&1 || true
+    - |
+      WHURL="http://10.0.2.2:8080/webhook"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":75,"stage":"late-grub","status":"configuring","message":"Configuring GRUB"}' > /dev/null 2>&1 || true
+      echo 'GRUB_CMDLINE_LINUX_DEFAULT="nomodeset"' >> /target/etc/default/grub.d/macpro.cfg
+      sed -i 's/^GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/' /target/etc/default/grub
+      if ! grep -q '^GRUB_DISABLE_OS_PROBER=' /target/etc/default/grub; then
+        echo 'GRUB_DISABLE_OS_PROBER=false' >> /target/etc/default/grub
+      fi
+      printf '#!/bin/sh\nexec tail -n +3 "$0"\nmenuentry "Reboot to Firmware" {\n  fwsetup\n}\n' > /target/etc/grub.d/40_macos
+      chmod +x /target/etc/grub.d/40_macos
+      chroot /target update-grub 2>>/run/macpro.log || echo "[late] WARN: update-grub failed" >> /run/macpro.log
+      echo 'LIBEFIVAR_OPS=efivarfs' >> /target/etc/environment
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":78,"stage":"late-grub","status":"configured","message":"GRUB configured"}' > /dev/null 2>&1 || true
+    - |
+      WHURL="http://10.0.2.2:8080/webhook"
+      chroot /target apt-mark hold "linux-image-$(uname -r)" 2>>/run/macpro.log || true
+      chroot /target apt-mark hold "linux-headers-$(uname -r)" 2>>/run/macpro.log || true
+    - |
+      WHURL="http://10.0.2.2:8080/webhook"
+      chroot /target apt-get -y install ufw 2>>/run/macpro.log || true
+      if chroot /target which ufw 2>/dev/null; then
+        chroot /target ufw default deny incoming 2>>/run/macpro.log || true
+        chroot /target ufw allow ssh 2>>/run/macpro.log || true
+        chroot /target ufw --force enable 2>>/run/macpro.log || true
+      fi
+    - |
+      echo "teja ALL=(ALL) NOPASSWD:ALL" >> /target/etc/sudoers.d/teja
+      chmod 440 /target/etc/sudoers.d/teja
+    - |
+      WHURL="http://10.0.2.2:8080/webhook"
+      LOG="/run/macpro.log"
+      mkdir -p /target/var/log/macpro-install
+      cp /run/macpro.log /target/var/log/macpro-install/early-commands.log || true
+      dmesg > /target/var/log/macpro-install/dmesg.log || true
+      echo "[late] All late commands completed successfully" >> "$LOG"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":100,"stage":"complete","status":"done","message":"VM test installation complete"}' > /dev/null 2>&1 || true
+
+  error-commands:
+    - |
+      WHURL="http://10.0.2.2:8080/webhook"
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" \
+        -d '{"progress":0,"stage":"error","status":"failed","message":"VM installation failed"}' > /dev/null 2>&1 || true
+      ERR_DIR="/var/log/macpro-install"
+      mkdir -p "$ERR_DIR" 2>/dev/null || true
+      dmesg > "$ERR_DIR/error-dmesg.log" 2>/dev/null || true
+      journalctl -b > "$ERR_DIR/error-journalctl.log" 2>/dev/null || true
+      cat /run/macpro.log > "$ERR_DIR/error-macpro.log" 2>/dev/null || true
+      dkms status > "$ERR_DIR/error-dkms-status.log" 2>/dev/null || true
+      lsmod > "$ERR_DIR/error-lsmod.log" 2>/dev/null || true
+      lspci -nn > "$ERR_DIR/error-lspci.log" 2>/dev/null || true
+      if [ -d /target ]; then
+        mkdir -p /target/var/log/macpro-install 2>/dev/null || true
+        cp "$ERR_DIR/"* /target/var/log/macpro-install/ 2>/dev/null || true
+      fi
+
+  shutdown: reboot
