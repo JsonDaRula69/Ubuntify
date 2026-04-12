@@ -359,6 +359,12 @@ for line in part_lines:
         if last_sector is None:
             print(f"WARNING: Could not parse Last sector for partition {part_num}, skipping preserve", file=sys.stderr)
             continue
+        if not part_type_guid:
+            print(f"WARNING: Could not parse partition type GUID for partition {part_num}, skipping preserve", file=sys.stderr)
+            continue
+        if not part_uuid:
+            print(f"WARNING: Could not parse partition UUID for partition {part_num}, skipping preserve", file=sys.stderr)
+            continue
 
         offset_bytes = first_sector * 512
         size_bytes = (last_sector - first_sector + 1) * 512
