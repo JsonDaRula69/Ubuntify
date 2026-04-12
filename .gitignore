@@ -5,6 +5,7 @@
 # SSH credentials - NEVER commit private keys
 ssh-MacPro/
 ssh-Macbook/
+ssh-*/
 
 # macOS
 .DS_Store
@@ -17,3 +18,9 @@ node_modules/
 macpro-monitor/server.log
 macpro-monitor/server.pid
 macpro-monitor/logs/
+
+# Large binary files (ISO images, VM disks)
+*.vdi
+*.vmdk
+*.img
+*.raw
