@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 
-const PORT = 8080;
+const PORT = parseInt(process.env.PORT || '8080', 10);
 const HOST = '0.0.0.0';
 const MAX_BODY_SIZE = 256 * 1024;
 const RATE_LIMIT_WINDOW_MS = 1000;

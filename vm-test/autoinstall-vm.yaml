@@ -20,7 +20,7 @@ autoinstall:
     hostname: vmtest
     username: teja
     realname: Teja
-    password: "$6$TmJsc2FI7rBs9ipD$8MuzzFQFKbdwp3nS2AaAtUscGXwZiUWIBmlCLMag71kB2eujqGVb4"
+    password: "$6$uFdpa5A/554aDpw.$2AoiCUvQBuE12AemVAMegGjJM.2lAiJtH2Px9ldIS/4ymeZaTE96sM3Gc2HC8wIehVXDvroXyHQL8DtUSZXpy."
 
   ssh:
     install-server: true
@@ -36,13 +36,17 @@ autoinstall:
       type: print
     macpro-monitor:
       type: webhook
-      endpoint: "http://10.0.2.2:8080/webhook"
+      endpoint: "http://10.0.2.2:8081/webhook"
       level: DEBUG
 
   early-commands:
     - |
       set -x
       KVER="$(uname -r)"
+      LOG="/run/macpro.log"
+      WHURL="http://10.0.2.2:8081/webhook"
+      _dump_log() { cat "$LOG" > /dev/console 2>/dev/null; }
+      trap '_dump_log' EXIT
       ABI_VER="${KVER%-generic}"
       # Discover macpro-pkgs mount point
       PKGS=""
@@ -53,11 +57,10 @@ autoinstall:
         fi
       done
       if [ -z "$PKGS" ]; then
-        echo "[early] FATAL: Cannot find macpro-pkgs on any mount point" >> /run/macpro.log
+        echo "[early] FATAL: Cannot find macpro-pkgs on any mount point" >> "$LOG"
+        _dump_log
         exit 1
       fi
-      LOG="/run/macpro.log"
-      WHURL="http://10.0.2.2:8080/webhook"
       echo "=== VM TEST AUTOINSTALL ===" > "$LOG"
       echo "Kernel: $(uname -r)" >> "$LOG"
       echo "Packages: $(ls $PKGS/*.deb 2>/dev/null | wc -l) debs" >> "$LOG"
@@ -73,37 +76,23 @@ autoinstall:
         exit 1
       fi
 
-      # Install kernel headers
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":5,"stage":"prep-headers","status":"installing","message":"Installing kernel headers"}' > /dev/null 2>&1 || true
-      echo "[early] Installing kernel headers..." >> "$LOG"
-      dpkg --force-depends -i $PKGS/linux-headers-${ABI_VER}_*.deb \
-              $PKGS/linux-headers-${KVER}_*.deb \
-              $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { echo "[early] FATAL: kernel headers failed" >> "$LOG"; exit 1; }
 
-      # Install build toolchain
-      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":10,"stage":"prep-toolchain","status":"installing","message":"Installing build toolchain"}' > /dev/null 2>&1 || true
-      echo "[early] Installing build toolchain..." >> "$LOG"
-      dpkg --force-depends -i $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
-              $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
-              $PKGS/libsframe1_*.deb $PKGS/libgprofng0_*.deb \
-              $PKGS/binutils_*.deb $PKGS/binutils-x86-64-linux-gnu_*.deb \
-              $PKGS/libgcc-s1_*.deb $PKGS/gcc-13-base_*.deb \
-              $PKGS/libisl23_*.deb $PKGS/libmpfr6_*.deb $PKGS/libmpc3_*.deb \
-              $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb $PKGS/gcc-13_*.deb \
-              $PKGS/libstdc++6_*.deb $PKGS/libstdc++-13-dev_*.deb \
-              $PKGS/libc-dev-bin_*.deb $PKGS/libc6-dev_*.deb \
-              $PKGS/libc-devtools_*.deb $PKGS/libcrypt-dev_*.deb \
-              $PKGS/rpcsvc-proto_*.deb \
-              $PKGS/make_*.deb $PKGS/build-essential_*.deb \
-              $PKGS/perl-base_*.deb \
-              $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
-              $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb \
-              $PKGS/patch_*.deb 2>>"$LOG" || { echo "[early] FATAL: build toolchain failed" >> "$LOG"; exit 1; }
+      # Install build toolchain via apt (VM has Ethernet — network available)
+      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":10,"stage":"prep-toolchain","status":"installing","message":"Installing build toolchain via apt"}' > /dev/null 2>&1 || true
+      echo "[early] Installing build toolchain via apt..." >> "$LOG"
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update >> "$LOG" 2>&1 || echo "[early] WARN: apt-get update failed" >> "$LOG"
+      apt-get install -y --no-install-recommends gcc-13 make patch linux-headers-${KVER} 2>>"$LOG" || { echo "[early] FATAL: apt-get install toolchain failed" >> "$LOG"; exit 1; }
+      ln -sf /usr/bin/gcc-13 /usr/bin/cc 2>/dev/null || true
 
       # Install DKMS and broadcom-sta source
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":13,"stage":"prep-dkms","status":"installing","message":"Installing DKMS and Broadcom driver source"}' > /dev/null 2>&1 || true
       echo "[early] Installing DKMS and Broadcom driver source..." >> "$LOG"
-      dpkg --force-depends -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || { echo "[early] FATAL: dkms/broadcom install failed" >> "$LOG"; exit 1; }
+      # broadcom-sta-dkms postinst auto-runs 'dkms add' which may try to build
+      # without patches, returning non-zero. This is expected — we apply patches
+      # after dpkg and build manually. So || true here, not fatal.
+      dpkg --force-depends -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || echo "[early] WARN: dkms/broadcom dpkg returned non-zero (expected if postinst dkms build fails before patches)" >> "$LOG"
 
       # Apply DKMS patches for kernel 6.8+ compatibility
       if [ -d "$PKGS/dkms-patches" ]; then
@@ -135,7 +124,21 @@ autoinstall:
       # compilation must succeed to validate patches + toolchain
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":15,"stage":"prep-build","status":"building","message":"Compiling wl driver via DKMS (build test)"}' > /dev/null 2>&1 || true
       echo "[early] Building wl driver via DKMS..." >> "$LOG"
-      if ! dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
+      dkms build broadcom-sta/6.30.223.271 -k "$KVER" >> "$LOG" 2>&1
+      _dkms_rc=$?
+      echo "[early] dkms build exit code: $_dkms_rc" >> "$LOG"
+      for _make_log in \
+        /var/lib/dkms/broadcom-sta/6.30.223.271/$KVER/x86_64/make.log \
+        /var/lib/dkms/broadcom-sta/6.30.223.271/build/make.log; do
+        if [ -f "$_make_log" ]; then
+          echo "=== DKMS make.log ($_make_log) ===" >> "$LOG"
+          cat "$_make_log" >> "$LOG"
+          cat "$_make_log" > /dev/console 2>/dev/null
+        fi
+      done
+      if [ "$_dkms_rc" -ne 0 ]; then
+        echo "=== DKMS BUILD FAILED — dumping full log ===" >> "$LOG"
+        cat "$LOG" > /dev/console 2>/dev/null
         echo "[early] WARN: dkms build failed, retrying after clean..." >> "$LOG"
         dkms remove broadcom-sta/6.30.223.271 -k "$KVER" 2>/dev/null || true
         sleep 2
@@ -181,6 +184,8 @@ autoinstall:
 
       # Start SSH server (always needed for debugging)
       apt-get -y install openssh-server 2>>"$LOG" || dpkg --force-depends -i /cdrom/pool/restricted/o/openssh/openssh-server_*.deb /cdrom/pool/restricted/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
+      useradd -m -s /bin/bash ubuntu 2>/dev/null || true
+      echo "ubuntu:ubuntu" | chpasswd 2>>"$LOG" || true
       if [ -f /usr/sbin/sshd ]; then
         mkdir -p /run/sshd
         /usr/sbin/sshd -D -e &
@@ -254,7 +259,9 @@ autoinstall:
       KVER="$(uname -r)"
       ABI_VER="${KVER%-generic}"
       LOG="/run/macpro.log"
-      WHURL="http://10.0.2.2:8080/webhook"
+      WHURL="http://10.0.2.2:8081/webhook"
+      _dump_log() { cat "$LOG" > /dev/console 2>/dev/null; }
+      trap '_dump_log' EXIT
       echo "[late] Late commands starting..." >> "$LOG"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":29,"stage":"late-init","status":"running","message":"VM late commands started"}' > /dev/null 2>&1 || true
       # Discover macpro-pkgs mount point
@@ -279,36 +286,13 @@ autoinstall:
         echo "[late] FATAL: DKMS patches missing" >> "$LOG"
         exit 1
       fi
-      # Stage 1: Kernel headers
-      dpkg --root /target --force-depends -i \
-        $PKGS/linux-headers-${ABI_VER}_*.deb \
-        $PKGS/linux-headers-${KVER}_*.deb \
-        $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 1 (headers) failed" >> "$LOG"; exit 1; }
-      # Stage 2: Base libraries
-      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":45,"stage":"late-libs","status":"installing","message":"Stage 2/4: Installing base libraries"}' > /dev/null 2>&1 || true
-      dpkg --root /target --force-depends -i \
-        $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
-        $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
-        $PKGS/libsframe1_*.deb $PKGS/libgprofng0_*.deb \
-        $PKGS/libgcc-s1_*.deb $PKGS/gcc-13-base_*.deb \
-        $PKGS/libisl23_*.deb $PKGS/libmpfr6_*.deb $PKGS/libmpc3_*.deb \
-        $PKGS/libstdc++6_*.deb $PKGS/libstdc++-13-dev_*.deb \
-        $PKGS/libcrypt-dev_*.deb $PKGS/libc-dev-bin_*.deb \
-        $PKGS/libc6-dev_*.deb $PKGS/rpcsvc-proto_*.deb \
-        $PKGS/libc-devtools_*.deb \
-        $PKGS/binutils_*.deb $PKGS/binutils-x86-64-linux-gnu_*.deb \
-        $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb $PKGS/gcc-13_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 2 failed" >> "$LOG"; exit 1; }
-      # Stage 3: Build tools
-      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":55,"stage":"late-tools","status":"installing","message":"Stage 3/4: Build tools"}' > /dev/null 2>&1 || true
-      dpkg --root /target --force-depends -i \
-        $PKGS/make_*.deb $PKGS/build-essential_*.deb \
-        $PKGS/perl-base_*.deb \
-        $PKGS/kmod_*.deb $PKGS/libkmod2_*.deb \
-        $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
-        $PKGS/patch_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 3 failed" >> "$LOG"; exit 1; }
-      # Stage 4: DKMS and driver
-      curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":60,"stage":"late-dkms","status":"building","message":"Stage 4/4: DKMS + WiFi driver"}' > /dev/null 2>&1 || true
-      dpkg --root /target --force-depends -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || { echo "[late] FATAL: Stage 4 (dkms) failed" >> "$LOG"; exit 1; }
+      # Install toolchain + kernel headers into target via apt (VM has network)
+      cp /etc/resolv.conf /target/etc/resolv.conf 2>/dev/null || true
+      DEBIAN_FRONTEND=noninteractive chroot /target apt-get update 2>>"$LOG" || echo "[late] WARN: apt-get update in target failed" >> "$LOG"
+      DEBIAN_FRONTEND=noninteractive chroot /target apt-get install -y --no-install-recommends gcc-13 make patch "linux-headers-${KVER}" 2>>"$LOG" || { echo "[late] FATAL: apt-get install toolchain in target failed" >> "$LOG"; exit 1; }
+      chroot /target ln -sf /usr/bin/gcc-13 /usr/bin/cc 2>/dev/null || true
+      # Install DKMS and broadcom-sta source (not in apt repos)
+      dpkg --root /target --force-depends -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || echo "[late] WARN: dkms/broadcom dpkg returned non-zero (expected)" >> "$LOG"
       # Apply DKMS patches in target
       if [ -d "$PKGS/dkms-patches" ]; then
         echo "[late] Applying DKMS compatibility patches in target..." >> "$LOG"
@@ -339,6 +323,7 @@ autoinstall:
       mount --bind /sys /target/sys 2>>"$LOG" || { echo "[late] FATAL: mount /sys failed" >> "$LOG"; umount /target/proc 2>/dev/null || true; exit 1; }
       mount --bind /dev /target/dev 2>>"$LOG" || { echo "[late] FATAL: mount /dev failed" >> "$LOG"; umount /target/sys /target/proc 2>/dev/null || true; exit 1; }
       # DKMS build in target — the critical compile test
+      chroot /target ln -sf /usr/bin/gcc-13 /usr/bin/cc 2>/dev/null || true
       if ! chroot /target dkms build broadcom-sta/6.30.223.271 -k "$KVER" 2>>"$LOG"; then
         echo "[late] WARN: dkms build failed, retrying..." >> "$LOG"
         chroot /target dkms remove broadcom-sta/6.30.223.271 -k "$KVER" 2>/dev/null || true
@@ -367,7 +352,7 @@ autoinstall:
       echo "[late] WiFi driver installed into target" >> "$LOG"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":65,"stage":"late-dkms","status":"installed","message":"WiFi driver compiled and installed into target"}' > /dev/null 2>&1 || true
     - |
-      WHURL="http://10.0.2.2:8080/webhook"
+      WHURL="http://10.0.2.2:8081/webhook"
       # Write Ethernet netplan for VM (no WiFi hardware)
       mkdir -p /target/etc/netplan
       printf 'network:\n  version: 2\n  renderer: networkd\n  ethernets:\n    enp0s3:\n      dhcp4: true\n' > /target/etc/netplan/01-ethernet.yaml
@@ -380,7 +365,7 @@ autoinstall:
       fi
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":73,"stage":"late-netplan","status":"configured","message":"Network config written (Ethernet primary, WiFi fallback)"}' > /dev/null 2>&1 || true
     - |
-      WHURL="http://10.0.2.2:8080/webhook"
+      WHURL="http://10.0.2.2:8081/webhook"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":75,"stage":"late-grub","status":"configuring","message":"Configuring GRUB"}' > /dev/null 2>&1 || true
       echo 'GRUB_CMDLINE_LINUX_DEFAULT="nomodeset"' >> /target/etc/default/grub.d/macpro.cfg
       sed -i 's/^GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/' /target/etc/default/grub
@@ -393,11 +378,11 @@ autoinstall:
       echo 'LIBEFIVAR_OPS=efivarfs' >> /target/etc/environment
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":78,"stage":"late-grub","status":"configured","message":"GRUB configured"}' > /dev/null 2>&1 || true
     - |
-      WHURL="http://10.0.2.2:8080/webhook"
+      WHURL="http://10.0.2.2:8081/webhook"
       chroot /target apt-mark hold "linux-image-$(uname -r)" 2>>/run/macpro.log || true
       chroot /target apt-mark hold "linux-headers-$(uname -r)" 2>>/run/macpro.log || true
     - |
-      WHURL="http://10.0.2.2:8080/webhook"
+      WHURL="http://10.0.2.2:8081/webhook"
       chroot /target apt-get -y install ufw 2>>/run/macpro.log || true
       if chroot /target which ufw 2>/dev/null; then
         chroot /target ufw default deny incoming 2>>/run/macpro.log || true
@@ -408,7 +393,7 @@ autoinstall:
       echo "teja ALL=(ALL) NOPASSWD:ALL" >> /target/etc/sudoers.d/teja
       chmod 440 /target/etc/sudoers.d/teja
     - |
-      WHURL="http://10.0.2.2:8080/webhook"
+      WHURL="http://10.0.2.2:8081/webhook"
       LOG="/run/macpro.log"
       mkdir -p /target/var/log/macpro-install
       cp /run/macpro.log /target/var/log/macpro-install/early-commands.log || true
@@ -418,9 +403,16 @@ autoinstall:
 
   error-commands:
     - |
-      WHURL="http://10.0.2.2:8080/webhook"
+      WHURL="http://10.0.2.2:8081/webhook"
+      LOG="/run/macpro.log"
       curl -s -X POST "$WHURL" -H "Content-Type: application/json" \
         -d '{"progress":0,"stage":"error","status":"failed","message":"VM installation failed"}' > /dev/null 2>&1 || true
+      echo "=== ERROR — dumping full log to console ===" > /dev/console 2>/dev/null
+      cat "$LOG" > /dev/console 2>/dev/null
+      echo "=== DKMS make.log ===" > /dev/console 2>/dev/null
+      for _ml in /var/lib/dkms/broadcom-sta/6.30.223.271/*/x86_64/make.log; do
+        [ -f "$_ml" ] && cat "$_ml" > /dev/console 2>/dev/null
+      done
       ERR_DIR="/var/log/macpro-install"
       mkdir -p "$ERR_DIR" 2>/dev/null || true
       dmesg > "$ERR_DIR/error-dmesg.log" 2>/dev/null || true

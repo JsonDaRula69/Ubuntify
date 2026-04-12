@@ -91,6 +91,8 @@ VBoxManage modifyvm "$VM_NAME" --natpf1 "ssh,tcp,,2222,,22"
 VBoxManage modifyvm "$VM_NAME" --natpf1 "webhook,tcp,,8080,,8080"
 
 # Enable headless mode
+VBoxManage modifyvm "$VM_NAME" --uart1 0x3F8 4 --uartmode1 file /tmp/vmtest-serial.log
+
 VBoxManage modifyvm "$VM_NAME" --graphicscontroller vmsvga --vram 128
 
 echo ""

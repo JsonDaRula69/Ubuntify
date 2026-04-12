@@ -69,13 +69,13 @@ set timeout=3
 
 menuentry "Ubuntu Server 24.04 VM Test Autoinstall" {
     set gfxpayload=keep
-    linux /casper/vmlinuz autoinstall ds=nocloud ---
+    linux /casper/vmlinuz autoinstall ds=nocloud console=ttyS0,115200 ---
     initrd /casper/initrd
 }
 
 menuentry "Ubuntu Server 24.04 (Manual Install)" {
     set gfxpayload=keep
-    linux /casper/vmlinuz ---
+    linux /casper/vmlinuz console=ttyS0,115200 ---
     initrd /casper/initrd
 }
 GRUBEOF
