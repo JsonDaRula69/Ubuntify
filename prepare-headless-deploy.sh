@@ -165,7 +165,7 @@ log "Step 3: Checking APFS container size..."
 CURRENT_SIZE=$(diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+\.[0-9]+ GB' || true)
 log "Current APFS size: ${CURRENT_SIZE:-unknown}"
 
-EXISTING_FREE_GB=$(diskutil list "$INTERNAL_DISK" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+ GB[[:space:]]*$' | head -1 | grep -oE '[0-9]+\.[0-9]+' || true)
+EXISTING_FREE_GB=$(diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "(free" | grep -oE '[0-9]+\.[0-9]+ GB' | head -1 | grep -oE '[0-9]+\.[0-9]+' || true)
 if [ -n "$EXISTING_FREE_GB" ] && echo "$EXISTING_FREE_GB" | awk '{exit !($1 >= 5)}'; then
     log "Free space already ${EXISTING_FREE_GB}GB — skipping APFS resize"
 else
@@ -187,8 +187,13 @@ else
         warn "Could not determine APFS usage — defaulting to ${TARGET_MACOS_GB}GB for macOS"
     fi
 
-    diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || die "APFS resize failed"
-    log "APFS container resized to ${TARGET_MACOS_GB}GB"
+    CURRENT_CONTAINER_GB=$(diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
+    if [ -n "$CURRENT_CONTAINER_GB" ] && echo "$CURRENT_CONTAINER_GB $TARGET_MACOS_GB" | awk '{exit !($1 <= $2)}'; then
+        log "APFS already at ${CURRENT_CONTAINER_GB}GB — no resize needed"
+    else
+        diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || die "APFS resize failed"
+        log "APFS container resized to ${TARGET_MACOS_GB}GB"
+    fi
 fi
 echo ""
 
