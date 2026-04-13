@@ -665,10 +665,75 @@ echo ""
 
 log "Step 7: Setting boot device with bless (--nextonly for safety)..."
 
-# Use --nextonly so that if the installer fails, the next boot falls back to macOS.
-# Once Ubuntu is confirmed running, set permanent boot device from within Ubuntu.
-bless --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly || \
-    die "bless failed (exit $?) — EFI firmware cannot set boot device. ESP GPT type should be C12A7328 (EFI System Partition)."
+BLESS_OK=0
+
+# Method 1: bless --mount --file (standard, requires IOKit registration)
+bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>&1 && BLESS_OK=1
+
+if [ "$BLESS_OK" -eq 0 ]; then
+    warn "bless --mount failed — likely IOKit registration issue from newfs_msdos"
+    log "Reformatting ESP with diskutil eraseVolume to register with IOKit..."
+
+    # Save ESP contents before reformatting (diskutil eraseVolume wipes all data)
+    ESP_BACKUP_DIR=$(mktemp -d /tmp/esp_backup.XXXXXX)
+    log "Backing up ESP contents to $ESP_BACKUP_DIR..."
+    rsync -a "$ESP_MOUNT/" "$ESP_BACKUP_DIR/" 2>/dev/null || warn "ESP backup incomplete"
+
+    # Reformat with diskutil eraseVolume — this registers the volume with
+    # IOKit/DiskArbitration (required for bless to construct IOMatch NVRAM dict)
+    # SIDE EFFECT: resets GPT type to Microsoft Basic Data
+    diskutil eraseVolume FAT32 "$ESP_NAME" "/dev/$ESP_DEVICE" 2>/dev/null || die "diskutil eraseVolume failed"
+    sleep 1
+    ESP_MOUNT="/Volumes/$ESP_NAME"
+    [ -d "$ESP_MOUNT" ] || die "ESP not mounted after diskutil eraseVolume"
+
+    # Restore ESP contents
+    log "Restoring ESP contents from backup..."
+    rsync -a "$ESP_BACKUP_DIR/" "$ESP_MOUNT/" 2>/dev/null || warn "ESP restore incomplete"
+    rm -rf "$ESP_BACKUP_DIR"
+
+    # Verify critical files survived the reformat+restore cycle
+    [ -f "$ESP_MOUNT/EFI/boot/bootx64.efi" ] || die "bootx64.efi missing after ESP restore"
+    [ -f "$ESP_MOUNT/autoinstall.yaml" ] || die "autoinstall.yaml missing after ESP restore"
+
+    # Attempt sgdisk to fix GPT type (eraseVolume resets it to Microsoft Basic Data)
+    # sgdisk will likely fail (IOKit lock on boot disk), but try anyway
+    log "Attempting to restore EFI System Partition GPT type..."
+    ESP_ACTUAL_DEV=$(diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+    if [ -n "$ESP_ACTUAL_DEV" ]; then
+        ESP_PART_NUM=$(echo "$ESP_ACTUAL_DEV" | grep -oE '[0-9]+$')
+        diskutil unmount "$ESP_MOUNT" 2>/dev/null || true
+        RDISK="/dev/r$(basename "$INTERNAL_DISK")"
+        sgdisk --typecode="${ESP_PART_NUM}":C12A7328-F81F-11D2-BA4B-00A0C93EC93B "$RDISK" 2>/dev/null || \
+        sgdisk --typecode="${ESP_PART_NUM}":C12A7328-F81F-11D2-BA4B-00A0C93EC93B "$INTERNAL_DISK" 2>/dev/null || \
+            warn "Could not restore EFI GPT type (disk locked) — firmware may or may not accept this"
+        diskutil mount "/dev/$ESP_ACTUAL_DEV" 2>/dev/null || true
+        ESP_MOUNT="/Volumes/$ESP_NAME"
+        [ -d "$ESP_MOUNT" ] || die "ESP not remounted after sgdisk attempt"
+    fi
+
+    # Try bless again (now with IOKit registration from diskutil eraseVolume)
+    bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>&1 && BLESS_OK=1
+fi
+
+if [ "$BLESS_OK" -eq 0 ]; then
+    # Method 3: Set NVRAM boot-next-device directly via partition UUID
+    warn "bless still failing — attempting direct NVRAM boot device configuration..."
+    ESP_UUID=$(diskutil info "/dev/$ESP_DEVICE" 2>/dev/null | grep -i "partition uuid" | grep -oE '[0-9A-Fa-f-]{36}' | tr '[:lower:]' '[:upper:]' || true)
+    if [ -n "$ESP_UUID" ]; then
+        log "ESP Partition UUID: $ESP_UUID"
+        # Construct the efi-boot-next-device NVRAM variable in Apple's plist-in-NVRAM format
+        BOOT_PLIST="<array><dict><key>IOMatch</key><dict><key>IOProviderClass</key><string>IOMedia</string><key>IOPropertyMatch</key><dict><key>UUID</key><string>${ESP_UUID}</string></dict></dict><key>BLLastBSDName</key><string>${ESP_DEVICE}</string></dict><dict><key>IOEFIDevicePathType</key><string>MediaFilePath</string><key>Path</key><string>\\EFI\\boot\\bootx64.efi</string></dict></array>%00"
+        nvram "efi-boot-next-device=$BOOT_PLIST" 2>/dev/null && BLESS_OK=1 && log "NVRAM boot device set directly" || \
+            warn "Direct NVRAM set failed — SIP may block this"
+    else
+        warn "Could not determine ESP Partition UUID for NVRAM fallback"
+    fi
+fi
+
+if [ "$BLESS_OK" -eq 0 ]; then
+    die "All bless methods failed — cannot set boot device. Try running 'bless --verbose --setBoot --mount /Volumes/CIDATA --file /Volumes/CIDATA/EFI/boot/bootx64.efi --nextonly' manually."
+fi
 
 log "Verifying boot device..."
 bless --info "$ESP_MOUNT" 2>/dev/null || warn "Could not verify boot device with bless --info"
