@@ -220,8 +220,18 @@ autoinstall:
       chmod 600 /etc/netplan/01-wifi.yaml
       log "Live netplan written for interface: $WIFI_IFACE"
       if command -v netplan 2>/dev/null >/dev/null; then
-        netplan generate 2>>"$LOG" || log "WARN: netplan generate failed in live env"
-        netplan apply 2>>"$LOG" || log "WARN: netplan apply failed in live env"
+        if ! netplan generate 2>>"$LOG"; then
+          log "WARN: netplan generate failed — retrying after 3s"
+          sleep 3
+          if ! netplan generate 2>>"$LOG"; then
+            die "netplan generate failed (twice) — WiFi config may be invalid" 22
+          fi
+        fi
+        if ! netplan apply 2>>"$LOG"; then
+          log "WARN: netplan apply failed — retrying after 3s"
+          sleep 3
+          netplan apply 2>>"$LOG" || die "netplan apply failed (twice) — cannot bring up WiFi" 22
+        fi
       fi
 
       # Start SSH server for remote debugging
