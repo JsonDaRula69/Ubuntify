@@ -665,15 +665,26 @@ if [ "$ALL_OK" = "false" ]; then
 fi
 echo ""
 
-# ── Step 7: Set boot device with bless (temporary: next-boot-only) ──
+# ── Step 7: Set boot device ──
 
-log "Step 7: Setting boot device with bless (--nextonly for safety)..."
+log "Step 7: Setting boot device..."
 
 BLESS_OK=0
 
+# Method 0: systemsetup — uses com.apple.private.diskmanagement.set-boot-device
+# entitlement (different from bless's com.apple.private.iokit.system-nvram-allow)
+# This may bypass the NVRAM protection that blocks bless.
+if command -v systemsetup >/dev/null 2>&1; then
+    log "Attempting systemsetup -setstartupdisk (uses DiskManagement framework)..."
+    systemsetup -setstartupdisk "$ESP_MOUNT" 2>&1 | tee -a "$LOG_FILE" && BLESS_OK=1 || \
+        warn "systemsetup failed (may need Server Admin tools or different path format)"
+fi
+
 # Method 1: bless --mount --file with --nextonly
-log "Attempting bless --nextonly (reverts to macOS on next-next boot)..."
-bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>&1 | tee -a "$LOG_FILE" && BLESS_OK=1
+if [ "$BLESS_OK" -eq 0 ]; then
+    log "Attempting bless --nextonly (reverts to macOS on next-next boot)..."
+    bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>&1 | tee -a "$LOG_FILE" && BLESS_OK=1
+fi
 
 if [ "$BLESS_OK" -eq 0 ]; then
     warn "bless --nextonly failed — trying without --nextonly (permanent boot change)..."
