@@ -110,6 +110,10 @@ cd vm-test && sudo ./build-iso-vm.sh && ./create-vm.sh && ./test-vm.sh
 
 20. **bless on FAT32 requires --file**: On FAT32 EFI volumes, `bless --setBoot --mount` alone fails with `0xe00002e2`. Must also specify `--file <esp>/EFI/boot/bootx64.efi` to identify the EFI bootloader path.
 
+21. **SIP blocks ALL NVRAM writes**: On Mac Pro 2013 with macOS 12.7.6 (SIP enabled), both `bless --setBoot` and `nvram` fail — even with correct GPT type and IOKit registration. The error `0xe00002e2` occurs at the NVRAM write step, not at IOKit matching. `systemsetup -setstartupdisk` also fails under SIP. Boot device must be set via blind keyboard (hold Option → Right Arrow → Enter to select CIDATA) or Recovery Mode (Cmd+R → `csrutil enable --without nvram` → `bless`). After Ubuntu installs, `efibootmgr` from Linux (no SIP) sets permanent boot order. `prepare-headless-deploy.sh` handles bless failure gracefully with blind boot instructions.
+
+22. **newfs_msdos does not register with IOKit/DiskArbitration**: `newfs_msdos -F 32 -v CIDATA /dev/disk0s3` creates a valid FAT32 filesystem without changing the GPT partition type (unlike `diskutil eraseVolume`), but the volume is not registered with IOKit's DiskArbitration framework. Bless may fail because it cannot construct the IOMatch NVRAM dict. Unformatted partitions created by `diskutil addPartition %noformat%` also lack raw device nodes (`/dev/rdisk0sN`) — use block device `/dev/disk0sN` for `newfs_msdos`.
+
 21. **cloud-init first-boot network overwrite**: cloud-init regenerates `/etc/netplan/50-cloud-init.yaml` on first boot, which can conflict with custom netplan configs. Disable cloud-init network config generation by writing `network: {config: disabled}` to `/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg` in late-commands.
 
 22. **Volume label CIDATA uppercase**: FAT32 volume names on macOS must be uppercase. cloud-init's NoCloud datasource searches volume labels case-insensitively on Linux, so `CIDATA` is discovered correctly.
@@ -127,8 +131,9 @@ cd vm-test && sudo ./build-iso-vm.sh && ./create-vm.sh && ./test-vm.sh
 
 | Method | Physical Access? | Status |
 |--------|-----------------|--------|
-| USB + auto GRUB | Required (keyboard to hold Option) | Implemented |
-| Internal disk + `bless` via SSH | None required | Implemented |
+| Internal ESP + blind keyboard (Option→Right→Enter) | Keyboard (no monitor) | Implemented |
+| Internal ESP + Recovery Mode (Cmd+R→csrutil→bless) | Keyboard (no monitor) | Fallback |
+| Internal disk + `bless` via SSH | None required | SIP blocks NVRAM — broken |
 | NetBoot from MacBook | None required | Not feasible (requires macOS Server + BSDP) |
 | Target Disk Mode | Brief physical | Fallback only |
 
