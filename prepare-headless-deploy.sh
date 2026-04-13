@@ -306,8 +306,10 @@ sleep 1
 # Set GPT partition type to EFI System Partition — Apple EFI firmware requires
 # this for bless to work (diskutil eraseVolume sets it to Microsoft Basic Data)
 ESP_PART_NUM=$(echo "$ESP_DEVICE" | grep -oE '[0-9]+$')
+diskutil unmount "$ESP_MOUNT" 2>/dev/null || true
 sgdisk --typecode="${ESP_PART_NUM}":C12A7328-F81F-11D2-BA4B-00A0C93EC93B "$INTERNAL_DISK" || \
     warn "Could not set EFI partition type — bless may fail"
+diskutil mount "$ESP_MOUNT" 2>/dev/null || true
 
 ESP_MOUNT="/Volumes/$ESP_NAME"
 [ -d "$ESP_MOUNT" ] || die "ESP not mounted at $ESP_MOUNT"
