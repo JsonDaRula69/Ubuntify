@@ -9,6 +9,13 @@ readonly ESP_NAME="CIDATA"
 readonly ESP_SIZE="5g"
 APFS_CONTAINER=""
 
+_APFS_ORIGINAL_SIZE=""
+_APFS_RESIZED=0
+_ESP_DEVICE=""
+_ESP_CREATED=0
+_ISO_MOUNT=""
+_ISO_MOUNTED=0
+
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[0;33m'
@@ -21,38 +28,67 @@ die()   { error "$1"; exit 1; }
 
 _CLEANUP_DONE=0
 
-# ── Recovery: reset boot device to macOS on fatal error ──
+revert_changes() {
+    echo ""
+    error "Reverting deployment changes..."
+    local REVERT_ERRORS=0
+
+    if [ "$_ISO_MOUNTED" -eq 1 ] && [ -n "$_ISO_MOUNT" ] && [ -d "$_ISO_MOUNT" ]; then
+        log "Unmounting ISO..."
+        hdiutil detach "$_ISO_MOUNT" -quiet 2>/dev/null || warn "Could not unmount ISO at $_ISO_MOUNT"
+        _ISO_MOUNTED=0
+    fi
+
+    if [ "$_ESP_CREATED" -eq 1 ] && [ -n "$_ESP_DEVICE" ]; then
+        log "Removing ESP partition /dev/$_ESP_DEVICE..."
+        diskutil unmount "/dev/$_ESP_DEVICE" 2>/dev/null || true
+        diskutil eraseVolume free none "/dev/$_ESP_DEVICE" 2>/dev/null || {
+            warn "Could not remove ESP partition /dev/$_ESP_DEVICE — remove manually"
+            REVERT_ERRORS=1
+        }
+        _ESP_CREATED=0
+    fi
+
+    if [ "$_APFS_RESIZED" -eq 1 ] && [ -n "$APFS_CONTAINER" ] && [ -n "$_APFS_ORIGINAL_SIZE" ]; then
+        log "Restoring APFS container to ${_APFS_ORIGINAL_SIZE}GB..."
+        diskutil apfs resizeContainer "$APFS_CONTAINER" "${_APFS_ORIGINAL_SIZE}g" 2>/dev/null || {
+            warn "Could not restore APFS container size — resize manually"
+            REVERT_ERRORS=1
+        }
+        _APFS_RESIZED=0
+    fi
+
+    local MACOS_VOLUME
+    MACOS_VOLUME=$(diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
+    if [ -d "$MACOS_VOLUME" ] && [ "$MACOS_VOLUME" != "/" ]; then
+        bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && \
+            log "macOS boot device restored" || {
+            warn "Could not restore macOS boot device — manual intervention required"
+            REVERT_ERRORS=1
+        }
+    else
+        bless --mount / --setBoot 2>/dev/null && \
+            log "macOS boot device restored (root fallback)" || {
+            warn "Could not restore macOS boot device — manual intervention required"
+            REVERT_ERRORS=1
+        }
+    fi
+
+    if [ "$REVERT_ERRORS" -eq 0 ]; then
+        log "Revert complete — disk restored to pre-deployment state"
+    else
+        error "Revert incomplete — some changes may require manual cleanup"
+        diskutil list "$INTERNAL_DISK" 2>/dev/null || true
+    fi
+}
+
 cleanup_on_error() {
     [ "$_CLEANUP_DONE" -eq 1 ] && return
     _CLEANUP_DONE=1
     local EXIT_CODE=$?
     if [ "$EXIT_CODE" -ne 0 ]; then
-        echo ""
-        error "Script exited with code $EXIT_CODE — attempting to restore macOS boot device..."
-        if [ -z "$APFS_CONTAINER" ]; then
-            # APFS_CONTAINER not yet set — try root filesystem as fallback
-            bless --mount / --setBoot 2>/dev/null && \
-                warn "macOS boot device restored via bless (root fallback — APFS container unknown)" || \
-                error "Could not restore macOS boot device — manual intervention required"
-            error "Deployment failed. macOS boot device should still be active."
-            return
-        fi
-        # Re-set macOS as boot device so machine doesn't get stuck
-        # on a broken ESP after a failed deploy
-        # Use the APFS container volume instead of root filesystem
-        local MACOS_VOLUME
-        MACOS_VOLUME=$(diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
-        if [ -d "$MACOS_VOLUME" ] && [ "$MACOS_VOLUME" != "/" ]; then
-            bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && \
-                warn "macOS boot device restored via bless" || \
-                error "Could not restore macOS boot device — manual intervention required"
-        else
-            # Fallback to root if APFS container mount point not found
-            bless --mount / --setBoot 2>/dev/null && \
-                warn "macOS boot device restored via bless (root fallback)" || \
-                error "Could not restore macOS boot device — manual intervention required"
-        fi
-        error "Deployment failed. macOS boot device should still be active."
+        revert_changes
+        error "Deployment failed (exit code $EXIT_CODE)."
     fi
 }
 trap cleanup_on_error EXIT
@@ -64,6 +100,40 @@ echo " Mac Pro 2013 Headless Ubuntu Deploy"
 echo " Remote installation via bless"
 echo "========================================="
 echo ""
+
+# ── Handle --revert flag for manual rollback ──
+if [ "${1:-}" = "--revert" ]; then
+    log "Manual revert requested..."
+    INTERNAL_DISK=$(diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
+    if [ -z "$INTERNAL_DISK" ]; then
+        die "Cannot identify internal disk for revert"
+    fi
+    APFS_PARTITION=$(diskutil list "$INTERNAL_DISK" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+    if [ -n "$APFS_PARTITION" ]; then
+        APFS_CONTAINER=$(diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head -1 || true)
+    fi
+    if [ -z "$APFS_CONTAINER" ]; then
+        APFS_CONTAINER=$(diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head -1 || true)
+    fi
+    # Find and remove the CIDATA ESP partition (by volume name)
+    ESP_CANDIDATE=$(diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+    if [ -n "$ESP_CANDIDATE" ]; then
+        log "Removing ESP partition /dev/$ESP_CANDIDATE..."
+        diskutil unmount "/dev/$ESP_CANDIDATE" 2>/dev/null || true
+        diskutil eraseVolume free none "/dev/$ESP_CANDIDATE" 2>/dev/null || warn "Could not remove /dev/$ESP_CANDIDATE"
+    else
+        warn "No $ESP_NAME partition found — may have already been removed"
+    fi
+    # Restore macOS boot device
+    MACOS_VOLUME=$(diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
+    if [ -d "$MACOS_VOLUME" ] && [ "$MACOS_VOLUME" != "/" ]; then
+        bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
+    else
+        bless --mount / --setBoot 2>/dev/null && log "macOS boot device restored (root fallback)" || warn "Could not restore macOS boot device"
+    fi
+    log "Revert complete"
+    exit 0
+fi
 
 # ── Preflight checks ──
 
@@ -163,6 +233,7 @@ echo ""
 log "Step 3: Checking APFS container size..."
 
 CURRENT_SIZE=$(diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+\.[0-9]+ GB' || true)
+_APFS_ORIGINAL_SIZE=$(echo "$CURRENT_SIZE" | grep -oE '[0-9]+\.[0-9]+' || true)
 log "Current APFS size: ${CURRENT_SIZE:-unknown}"
 
 EXISTING_FREE_GB=$(diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "(free" | grep -oE '[0-9]+\.[0-9]+ GB' | head -1 | grep -oE '[0-9]+\.[0-9]+' || true)
@@ -191,8 +262,9 @@ else
     if [ -n "$CURRENT_CONTAINER_GB" ] && echo "$CURRENT_CONTAINER_GB $TARGET_MACOS_GB" | awk '{exit !($1 <= $2)}'; then
         log "APFS already at ${CURRENT_CONTAINER_GB}GB — no resize needed"
     else
-        diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || die "APFS resize failed"
-        log "APFS container resized to ${TARGET_MACOS_GB}GB"
+    diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || die "APFS resize failed"
+    _APFS_RESIZED=1
+    log "APFS container resized to ${TARGET_MACOS_GB}GB"
     fi
 fi
 echo ""
@@ -213,11 +285,14 @@ AFTER_PARTS=$(diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | so
 ESP_DEVICE=$(comm -13 <(echo "$BEFORE_PARTS") <(echo "$AFTER_PARTS") | head -1)
 [ -n "$ESP_DEVICE" ] || die "Cannot identify newly created ESP partition"
 
+_ESP_DEVICE="$ESP_DEVICE"
+
 log "ESP partition candidate: /dev/$ESP_DEVICE"
 
 # Format as FAT32 with the ESP name using GPT (required for UEFI, not MBR)
 diskutil eraseVolume FAT32 "$ESP_NAME" "/dev/$ESP_DEVICE" || \
     die "Failed to format ESP partition as FAT32"
+_ESP_CREATED=1
 sleep 1
 
 ESP_MOUNT="/Volumes/$ESP_NAME"
@@ -232,6 +307,8 @@ log "Step 5: Extracting ISO contents to ESP..."
 ISO_MOUNT="/tmp/ubuntu-iso-mount"
 mkdir -p "$ISO_MOUNT"
 hdiutil attach "$ISO_PATH" -mountpoint "$ISO_MOUNT" -readonly -quiet || die "Failed to mount ISO"
+_ISO_MOUNT="$ISO_MOUNT"
+_ISO_MOUNTED=1
 log "ISO mounted at: $ISO_MOUNT"
 
 ESP_AVAIL=$(df -m "$ESP_MOUNT" | tail -1 | awk '{print $4}')
@@ -542,6 +619,7 @@ mkdir -p "$ESP_MOUNT/boot/grub"
 cp "$ESP_MOUNT/EFI/boot/grub.cfg" "$ESP_MOUNT/boot/grub/grub.cfg"
 
 hdiutil detach "$ISO_MOUNT" -quiet 2>/dev/null || true
+_ISO_MOUNTED=0
 echo ""
 
 # ── Step 6: Verify ESP contents ──
