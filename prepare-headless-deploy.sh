@@ -303,6 +303,12 @@ diskutil eraseVolume FAT32 "$ESP_NAME" "/dev/$ESP_DEVICE" || \
 _ESP_CREATED=1
 sleep 1
 
+# Set GPT partition type to EFI System Partition — Apple EFI firmware requires
+# this for bless to work (diskutil eraseVolume sets it to Microsoft Basic Data)
+ESP_PART_NUM=$(echo "$ESP_DEVICE" | grep -oE '[0-9]+$')
+sgdisk --typecode="${ESP_PART_NUM}":C12A7328-F81F-11D2-BA4B-00A0C93EC93B "$INTERNAL_DISK" || \
+    warn "Could not set EFI partition type — bless may fail"
+
 ESP_MOUNT="/Volumes/$ESP_NAME"
 [ -d "$ESP_MOUNT" ] || die "ESP not mounted at $ESP_MOUNT"
 log "ESP mounted at: $ESP_MOUNT"
@@ -662,7 +668,7 @@ log "Step 7: Setting boot device with bless (--nextonly for safety)..."
 # Once Ubuntu is confirmed running, set permanent boot device from within Ubuntu.
 # bless does NOT validate the target file — we checked BOOTX64.EFI exists above.
 bless --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly || \
-    die "bless failed — cannot set boot device. Check SIP status."
+    die "bless failed (exit $?) — EFI firmware cannot set boot device. Ensure the ESP partition type is C12A7328-F81F-11D2-BA4B-00A0C93EC93B and BOOTX64.EFI exists."
 
 log "Verifying boot device..."
 bless --info "$ESP_MOUNT" 2>/dev/null || warn "Could not verify boot device with bless --info"
