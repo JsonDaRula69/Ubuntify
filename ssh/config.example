@@ -1,0 +1,21 @@
+# Mac Pro 2013 Ubuntu - SSH Configuration
+#
+# Copy this file to ~/.ssh/config or include it:
+#   Include ~/path/to/Mac/ssh/config
+#
+# Usage: ssh macpro-linux
+#
+# Prerequisites:
+#   1. Generate SSH key: ssh-keygen -t ed25519 -f ~/.ssh/macpro_key
+#   2. Copy key to Mac Pro: ssh-copy-id -i ~/.ssh/macpro_key.pub ubuntu@<MAC_PRO_IP>
+#   3. Replace <MAC_PRO_IP> with your Mac Pro's IP address or hostname
+#   4. Replace <MAC_PRO_USER> with your Ubuntu username (default: ubuntu)
+
+Host macpro-linux
+    HostName <MAC_PRO_IP>
+    User <MAC_PRO_USER>
+    IdentityFile ~/.ssh/macpro_key
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    ConnectTimeout 10
+    Compression yes

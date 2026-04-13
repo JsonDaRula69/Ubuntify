@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Ubuntu 24.04.4 LTS Server deployment for Mac Pro 2013 (MacPro6,1) with Broadcom BCM4360 WiFi. Four deployment methods supported: (1) internal ESP partition with autoinstall, (2) USB drive with autoinstall, (3) manual install from USB, (4) VM test in VirtualBox. Dual-boot and full-disk storage layouts. WiFi-only and Ethernet network configurations. SIP blocks bless NVRAM writes — boot device must be selected via keyboard (hold Option at startup) or System Preferences with a monitor.
+Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPro6,1) with Broadcom BCM4360 WiFi. Two modes: **Deploy** (local: build ISO, deploy to ESP/USB/VM, monitor installation) and **Manage** (remote: SSH into installed instance for kernel management, driver rebuilds, macOS erasure, system updates). TUI interface using dialog/whiptail with raw bash fallback. Multi-target logging (serial + file + webhook). Published on GitHub for other Mac Pro owners.
 
 ## Hardware Specifications
 
@@ -20,38 +20,37 @@ Ubuntu 24.04.4 LTS Server deployment for Mac Pro 2013 (MacPro6,1) with Broadcom 
 
 ```
 /Users/djtchill/Desktop/Mac/
+├── prepare-deployment.sh             # Main entry point — TUI with Deploy + Manage modes
 ├── autoinstall.yaml                 # Autoinstall configuration (base template — WiFi + dual-boot)
-├── build-iso.sh                     # ISO builder (xorriso extract-and-repack) — injects config, cidata, GRUB, packages
-├── prepare-deployment.sh             # Interactive deployment script (main orchestrator)
+├── build-iso.sh                     # ISO builder (xorriso extract-and-repack) — called as subprocess
 ├── deploy.conf.example              # WiFi/webhook config template (copy to deploy.conf)
-├── lib/                             # Modular library for prepare-deployment.sh
-│   ├── colors.sh                    # Color constants (RED, GREEN, YELLOW, NC)
-│   ├── utils.sh                     # log, warn, die, vlog, banner functions
+├── lib/                             # Modular library
+│   ├── colors.sh                    # Color constants (RED, GREEN, YELLOW, NC) with guard
+│   ├── logging.sh                   # Multi-target logger (serial+file+webhook) with level control
+│   ├── tui.sh                       # TUI primitives (dialog/whiptail/raw) — auto-detect backend
+│   ├── remote.sh                    # SSH management functions for post-install operations
+│   ├── utils.sh                     # Legacy logger (log, warn, error, die, vlog) — backward compat
 │   ├── detect.sh                    # detect_iso, detect_usb_devices, select_usb_device
 │   ├── disk.sh                      # analyze_disk_layout, shrink_apfs_if_needed, create_esp_partition
 │   ├── autoinstall.sh               # generate_autoinstall, generate_dualboot_storage
 │   ├── bless.sh                     # verify_esp_contents, attempt_bless
 │   ├── deploy.sh                    # deploy_internal_partition, deploy_usb, deploy_manual, deploy_vm_test
-│   └── revert.sh                    # revert_changes, handle_revert_flag
+│   └── revert.sh                    # revert_changes, handle_revert_flag, cleanup_on_error
 ├── packages/                        # .deb files for driver compilation (34 debs)
 │   ├── broadcom-sta-dkms_*.deb      # Broadcom WiFi driver source
 │   ├── dkms_*.deb                   # Dynamic Kernel Module Support
 │   ├── linux-headers-6.8.0-100*     # Kernel headers matching ISO kernel (6.8.0-100-generic)
-│   ├── gcc-13_*, gcc-13-x86-64-linux-gnu_*, make_*, etc.       # Build toolchain (13.3.0 matching ISO kernel)
-│   ├── dkms-patches/               # 6 kernel 6.8+ compatibility patches (series file + *.patch)
-│   │   ├── series                   # Ordered patch list
-│   │   ├── 29-*.patch               # Fix kernel version parsing
-│   │   ├── 30-*.patch               # Fix unaligned header location (6.12+)
-│   │   ├── 31-*.patch               # Provide local lib80211.h (6.13+)
-│   │   ├── 32-*.patch               # Fix get_tx_power link_id param (6.14+)
-│   │   ├── 38-*.patch               # Replace EXTRA_CFLAGS with ccflags-y (6.15+)
-│   │   └── 39-*.patch               # Replace del_timer with timer_delete (6.15+)
+│   ├── gcc-13_*, gcc-13-x86-64-linux-gnu_*, make_*, etc.       # Build toolchain
+│   ├── dkms-patches/               # 6 kernel 6.8+ compatibility patches (series + *.patch)
 │   └── ...
+├── ssh/                             # SSH configuration for Manage mode
+│   └── config.example               # Template for ~/.ssh/config (Host macpro-linux)
 ├── README.md                        # Documentation
-├── How-to-Update.md                 # Kernel update safety guide (circular dependency: DKMS ↔ new kernel)
-├── Post-Install.md                  # Post-installation tasks (WiFi password rotation, SSH hardening)
+├── How-to-Update.md                 # Kernel update safety guide (7 phases with rollback)
+├── Post-Install.md                  # Post-install operations (erase macOS, system update)
 ├── macpro-monitor/                  # Node.js webhook monitor
-│   ├── server.js
+│   ├── server.js                    # HTTP server with event bus and progress tracking
+│   ├── package.json                 # Node.js package manifest
 │   ├── start.sh / stop.sh / reset.sh
 │   └── logs/
 ├── vm-test/                         # VirtualBox test environment
@@ -69,7 +68,7 @@ Ubuntu 24.04.4 LTS Server deployment for Mac Pro 2013 (MacPro6,1) with Broadcom 
 sudo ./build-iso.sh
 ```
 
-### Deploy (interactive menu)
+### Deploy (interactive TUI)
 ```bash
 sudo ./prepare-deployment.sh
 ```
@@ -84,6 +83,12 @@ sudo ./prepare-deployment.sh --dry-run
 sudo ./prepare-deployment.sh --revert
 ```
 
+### Manage (SSH into installed instance)
+```bash
+sudo ./prepare-deployment.sh
+# Select "Manage" from TUI → System Info, Kernel, WiFi/Driver, Storage, APT, Reboot
+```
+
 ### Node.js Monitor
 ```bash
 cd macpro-monitor && ./start.sh    # Start (port 8080)
@@ -95,64 +100,10 @@ cd macpro-monitor && ./start.sh    # Start (port 8080)
 cd vm-test && sudo ./build-iso-vm.sh && ./create-vm.sh && ./test-vm.sh
 ```
 
-## Core Design Decisions
-
-1. **Extract-and-repack ISO modification**: The original ISO is extracted to a staging directory, custom files are overlaid, and the ISO is rebuilt using boot parameters preserved via `xorriso -report_el_torito as_mkisofs`. Boot params are flattened with `tr '\n' ' '` before `eval` — newlines in BOOT_PARAMS cause eval to treat each line as a separate command. This properly preserves Ubuntu 24.04's appended EFI partition image and MBR hybrid boot structure. Volume label set to `cidata` for NoCloud discovery.
-
-2. **Compile during install with DKMS patches**: The `early-commands` dynamically detects the running kernel (`KVER="$(uname -r)"`), validates matching headers exist, then installs from discovered `macpro-pkgs/` mount. The `broadcom-sta-dkms` postinst auto-runs `dkms add` (creates symlink). DKMS patches are applied to `/usr/src/` AFTER `dpkg -i` but BEFORE `dkms build`. Missing patches are FATAL. Failed builds have single-retry fallback with clean-then-rebuild. The `late-commands` repeats this in a 4-stage `dpkg --root /target` install with bind mounts for chroot DKMS.
-
-3. **GPU**: AMD FirePro uses built-in `amdgpu` driver. Only `nomodeset amdgpu.si.modeset=0` kernel params needed — pre-baked in GRUB config.
-
-4. **Network**: WiFi netplan generated in early-commands (after `wl` driver load + interface detection) with auto-detected interface name. The `network:` section cannot use `wifis:` because the driver doesn't exist in the live environment until early-commands compiles it. networkd does not support `match:` for `wifis:` (Ubuntu Bug #2073155), so the actual detected interface name must be used. Config generated with `printf` (not heredoc). Uses `networkd` renderer (NOT NetworkManager). WiFi power management disabled via modprobe options and systemd unit. Netplan failure is FATAL.
-
-5. **Storage (Dual-Boot)**: All existing partitions preserved with `preserve: true`. The `prepare-deployment.sh` script dynamically generates storage config using Python + `sgdisk` after APFS resize. Partition type GUIDs normalized to lowercase for curtin. ESP labeled `CIDATA` (uppercase) for NoCloud discovery — FAT32 volume names on macOS must be uppercase. Storage config uses string-based regex replacement (NOT `yaml.dump`) to preserve `|` block scalars.
-
-6. **Remote boot via `bless`**: `bless --setBoot --mount <esp> --file <esp>/EFI/boot/bootx64.efi --nextonly` from macOS SSH. On FAT32 volumes, `bless` requires `--file` to specify the EFI bootloader path. The GPT partition type must be `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` (EFI System Partition) — `diskutil eraseVolume` sets Microsoft Basic Data, which Apple EFI firmware rejects. The `--nextonly` flag reverts boot to macOS if the firmware can't find a valid bootloader. GRUB parameters are pre-baked.
-
-7. **macOS boot from GRUB**: GRUB cannot read APFS. The `40_macos` menu entry uses `fwsetup` to reboot to Apple Boot Manager. `efibootmgr` is installed with `LIBEFIVAR_OPS=efivarfs` workaround for Apple EFI 1.1 bug (Ubuntu Bug #2040190). `/usr/local/bin/boot-macos` uses `efibootmgr --bootnext` to set macOS as next boot device.
-
-8. **SSH into installer**: `early-commands` starts `sshd` after WiFi driver compilation. Falls back to ISO pool `.deb`s with `--force-depends` if network apt fails. `ssh: install-server: true` only applies to the target system.
-
-9. **NoCloud datasource**: ISO includes `/cidata/` for `ds=nocloud`. Volume label `CIDATA` (uppercase) enables discovery — cloud-init searches labels case-insensitively on Linux. `autoinstall` kernel param bypasses confirmation prompt.
-
-10. **Deploy safety**: `prepare-deployment.sh` uses before/after partition diffing. APFS snapshots auto-deleted. Bless verified with `--info`. Error recovery trap reverts all changes (method-dependent: internal partition removes ESP and restores APFS, USB unmounts device, VM test powers off VM). Pre-flight checks validate ISO integrity, SIP, FileVault, and webhook reachability. Supports `--revert` flag for manual rollback.
-
-11. **Monitoring**: `macpro-monitor` receives Subiquity/Curtin events via webhook at DEBUG level, plus custom progress events via `curl` with `{progress, stage, status, message}` payloads. Progress percentages are monotonically increasing.
-
-12. **All critical paths are fatal**: DKMS failures, driver load failures, patch failures, WiFi connectivity failures, missing headers — all `exit 1`. Non-critical failures (`update-grub`, SSH start) use `|| true` or `|| echo WARN`. Error events sent to webhook before exit.
-
-13. **WiFi connectivity verification**: After driver load and interface detection, the installer verifies WiFi by scanning for networks (iwlist), checking DHCP lease, and testing HTTP connectivity. If WiFi is lost, the system automatically reloads the `wl` driver and retries for up to 60 seconds. If reconnect fails in early-commands, installation aborts before storage. If reconnect fails in late-commands, the system enters recovery mode (keeps SSH alive, blocks reboot).
-
-14. **Post-install verification and recovery**: Late-commands verify kernel, netplan, GRUB, WiFi module, and user account. If WiFi is broken in the target system, the installer does NOT reboot into a headless brick — keeps SSH alive with infinite sleep loop for remote debugging. Error logs saved to `/var/log/macpro-install/` (persists across reboots). UFW firewall denies all incoming except SSH.
-
-15. **Dynamic mount discovery**: `macpro-pkgs/` is discovered dynamically by searching `/cdrom`, `/isodevice`, and `/mnt` — path varies by boot method.
-
-16. **ISO extraction via xorriso on macOS**: macOS `hdiutil` cannot mount xorriso-built ISOs with hybrid MBR+GPT+appended EFI partition structures — this is a structural incompatibility, not a bug. The `prepare-deployment.sh` script uses `xorriso -osirrox on -indev` to extract files directly to the ESP, bypassing mount entirely.
-
-17. **APFS container indirection on macOS**: The macOS partition table references APFS by physical partition (e.g. `disk0s2` contains `Apple_APFS Container disk1`), but `diskutil apfs` commands operate on the container reference (`disk1`). The `prepare-deployment.sh` script parses both — using `diskutil info` on the partition to discover the container reference. `diskutil apfs resizeContainer` takes the container reference, NOT the physical partition.
-
-18. **ESP GPT type must be EFI System Partition**: `diskutil eraseVolume FAT32` sets the GPT partition type to Microsoft Basic Data (`EBD0A0A2-B9E5-4433-87C0-68B6B72699C7`), but Apple EFI firmware requires `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` for `bless` to work. `sgdisk --typecode` fails on macOS boot disk (IOKit exclusive lock). Solution: use `diskutil addPartition disk0 %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% 5g` to create the partition with correct ESP type from the start, then format with `newfs_msdos -F 32 -v CIDATA` (which does NOT change GPT type, unlike `diskutil eraseVolume`).
-
-19. **diskutil eraseVolume renumbers slices**: When `eraseVolume` changes the filesystem, macOS may assign a new slice number (e.g. creating `disk0s3` but formatting as `disk0s4`). Always find partitions by volume name, not by tracked device number.
-
-20. **bless on FAT32 requires --file**: On FAT32 EFI volumes, `bless --setBoot --mount` alone fails with `0xe00002e2`. Must also specify `--file <esp>/EFI/boot/bootx64.efi` to identify the EFI bootloader path.
-
-21. **SIP blocks ALL NVRAM writes**: On Mac Pro 2013 with macOS 12.7.6 (SIP enabled), both `bless --setBoot` and `nvram` fail — even with correct GPT type and IOKit registration. The error `0xe00002e2` occurs at the NVRAM write step, not at IOKit matching. `systemsetup -setstartupdisk` also fails under SIP. Boot device must be set via blind keyboard (hold Option → Right Arrow → Enter to select CIDATA) or Recovery Mode (Cmd+R → `csrutil enable --without nvram` → `bless`). After Ubuntu installs, `efibootmgr` from Linux (no SIP) sets permanent boot order. `prepare-deployment.sh` handles bless failure gracefully with blind boot instructions.
-
-22. **newfs_msdos does not register with IOKit/DiskArbitration**: `newfs_msdos -F 32 -v CIDATA /dev/disk0s3` creates a valid FAT32 filesystem without changing the GPT partition type (unlike `diskutil eraseVolume`), but the volume is not registered with IOKit's DiskArbitration framework. Bless may fail because it cannot construct the IOMatch NVRAM dict. Unformatted partitions created by `diskutil addPartition %noformat%` also lack raw device nodes (`/dev/rdisk0sN`) — use block device `/dev/disk0sN` for `newfs_msdos`.
-
-23. **cloud-init first-boot network overwrite**: cloud-init regenerates `/etc/netplan/50-cloud-init.yaml` on first boot, which can conflict with custom netplan configs. Disable cloud-init network config generation by writing `network: {config: disabled}` to `/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg` in late-commands.
-
-24. **Volume label CIDATA uppercase**: FAT32 volume names on macOS must be uppercase. cloud-init's NoCloud datasource searches volume labels case-insensitively on Linux, so `CIDATA` is discovered correctly.
-
-## VirtualBox Test Environment
-
-| File | Purpose |
-|------|---------|
-| `autoinstall-vm.yaml` | DKMS compiles (fatal on failure), driver init non-fatal (no Broadcom HW). Uses Ethernet. Webhook targets `10.0.2.2` via NAT. |
-| `build-iso-vm.sh` | Builds `ubuntu-vmtest.iso` from `../packages/` with VM config |
-| `create-vm.sh` | VirtualBox VM: EFI, 4 CPUs, 4.5GB RAM, 25GB disk, NAT, SSH port forward |
-| `test-vm.sh` | Run/monitor/SSH/grab logs/stop/destroy |
+### Syntax check all shell scripts
+```bash
+bash -n prepare-deployment.sh && bash -n lib/*.sh && bash -n build-iso.sh && bash -n vm-test/*.sh
+```
 
 ## Deployment Methods
 
@@ -200,10 +151,31 @@ Method 4 (VM test) uses fixed Ethernet and single disk — no storage or network
 ```bash
 set -e
 set -o pipefail
+set -u
 readonly CONST="value"
 local var="value"
 ```
 Use `RED`, `GREEN`, `NC` color constants. Log to file with `tee`.
+
+### TUI Module (lib/tui.sh)
+- Auto-detects `dialog` > `whiptail` > `raw` at source time
+- All menus use `tui_menu`, `tui_confirm`, `tui_input`, `tui_password`
+- Progress uses `tui_progress` (reads `PERCENT MESSAGE` from stdin)
+- Log tailing uses `tui_tailbox`
+- Never call `dialog` or `whiptail` directly — always via tui_* functions
+
+### Logging Module (lib/logging.sh)
+- Multi-target: serial console, file, webhook
+- Levels: DEBUG(0), INFO(1), WARN(2), ERROR(3), FATAL(4)
+- `log_init [LOG_DIR] [WEBHOOK_URL]` must be called at startup
+- `log_shutdown` must be called in trap handlers
+- Backward-compatible aliases: `log()` = `log_info()`, `die()` = `log_fatal()`
+
+### Remote Management (lib/remote.sh)
+- All functions accept optional `[HOST]` parameter (defaults to `macpro-linux`)
+- SSH commands use `-o ConnectTimeout=10 -o BatchMode=yes`
+- `LIBEFIVAR_OPS=efivarfs` set for all `efibootmgr` commands
+- Destructive operations require explicit user confirmation
 
 ### YAML (autoinstall.yaml)
 - Use `|` block scalar for shell commands to avoid YAML parsing issues

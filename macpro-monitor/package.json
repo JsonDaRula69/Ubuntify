@@ -1,0 +1,22 @@
+{
+  "name": "macpro-monitor",
+  "version": "0.2.0",
+  "description": "Webhook monitor for Mac Pro 2013 Ubuntu deployment - receives Subiquity/Curtin events and custom progress updates",
+  "main": "server.js",
+  "scripts": {
+    "start": "./start.sh",
+    "stop": "./stop.sh",
+    "reset": "./reset.sh"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "macpro",
+    "ubuntu",
+    "deployment",
+    "monitor",
+    "webhook"
+  ],
+  "license": "MIT"
+}
