@@ -42,8 +42,7 @@ Mac Pro has no Ethernet. Broadcom BCM4360 WiFi requires a proprietary `wl` drive
 | `build-iso.sh` | Builds modified ISO: extract, overlay, repack preserving EFI boot |
 | `packages/` | .deb files for driver compilation (34 packages) |
 | `packages/dkms-patches/` | 6 DKMS patches for kernel 6.8+ compatibility (series file + *.patch) |
-| `prepare-deployment.sh` | Interactive deployment script: ESP partition, USB, or manual |
-| `prepare-headless-deploy.sh.bak` | Backup of original headless-only deploy script |
+| `prepare-deployment.sh` | Interactive deployment script: ESP partition, USB, manual, or VM test |
 | `prereqs/` | Stock Ubuntu 24.04.4 Server ISO (`*.iso` gitignored) |
 | `macpro-monitor/` | Node.js webhook server for installation monitoring (3-pane dashboard) |
 | `vm-test/` | VirtualBox test environment for DKMS compilation validation |

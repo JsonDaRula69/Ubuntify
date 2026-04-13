@@ -22,8 +22,7 @@ Ubuntu 24.04.4 LTS Server deployment for Mac Pro 2013 (MacPro6,1) with Broadcom 
 /Users/djtchill/Desktop/Mac/
 ├── autoinstall.yaml                 # Autoinstall configuration (base template — WiFi + dual-boot)
 ├── build-iso.sh                     # ISO builder (xorriso extract-and-repack) — injects config, cidata, GRUB, packages
-├── prepare-deployment.sh             # Interactive deployment script: ESP partition, USB, or manual
-├── prepare-headless-deploy.sh.bak   # Backup of original headless-only deploy script
+├── prepare-deployment.sh             # Interactive deployment script: ESP partition, USB, manual, or VM test
 ├── packages/                        # .deb files for driver compilation (34 debs)
 │   ├── broadcom-sta-dkms_*.deb      # Broadcom WiFi driver source
 │   ├── dkms_*.deb                   # Dynamic Kernel Module Support
@@ -113,7 +112,7 @@ cd vm-test && sudo ./build-iso-vm.sh && ./create-vm.sh && ./test-vm.sh
 
 16. **ISO extraction via xorriso on macOS**: macOS `hdiutil` cannot mount xorriso-built ISOs with hybrid MBR+GPT+appended EFI partition structures — this is a structural incompatibility, not a bug. The `prepare-deployment.sh` script uses `xorriso -osirrox on -indev` to extract files directly to the ESP, bypassing mount entirely.
 
-17. **APFS container indirection on macOS**: The macOS partition table references APFS by physical partition (e.g. `disk0s2` contains `Apple_APFS Container disk1`), but `diskutil apfs` commands operate on the container reference (`disk1`). The `prepare-headless-deploy.sh` script parses both — using `diskutil info` on the partition to discover the container reference. `diskutil apfs resizeContainer` takes the container reference, NOT the physical partition.
+17. **APFS container indirection on macOS**: The macOS partition table references APFS by physical partition (e.g. `disk0s2` contains `Apple_APFS Container disk1`), but `diskutil apfs` commands operate on the container reference (`disk1`). The `prepare-deployment.sh` script parses both — using `diskutil info` on the partition to discover the container reference. `diskutil apfs resizeContainer` takes the container reference, NOT the physical partition.
 
 18. **ESP GPT type must be EFI System Partition**: `diskutil eraseVolume FAT32` sets the GPT partition type to Microsoft Basic Data (`EBD0A0A2-B9E5-4433-87C0-68B6B72699C7`), but Apple EFI firmware requires `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` for `bless` to work. `sgdisk --typecode` fails on macOS boot disk (IOKit exclusive lock). Solution: use `diskutil addPartition disk0 %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% 5g` to create the partition with correct ESP type from the start, then format with `newfs_msdos -F 32 -v CIDATA` (which does NOT change GPT type, unlike `diskutil eraseVolume`).
 

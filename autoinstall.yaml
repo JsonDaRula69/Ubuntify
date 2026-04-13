@@ -310,6 +310,9 @@ autoinstall:
       fi
       set +x
 
+  # NOTE: This section is intentionally minimal — WiFi netplan is generated
+  # in early-commands after wl driver load (networkd doesn't support match: for
+  # wifis). For Ethernet installs, generate_autoinstall() injects ethernets: here.
   network:
     version: 2
     renderer: networkd
