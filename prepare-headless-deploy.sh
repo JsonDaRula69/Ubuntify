@@ -182,7 +182,7 @@ if [ -n "$APFS_CONTAINER" ]; then
     fi
 fi
 
-diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" 0 0 0 || die "APFS resize failed"
+diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || die "APFS resize failed"
 log "APFS container resized"
 echo ""
 
