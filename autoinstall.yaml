@@ -338,7 +338,7 @@ autoinstall:
     - ufw
 
   # DANGER: This template does NOT include preserve:true on existing partitions.
-  # The prepare-headless-deploy.sh script MUST inject preserve:true for all
+  # The prepare-deployment.sh script MUST inject preserve:true for all
   # existing macOS/APFS partitions before use. Without that injection,
   # curtin will WIPE existing partitions during autoinstall.
   storage:
