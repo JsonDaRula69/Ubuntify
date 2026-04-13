@@ -661,7 +661,7 @@ log "Step 7: Setting boot device with bless (--nextonly for safety)..."
 # Use --nextonly so that if the installer fails, the next boot falls back to macOS.
 # Once Ubuntu is confirmed running, set permanent boot device from within Ubuntu.
 # bless does NOT validate the target file — we checked BOOTX64.EFI exists above.
-bless --setBoot --mount "$ESP_MOUNT" --nextonly || \
+bless --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly || \
     die "bless failed — cannot set boot device. Check SIP status."
 
 log "Verifying boot device..."
