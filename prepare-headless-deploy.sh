@@ -165,25 +165,26 @@ log "Step 3: Shrinking APFS container..."
 CURRENT_SIZE=$(diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+\.[0-9]+ GB' || true)
 log "Current APFS size: ${CURRENT_SIZE:-unknown}"
 
-MIN_MACOS_GB=80
-TARGET_MACOS_GB=100
-log "Target macOS size: ${TARGET_MACOS_GB}GB (minimum: ${MIN_MACOS_GB}GB)"
+MIN_MACOS_GB=50
 
-if [ -n "$APFS_CONTAINER" ]; then
-    FREE_GB_STR=$(diskutil apfs list "$APFS_CONTAINER" 2>/dev/null | grep -A1 "Available" | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
-    if [ -n "$FREE_GB_STR" ]; then
-        REQUIRED_GB=$((TARGET_MACOS_GB + 5))
-        if [ "$(echo "$FREE_GB_STR" | awk -v req="$REQUIRED_GB" '{print ($1 > req) ? "yes" : "no"}')" = "no" ]; then
-            die "Insufficient free space (${FREE_GB_STR}GB free, need ${REQUIRED_GB}GB for resize with margin)"
-        fi
-        log "Free space check passed: ${FREE_GB_STR}GB available, ${REQUIRED_GB}GB required"
-    else
-        warn "Could not determine free space — proceeding without validation"
-    fi
+log "Purging purgeable APFS space..."
+tmutil thinlocalsnapshots / 999999999999 2>/dev/null || true
+
+USED_GB=$(diskutil apfs list "$APFS_CONTAINER" 2>/dev/null | grep "Capacity In Use By Volumes" | grep -oE '[0-9]+\.[0-9]+ GB' | head -1 | grep -oE '[0-9]+\.[0-9]+' || true)
+if [ -z "$USED_GB" ]; then
+    USED_GB=$(diskutil apfs list "$APFS_CONTAINER" 2>/dev/null | grep "Capacity In Use By Volumes" | grep -oE '[0-9]+ B' | head -1 | awk '{printf "%.1f", $1/1024/1024/1024}' || true)
+fi
+
+if [ -n "$USED_GB" ]; then
+    TARGET_MACOS_GB=$(echo "$USED_GB" | awk -v min="$MIN_MACOS_GB" -v margin=5 '{target=int($1)+margin; if(target<min) target=min; print target}')
+    log "APFS in use: ${USED_GB}GB → shrinking to ${TARGET_MACOS_GB}GB (5GB margin)"
+else
+    TARGET_MACOS_GB=200
+    warn "Could not determine APFS usage — defaulting to ${TARGET_MACOS_GB}GB for macOS"
 fi
 
 diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || die "APFS resize failed"
-log "APFS container resized"
+log "APFS container resized to ${TARGET_MACOS_GB}GB"
 echo ""
 
 # ── Step 4: Create ESP partition ──
