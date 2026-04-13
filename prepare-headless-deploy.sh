@@ -670,6 +670,7 @@ echo ""
 log "Step 7: Setting boot device..."
 
 BLESS_OK=0
+NVRAM_DELETED=0
 
 # Method 0: systemsetup — uses com.apple.private.diskmanagement.set-boot-device
 # entitlement (different from bless's com.apple.private.iokit.system-nvram-allow)
@@ -688,6 +689,7 @@ fi
 
 # Method 1: bless --mount --file with --nextonly
 if [ "$BLESS_OK" -eq 0 ]; then
+    # Method 1: bless --mount --file with --nextonly
     log "Attempting bless --nextonly..."
     BLESS_OUT=$(bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>&1) || true
     echo "$BLESS_OUT" | tee -a "$LOG_FILE"
@@ -699,71 +701,50 @@ if [ "$BLESS_OK" -eq 0 ]; then
 fi
 
 if [ "$BLESS_OK" -eq 0 ]; then
-    log "Trying without --nextonly (permanent boot change)..."
-    BLESS_OUT=$(bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" 2>&1) || true
+    # Method 2: bless --device mode (uses block device path, different IOKit code path)
+    log "Attempting bless --device mode..."
+    BLESS_OUT=$(bless --verbose --device "/dev/$ESP_DEVICE" --setBoot --nextonly 2>&1) || true
     echo "$BLESS_OUT" | tee -a "$LOG_FILE"
     if echo "$BLESS_OUT" | grep -qi "error\|failed\|could not\|0xe0"; then
-        warn "bless (permanent) also failed"
+        warn "bless --device --nextonly failed"
     else
         BLESS_OK=1
     fi
 fi
 
 if [ "$BLESS_OK" -eq 0 ]; then
-    # Method 3: Reformat with diskutil eraseVolume (IOKit registration in case that's needed)
-    # and try both --nextonly and permanent
-    log "Reformatting ESP with diskutil eraseVolume to register with IOKit..."
-    ESP_BACKUP_DIR=$(mktemp -d /tmp/esp_backup.XXXXXX)
-    log "Backing up ESP contents to $ESP_BACKUP_DIR..."
-    rsync -a "$ESP_MOUNT/" "$ESP_BACKUP_DIR/" 2>/dev/null || warn "ESP backup incomplete"
-
-    diskutil eraseVolume FAT32 "$ESP_NAME" "/dev/$ESP_DEVICE" 2>/dev/null || die "diskutil eraseVolume failed"
-    sleep 1
-    ESP_MOUNT="/Volumes/$ESP_NAME"
-    [ -d "$ESP_MOUNT" ] || die "ESP not mounted after diskutil eraseVolume"
-
-    log "Restoring ESP contents from backup..."
-    rsync -a "$ESP_BACKUP_DIR/" "$ESP_MOUNT/" 2>/dev/null || warn "ESP restore incomplete"
-    rm -rf "$ESP_BACKUP_DIR"
-    [ -f "$ESP_MOUNT/EFI/boot/bootx64.efi" ] || die "bootx64.efi missing after ESP restore"
-    [ -f "$ESP_MOUNT/autoinstall.yaml" ] || die "autoinstall.yaml missing after ESP restore"
-
-    # Attempt sgdisk to fix GPT type (eraseVolume resets it)
-    log "Attempting to restore EFI System Partition GPT type..."
-    ESP_ACTUAL_DEV=$(diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
-    if [ -n "$ESP_ACTUAL_DEV" ]; then
-        ESP_PART_NUM=$(echo "$ESP_ACTUAL_DEV" | grep -oE '[0-9]+$')
-        diskutil unmount "$ESP_MOUNT" 2>/dev/null || true
-        RDISK="/dev/r$(basename "$INTERNAL_DISK")"
-        sgdisk --typecode="${ESP_PART_NUM}":C12A7328-F81F-11D2-BA4B-00A0C93EC93B "$RDISK" 2>/dev/null || \
-        sgdisk --typecode="${ESP_PART_NUM}":C12A7328-F81F-11D2-BA4B-00A0C93EC93B "$INTERNAL_DISK" 2>/dev/null || \
-            warn "Could not restore EFI GPT type (disk locked) — firmware may or may not accept this"
-        diskutil mount "/dev/$ESP_ACTUAL_DEV" 2>/dev/null || true
-        ESP_MOUNT="/Volumes/$ESP_NAME"
-        [ -d "$ESP_MOUNT" ] || die "ESP not remounted after sgdisk attempt"
-    fi
-
-    BLESS_OUT=$(bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>&1) || true
+    # Method 3: bless --device without --nextonly (permanent)
+    log "Attempting bless --device permanent..."
+    BLESS_OUT=$(bless --verbose --device "/dev/$ESP_DEVICE" --setBoot 2>&1) || true
     echo "$BLESS_OUT" | tee -a "$LOG_FILE"
     if echo "$BLESS_OUT" | grep -qi "error\|failed\|could not\|0xe0"; then
-        warn "bless --nextonly (after reformat) failed"
+        warn "bless --device permanent also failed"
     else
         BLESS_OK=1
-    fi
-    if [ "$BLESS_OK" -eq 0 ]; then
-        BLESS_OUT=$(bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" 2>&1) || true
-        echo "$BLESS_OUT" | tee -a "$LOG_FILE"
-        if echo "$BLESS_OUT" | grep -qi "error\|failed\|could not\|0xe0"; then
-            warn "bless (permanent, after reformat) also failed"
-        else
-            BLESS_OK=1
-        fi
     fi
 fi
 
 if [ "$BLESS_OK" -eq 0 ]; then
-    # Method 4: Direct NVRAM manipulation — bypass bless entirely
-    warn "All bless methods failed — attempting direct NVRAM boot device configuration..."
+    # Method 4: Delete efi-boot-device NVRAM to force firmware scan of all volumes
+    # When no efi-boot-device is set, Apple firmware scans volumes for \EFI\BOOT\BOOTX64.EFI
+    log "Attempting NVRAM boot device deletion (forces firmware scan fallback)..."
+    NVRAM_DEL_OUT=$(nvram -d efi-boot-device 2>&1) || true
+    echo "$NVRAM_DEL_OUT" | tee -a "$LOG_FILE"
+    NVRAM_DEL2_OUT=$(nvram -d efi-boot-next 2>&1) || true
+    echo "$NVRAM_DEL2_OUT" | tee -a "$LOG_FILE"
+    if echo "$NVRAM_DEL_OUT" | grep -qi "not permitted\|error\|failed"; then
+        warn "NVRAM deletion blocked by SIP"
+    else
+        log "NVRAM boot device deleted — firmware will scan all volumes at next boot"
+        log "CIDATA has /EFI/BOOT/BOOTX64.EFI which is the standard EFI fallback path"
+        BLESS_OK=1
+        NVRAM_DELETED=1
+    fi
+fi
+
+if [ "$BLESS_OK" -eq 0 ]; then
+    # Method 5: Direct NVRAM write — construct efi-boot-device plist manually
+    warn "All bless and NVRAM deletion methods failed — attempting direct NVRAM boot device configuration..."
     # Get partition UUID from multiple sources (diskutil, ioreg, sgdisk)
     ESP_UUID=$(diskutil info "/dev/$ESP_DEVICE" 2>/dev/null | grep -iE "volume uuid|partition uuid|disk.*uuid" | grep -oE '[0-9A-Fa-f-]{36}' | head -1 | tr '[:lower:]' '[:upper:]' || true)
     if [ -z "$ESP_UUID" ]; then
@@ -850,8 +831,41 @@ echo "========================================="
 echo ""
 
 if [ "$BLIND_BOOT" -eq 1 ]; then
-echo "⚠  SIP blocks NVRAM writes — boot device NOT set automatically."
-echo "   Manual keyboard selection required at boot."
+echo "⚠  Boot device NOT set automatically."
+echo "   Manual selection required at boot (keyboard needed)."
+echo ""
+echo "BLIND BOOT PROCEDURE (no monitor required):"
+echo ""
+echo "  Two bootable volumes will appear in Startup Manager:"
+echo "    Left:  Macintosh HD (macOS)"
+echo "    Right: CIDATA (Ubuntu installer)"
+echo ""
+echo "  Method A — Startup Manager:"
+echo "    1. Run: sudo shutdown -r now"
+echo "    2. After the startup CHIME, press and HOLD Option key for 10+ seconds"
+echo "    3. Release Option — wait for Startup Manager to scan disks"
+echo "    4. Press Right Arrow once → selects CIDATA"
+echo "    5. Press Enter → boots Ubuntu installer"
+echo ""
+echo "  NOTE: USB dongle wireless keyboards may not register"
+echo "  keystrokes during firmware boot. If Option doesn't work:"
+echo "    - Try holding Option BEFORE the chime (power-on through chime)"
+echo "    - Use a wired USB keyboard plugged into Mac Pro chassis port"
+echo ""
+echo "  Method B — Recovery Mode (if Method A fails):"
+echo "    1. Run: sudo shutdown -r now"
+echo "    2. Hold Cmd+R after chime until Recovery loads (~30s)"
+echo "    3. In Recovery Terminal, run:"
+echo "       csrutil enable --without nvram"
+echo "       reboot"
+echo "    4. Back in macOS, run:"
+echo "       sudo bless --setBoot --mount /Volumes/CIDATA \\"
+echo "         --file /Volumes/CIDATA/EFI/boot/bootx64.efi --nextonly"
+echo "       sudo shutdown -r now"
+echo ""
+echo "  SAFETY: If you select macOS by mistake, just try again."
+echo "  After Ubuntu installs, efibootmgr sets permanent boot order"
+echo "  from Linux (no SIP restrictions on Linux)."
 echo ""
 echo "BLIND BOOT PROCEDURE (no monitor required):"
 echo ""
@@ -883,20 +897,26 @@ echo "  After Ubuntu installs, efibootmgr sets permanent boot order"
 echo "  from Linux (no SIP restrictions on Linux)."
 echo ""
 else
-echo "Boot device set via bless (--nextonly: reverts to macOS only if firmware cannot find bootloader)."
+if [ "$NVRAM_DELETED" -eq 1 ]; then
+echo "NVRAM boot device deleted — firmware will scan all volumes at next boot."
+echo "CIDATA has /EFI/BOOT/BOOTX64.EFI (standard EFI fallback boot path)."
+echo "The Mac Pro SHOULD boot CIDATA automatically."
 echo ""
-echo "NOTE: --nextonly was used with bless."
-echo "If the ESP boot files are corrupt and the firmware"
-echo "cannot find a valid bootloader, the NEXT reboot will"
-echo "fall back to macOS automatically."
+echo "If it boots macOS instead, hold Option at startup to select CIDATA."
 echo ""
-echo "HOWEVER: Once the installer successfully boots and"
-echo "begins autoinstall (which wipes the disk), macOS is"
-echo "preserved (dual-boot). However, if the installer fails mid-process,"
-echo "physical access may be required to restore boot order."
+elif [ "$BLESS_OK" -eq 1 ]; then
+echo "Boot device set via bless."
 echo ""
 echo "On next reboot, the Mac Pro will boot into"
 echo "Ubuntu Server autoinstall and begin installation."
+fi
+echo ""
+echo "NOTE: --nextonly was used if bless succeeded."
+echo "If the ESP boot files are corrupt, the next reboot"
+echo "will fall back to macOS automatically."
+echo ""
+echo "After Ubuntu installs, efibootmgr sets permanent boot order"
+echo "from Linux (no SIP restrictions on Linux)."
 fi
 
 echo ""
