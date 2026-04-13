@@ -11,7 +11,6 @@ APFS_CONTAINER=""
 
 _APFS_ORIGINAL_SIZE=""
 _APFS_RESIZED=0
-_ESP_DEVICE=""
 _ESP_CREATED=0
 
 readonly RED='\033[0;31m'
@@ -31,8 +30,13 @@ revert_changes() {
     error "Reverting deployment changes..."
     local REVERT_ERRORS=0
 
+    # Ensure INTERNAL_DISK is known — may not be set if we failed very early
+    if [ -z "$INTERNAL_DISK" ]; then
+        INTERNAL_DISK=$(diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
+    fi
+
     # Find ESP by volume name — diskutil eraseVolume renumbers the slice
-    if [ "$_ESP_CREATED" -eq 1 ]; then
+    if [ "$_ESP_CREATED" -eq 1 ] && [ -n "$INTERNAL_DISK" ]; then
         ESP_REVERT_DEV=$(diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
         if [ -n "$ESP_REVERT_DEV" ]; then
             log "Removing ESP partition /dev/$ESP_REVERT_DEV..."
@@ -56,8 +60,10 @@ revert_changes() {
         _APFS_RESIZED=0
     fi
 
-    local MACOS_VOLUME
-    MACOS_VOLUME=$(diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
+    local MACOS_VOLUME="/"
+    if [ -n "$APFS_CONTAINER" ]; then
+        MACOS_VOLUME=$(diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
+    fi
     if [ -d "$MACOS_VOLUME" ] && [ "$MACOS_VOLUME" != "/" ]; then
         bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && \
             log "macOS boot device restored" || {
@@ -76,7 +82,7 @@ revert_changes() {
         log "Revert complete — disk restored to pre-deployment state"
     else
         error "Revert incomplete — some changes may require manual cleanup"
-        diskutil list "$INTERNAL_DISK" 2>/dev/null || true
+        [ -n "$INTERNAL_DISK" ] && diskutil list "$INTERNAL_DISK" 2>/dev/null || true
     fi
 }
 
@@ -296,12 +302,14 @@ ESP_DEVICE=$(comm -13 <(echo "$BEFORE_PARTS") <(echo "$AFTER_PARTS") | head -1)
 _ESP_DEVICE="$ESP_DEVICE"
 
 log "ESP partition candidate: /dev/$ESP_DEVICE"
-
-# Format as FAT32 with the ESP name using GPT (required for UEFI, not MBR)
 diskutil eraseVolume FAT32 "$ESP_NAME" "/dev/$ESP_DEVICE" || \
     die "Failed to format ESP partition as FAT32"
 _ESP_CREATED=1
 sleep 1
+
+ESP_MOUNT="/Volumes/$ESP_NAME"
+[ -d "$ESP_MOUNT" ] || die "ESP not mounted at $ESP_MOUNT"
+log "ESP mounted at: $ESP_MOUNT"
 
 # Set GPT partition type to EFI System Partition — Apple EFI firmware requires
 # this for bless to work (diskutil eraseVolume sets it to Microsoft Basic Data)
@@ -310,10 +318,7 @@ diskutil unmount "$ESP_MOUNT" 2>/dev/null || true
 sgdisk --typecode="${ESP_PART_NUM}":C12A7328-F81F-11D2-BA4B-00A0C93EC93B "$INTERNAL_DISK" || \
     warn "Could not set EFI partition type — bless may fail"
 diskutil mount "$ESP_MOUNT" 2>/dev/null || true
-
-ESP_MOUNT="/Volumes/$ESP_NAME"
-[ -d "$ESP_MOUNT" ] || die "ESP not mounted at $ESP_MOUNT"
-log "ESP mounted at: $ESP_MOUNT"
+[ -d "$ESP_MOUNT" ] || die "ESP not remounted after partition type change"
 echo ""
 
 # ── Step 5: Extract ISO contents to ESP ──
@@ -338,7 +343,6 @@ log "Extracting ISO to ESP via xorriso (this may take a minute)..."
 xorriso -osirrox on -indev "$ISO_PATH" \
     -extract / "$ESP_MOUNT" 2>/dev/null || \
     die "Failed to extract ISO contents"
-_ISO_EXTRACTED=1
 
 rm -rf "$ESP_MOUNT/pool" "$ESP_MOUNT/dists" "$ESP_MOUNT/.disk" "$ESP_MOUNT/boot/grub" 2>/dev/null || true
 
@@ -379,7 +383,6 @@ fi
 # Copy cidata for ds=nocloud
 log "Creating cidata structure..."
 mkdir -p "$ESP_MOUNT/cidata"
-cp "$ISO_MOUNT/cidata/"* "$ESP_MOUNT/cidata/" 2>/dev/null || true
 
 # Generate dynamic autoinstall user-data with dual-boot storage config
 # We must preserve ALL existing macOS partitions with preserve: true
@@ -577,21 +580,6 @@ PRESERVE_COUNT=$(grep -c 'preserve: true' "$ESP_MOUNT/cidata/user-data" 2>/dev/n
 log "Preserve entries in user-data: $PRESERVE_COUNT"
 [ -f "$ESP_MOUNT/cidata/meta-data" ] || echo "instance-id: macpro-linux-i1" > "$ESP_MOUNT/cidata/meta-data"
 [ -f "$ESP_MOUNT/cidata/vendor-data" ] || touch "$ESP_MOUNT/cidata/vendor-data"
-
-# Copy pool directory (packages available during install) — non-critical
-log "Copying package pool..."
-mkdir -p "$ESP_MOUNT/pool"
-cp -r "$ISO_MOUNT/pool/"* "$ESP_MOUNT/pool/" 2>/dev/null || warn "pool directory copy failed (non-critical)"
-
-# Copy dists directory (release metadata) — non-critical
-log "Copying release metadata..."
-mkdir -p "$ESP_MOUNT/dists"
-cp -r "$ISO_MOUNT/dists/"* "$ESP_MOUNT/dists/" 2>/dev/null || warn "dists directory copy failed (non-critical)"
-
-# Copy .disk directory — non-critical
-log "Copying disk metadata..."
-mkdir -p "$ESP_MOUNT/.disk"
-cp "$ISO_MOUNT/.disk/"* "$ESP_MOUNT/.disk/" 2>/dev/null || warn ".disk directory copy failed (non-critical)"
 
 # Write GRUB config with pre-baked autoinstall parameters
 log "Writing GRUB configuration..."
