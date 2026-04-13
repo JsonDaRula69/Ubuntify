@@ -39,13 +39,19 @@ revert_changes() {
         _ISO_MOUNTED=0
     fi
 
-    if [ "$_ESP_CREATED" -eq 1 ] && [ -n "$_ESP_DEVICE" ]; then
-        log "Removing ESP partition /dev/$_ESP_DEVICE..."
-        diskutil unmount "/dev/$_ESP_DEVICE" 2>/dev/null || true
-        diskutil eraseVolume free none "/dev/$_ESP_DEVICE" 2>/dev/null || {
-            warn "Could not remove ESP partition /dev/$_ESP_DEVICE — remove manually"
-            REVERT_ERRORS=1
-        }
+    # Find ESP by volume name — diskutil eraseVolume renumbers the slice
+    if [ "$_ESP_CREATED" -eq 1 ]; then
+        ESP_REVERT_DEV=$(diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+        if [ -n "$ESP_REVERT_DEV" ]; then
+            log "Removing ESP partition /dev/$ESP_REVERT_DEV..."
+            diskutil unmount "/dev/$ESP_REVERT_DEV" 2>/dev/null || true
+            diskutil eraseVolume free none "/dev/$ESP_REVERT_DEV" 2>/dev/null || {
+                warn "Could not remove ESP partition /dev/$ESP_REVERT_DEV — remove manually"
+                REVERT_ERRORS=1
+            }
+        else
+            warn "No $ESP_NAME partition found to remove"
+        fi
         _ESP_CREATED=0
     fi
 
