@@ -49,6 +49,10 @@ _tui_cleanup() {
     [ -n "$tmpfile" ] && [ -f "$tmpfile" ] && rm -f "$tmpfile"
 }
 
+_tui_mktemp() {
+    mktemp 2>/dev/null || echo "/tmp/tui_$$"
+}
+
 ## Menu Primitives
 
 tui_menu() {
@@ -62,8 +66,8 @@ tui_menu() {
     local width
     width=$(echo "$size" | cut -d' ' -f2)
     local tmpfile
-    tmpfile=$(mktemp)
-    trap "_tui_cleanup '$tmpfile'" ERR
+    tmpfile=$(_tui_mktemp)
+    trap "_tui_cleanup '$tmpfile'" EXIT
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
         local items=()
@@ -119,7 +123,13 @@ tui_menu() {
         local choice
         while true; do
             read -rp "Enter choice [1-$((idx - 1))]: " choice
-            if [ "$choice" -ge 1 ] && [ "$choice" -lt "$idx" ] 2>/dev/null; then
+            case "$choice" in
+                ''|*[!0-9]*)
+                    echo "Invalid choice. Please enter a number."
+                    continue
+                    ;;
+            esac
+            if [ "$choice" -ge 1 ] && [ "$choice" -lt "$idx" ]; then
                 echo "${tags[$((choice - 1))]}"
                 return 0
             fi
@@ -201,8 +211,8 @@ tui_input() {
     local width
     width=$(echo "$size" | cut -d' ' -f2)
     local tmpfile
-    tmpfile=$(mktemp)
-    trap "_tui_cleanup '$tmpfile'" ERR
+    tmpfile=$(_tui_mktemp)
+    trap "_tui_cleanup '$tmpfile'" EXIT
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
         if dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --inputbox "\Z3$label\Zn" "$height" "$width" "$default_value" 2>"$tmpfile"; then
@@ -252,8 +262,8 @@ tui_password() {
     local width
     width=$(echo "$size" | cut -d' ' -f2)
     local tmpfile
-    tmpfile=$(mktemp)
-    trap "_tui_cleanup '$tmpfile'" ERR
+    tmpfile=$(_tui_mktemp)
+    trap "_tui_cleanup '$tmpfile'" EXIT
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
         if dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --passwordbox "\Z3$label\Zn" "$height" "$width" 2>"$tmpfile"; then
@@ -352,8 +362,8 @@ tui_checklist() {
     local width
     width=$(echo "$size" | cut -d' ' -f2)
     local tmpfile
-    tmpfile=$(mktemp)
-    trap "_tui_cleanup '$tmpfile'" ERR
+    tmpfile=$(_tui_mktemp)
+    trap "_tui_cleanup '$tmpfile'" EXIT
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
         local items=()

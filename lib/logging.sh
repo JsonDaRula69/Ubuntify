@@ -295,8 +295,10 @@ log_fatal() {
 
     # Send fatal webhook notification before exit
     if [ -n "$LOG_WEBHOOK_URL" ]; then
+        local escaped_message
+        escaped_message="$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\n/\\n/g')"
         local payload
-        payload="{\"progress\": 0, \"stage\": \"error\", \"status\": \"fatal\", \"message\": \"$(printf '%s' "$message" | sed 's/"/\\"/g')\"}"
+        payload="{\"progress\": 0, \"stage\": \"error\", \"status\": \"fatal\", \"message\": \"$escaped_message\"}"
         _log_webhook_send "$payload"
     fi
 
@@ -396,10 +398,12 @@ log_get_last_progress() {
 
 ## Export functions for sourcing
 
-export -f log_init log_shutdown 2>/dev/null || true
-export -f log_debug log_info log_warn log_error log_fatal 2>/dev/null || true
-export -f log_serial log_progress 2>/dev/null || true
-export -f log warn error die vlog 2>/dev/null || true
-export -f log_set_level log_get_level_name log_get_file_path 2>/dev/null || true
-export -f log_is_initialized log_is_serial_available log_is_webhook_configured 2>/dev/null || true
-export -f log_get_serial_device log_get_webhook_url log_get_last_progress 2>/dev/null || true
+if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+    export -f log_init log_shutdown 2>/dev/null || true
+    export -f log_debug log_info log_warn log_error log_fatal 2>/dev/null || true
+    export -f log_serial log_progress 2>/dev/null || true
+    export -f log warn error die vlog 2>/dev/null || true
+    export -f log_set_level log_get_level_name log_get_file_path 2>/dev/null || true
+    export -f log_is_initialized log_is_serial_available log_is_webhook_configured 2>/dev/null || true
+    export -f log_get_serial_device log_get_webhook_url log_get_last_progress 2>/dev/null || true
+fi

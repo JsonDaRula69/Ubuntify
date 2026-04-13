@@ -146,8 +146,11 @@ menu_build_iso() {
     log_info "Starting ISO build process..."
     local log_path
     log_path="$(log_get_file_path)"
-    if ! "$SCRIPT_DIR/build-iso.sh" 2>&1 | tee -a "$log_path"; then
-        tui_msgbox "Build Failed" "ISO build failed.\n\nCheck log: $log_path"
+    "$SCRIPT_DIR/build-iso.sh" 2>&1 | tee -a "$log_path"
+    local build_rc=${PIPESTATUS[0]:-$?}
+
+    if [ "$build_rc" -ne 0 ]; then
+        tui_msgbox "Build Failed" "ISO build failed (exit $build_rc).\n\nCheck log: $log_path"
     else
         tui_msgbox "Build Complete" "ISO built successfully.\n\nOutput: $SCRIPT_DIR/ubuntu-macpro.iso"
     fi
@@ -214,20 +217,26 @@ menu_deploy() {
 
     log_info "Starting deployment with method $DEPLOY_METHOD..."
 
+    local deploy_rc=0
     case "$DEPLOY_METHOD" in
         1)
-            deploy_internal_partition
+            deploy_internal_partition || deploy_rc=$?
             ;;
         2)
-            deploy_usb
+            deploy_usb || deploy_rc=$?
             ;;
         3)
-            deploy_manual
+            deploy_manual || deploy_rc=$?
             ;;
         4)
-            deploy_vm_test
+            deploy_vm_test || deploy_rc=$?
             ;;
     esac
+
+    if [ "$deploy_rc" -ne 0 ]; then
+        tui_msgbox "Deployment Failed" "Deployment exited with error code $deploy_rc.\n\nCheck log: $(log_get_file_path)"
+        return 1
+    fi
 
     tui_msgbox "Deployment Complete" "Deployment preparation complete!\n\nLog: $(log_get_file_path)"
 }
@@ -626,6 +635,9 @@ main() {
     log_init
 
     # Set up error handling traps
+    if ! command -v cleanup_on_error >/dev/null 2>&1; then
+        cleanup_on_error() { true; }
+    fi
     trap 'log_shutdown; cleanup_on_error' EXIT
     trap 'log_shutdown; cleanup_on_error; exit 130' SIGINT
     trap 'log_shutdown; cleanup_on_error; exit 143' SIGTERM

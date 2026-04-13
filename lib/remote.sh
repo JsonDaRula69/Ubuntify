@@ -13,7 +13,7 @@
 _REMOTE_SH_SOURCED=1
 
 source "${LIB_DIR:-./lib}/colors.sh"
-source "${LIB_DIR:-./lib}/utils.sh"
+source "${LIB_DIR:-./lib}/logging.sh"
 
 ## Connection Helpers
 
@@ -32,9 +32,7 @@ remote__exec() {
     local host="$1"
     shift
     local cmd="$*"
-    local ssh_cmd
-    ssh_cmd=$(remote__ssh_cmd "$host")
-    $ssh_cmd "$cmd"
+    ssh -o ConnectTimeout=10 -o BatchMode=yes "$host" "$cmd"
 }
 
 ## Connection
@@ -154,8 +152,8 @@ remote_kernel_repin() {
     remote__exec "$host" "sudo apt-mark hold linux-modules-${kver}"
     remote__exec "$host" "sudo apt-mark hold linux-modules-extra-${kver} 2>/dev/null || true"
 
-    remote__exec "$host" "sudo tee /etc/apt/preferences.d/99-pin-kernel > /dev/null << 'PREFS'
-Package: linux-image-*
+    local prefs_content
+    prefs_content="Package: linux-image-*
 Pin: release o=Ubuntu
 Pin-Priority: -1
 
@@ -177,8 +175,8 @@ Pin-Priority: 1001
 
 Package: linux-modules-${abi}*
 Pin: release o=Ubuntu
-Pin-Priority: 1001
-PREFS"
+Pin-Priority: 1001"
+    echo "$prefs_content" | remote__exec "$host" "sudo tee /etc/apt/preferences.d/99-pin-kernel > /dev/null"
 
     remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
     remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; done"
@@ -497,8 +495,19 @@ remote_boot_macos() {
     fi
 
     log "Setting macOS as next boot device..."
-    remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootnext \$(sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -i macos | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//')" || {
-        error "Failed to set macOS boot entry"
+    local boot_entry
+    boot_entry=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -i macos | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || {
+        error "Could not find macOS boot entry"
+        return 1
+    }
+
+    if [ -z "$boot_entry" ]; then
+        error "No macOS boot entry found in EFI"
+        return 1
+    fi
+
+    remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootnext $boot_entry" || {
+        error "Failed to set macOS as next boot device"
         return 1
     }
 
