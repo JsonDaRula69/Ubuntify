@@ -62,7 +62,22 @@ if [ ! -f "$CONF_FILE" ]; then
     warn "deploy.conf not found — using defaults from deploy.conf.example"
     CONF_FILE="${SCRIPT_DIR}/deploy.conf.example"
 fi
-source "$CONF_FILE" || die "Failed to load $CONF_FILE"
+parse_conf() {
+    local conf="$1"
+    while IFS='=' read -r key value; do
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+        case "$key" in
+            WIFI_SSID)     WIFI_SSID="$value" ;;
+            WIFI_PASSWORD) WIFI_PASSWORD="$value" ;;
+            WEBHOOK_HOST)  WEBHOOK_HOST="$value" ;;
+            WEBHOOK_PORT)  WEBHOOK_PORT="$value" ;;
+            *)             warn "Unknown config key: $key" ;;
+        esac
+    done < "$conf"
+}
+parse_conf "$CONF_FILE" || die "Failed to load $CONF_FILE"
 
 export WIFI_SSID
 export WIFI_PASSWORD
@@ -218,9 +233,6 @@ confirm_settings() {
 # ── Main Entry Point ──
 
 main() {
-    # Check for revert flag
-    handle_revert_flag "$@"
-
     # Initialize log
     touch "$LOG_FILE" || LOG_FILE="/dev/null"
 

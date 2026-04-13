@@ -155,7 +155,7 @@ with open('$OUTPUT_PATH', 'w') as f:
       set -x
       LOG="/run/macpro.log"
       WHURL="http://192.168.1.115:8080/webhook"
-      wh() { curl -s -X POST "\$WHURL" -H "Content-Type: application/json" -d "\$1" > /dev/null 2>1 || true; }
+      wh() { curl -s -X POST "\$WHURL" -H "Content-Type: application/json" -d "\$1" > /dev/null 2>&1 || true; }
       log() { echo "[early] \$1" >> "\$LOG"; }
 
       echo "=== MAC PRO 2013 AUTOINSTALL (Ethernet mode) ===" > "\$LOG"
@@ -198,10 +198,15 @@ with open('$OUTPUT_PATH', 'w') as f:
     log "Autoinstall configuration generated: $OUTPUT_PATH"
 
     if [ -n "${WIFI_SSID:-}" ] && [ -n "${WIFI_PASSWORD:-}" ]; then
-        sed -i "s/__WIFI_SSID__/${WIFI_SSID}/g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s/__WIFI_SSID__/${WIFI_SSID}/g" "$OUTPUT_PATH"
-        sed -i "s/__WIFI_PASSWORD__/${WIFI_PASSWORD}/g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s/__WIFI_PASSWORD__/${WIFI_PASSWORD}/g" "$OUTPUT_PATH"
+        # Escape sed special characters (#, \, &) and use # as delimiter
+        # to handle SSIDs/passwords containing / or &
+        local escaped_ssid escaped_password
+        escaped_ssid=$(printf '%s\n' "$WIFI_SSID" | sed 's/[&\\#]/\\&/g')
+        escaped_password=$(printf '%s\n' "$WIFI_PASSWORD" | sed 's/[&\\#]/\\&/g')
+        sed -i "s#__WIFI_SSID__#${escaped_ssid}#g" "$OUTPUT_PATH" 2>/dev/null || \
+            sed -i '' "s#__WIFI_SSID__#${escaped_ssid}#g" "$OUTPUT_PATH"
+        sed -i "s#__WIFI_PASSWORD__#${escaped_password}#g" "$OUTPUT_PATH" 2>/dev/null || \
+            sed -i '' "s#__WIFI_PASSWORD__#${escaped_password}#g" "$OUTPUT_PATH"
     fi
 }
 
