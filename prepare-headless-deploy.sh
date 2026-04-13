@@ -300,6 +300,7 @@ log "Free space after resize: ${FREE_START:-unknown}"
 BEFORE_PARTS=$(diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
 diskutil addPartition "$INTERNAL_DISK" %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% "$ESP_SIZE" || \
     die "Failed to create ESP partition with EFI System Partition type"
+_ESP_CREATED=1
 sleep 2
 AFTER_PARTS=$(diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
 ESP_DEVICE=$(comm -13 <(echo "$BEFORE_PARTS") <(echo "$AFTER_PARTS") | head -1)
@@ -311,7 +312,6 @@ log "ESP partition candidate: /dev/$ESP_DEVICE"
 # (unlike diskutil eraseVolume FAT32 which resets the type to Microsoft Basic Data)
 # Use the block device directly (raw device may not exist for unformatted partitions)
 newfs_msdos -F 32 -v "$ESP_NAME" "/dev/$ESP_DEVICE" || die "Failed to format ESP as FAT32"
-_ESP_CREATED=1
 sleep 1
 
 # Mount the freshly formatted ESP
