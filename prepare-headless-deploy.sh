@@ -176,7 +176,7 @@ if [ -z "$USED_GB" ]; then
 fi
 
 if [ -n "$USED_GB" ]; then
-    TARGET_MACOS_GB=$(echo "$USED_GB" | awk -v min="$MIN_MACOS_GB" -v margin=5 '{target=int($1)+margin; if(target<min) target=min; print target}')
+    TARGET_MACOS_GB=$(echo "$USED_GB" | awk -v min="$MIN_MACOS_GB" -v margin=10 '{target=int($1)+margin+1; if(target<min) target=min; print target}')
     log "APFS in use: ${USED_GB}GB → shrinking to ${TARGET_MACOS_GB}GB (5GB margin)"
 else
     TARGET_MACOS_GB=200
