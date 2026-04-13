@@ -22,7 +22,17 @@ Ubuntu 24.04.4 LTS Server deployment for Mac Pro 2013 (MacPro6,1) with Broadcom 
 /Users/djtchill/Desktop/Mac/
 ├── autoinstall.yaml                 # Autoinstall configuration (base template — WiFi + dual-boot)
 ├── build-iso.sh                     # ISO builder (xorriso extract-and-repack) — injects config, cidata, GRUB, packages
-├── prepare-deployment.sh             # Interactive deployment script: ESP partition, USB, manual, or VM test
+├── prepare-deployment.sh             # Interactive deployment script (main orchestrator)
+├── deploy.conf.example              # WiFi/webhook config template (copy to deploy.conf)
+├── lib/                             # Modular library for prepare-deployment.sh
+│   ├── colors.sh                    # Color constants (RED, GREEN, YELLOW, NC)
+│   ├── utils.sh                     # log, warn, die, vlog, banner functions
+│   ├── detect.sh                    # detect_iso, detect_usb_devices, select_usb_device
+│   ├── disk.sh                      # analyze_disk_layout, shrink_apfs_if_needed, create_esp_partition
+│   ├── autoinstall.sh               # generate_autoinstall, generate_dualboot_storage
+│   ├── bless.sh                     # verify_esp_contents, attempt_bless
+│   ├── deploy.sh                    # deploy_internal_partition, deploy_usb, deploy_manual, deploy_vm_test
+│   └── revert.sh                    # revert_changes, handle_revert_flag
 ├── packages/                        # .deb files for driver compilation (34 debs)
 │   ├── broadcom-sta-dkms_*.deb      # Broadcom WiFi driver source
 │   ├── dkms_*.deb                   # Dynamic Kernel Module Support
@@ -38,6 +48,8 @@ Ubuntu 24.04.4 LTS Server deployment for Mac Pro 2013 (MacPro6,1) with Broadcom 
 │   │   └── 39-*.patch               # Replace del_timer with timer_delete (6.15+)
 │   └── ...
 ├── README.md                        # Documentation
+├── How-to-Update.md                 # Kernel update safety guide (circular dependency: DKMS ↔ new kernel)
+├── Post-Install.md                  # Post-installation tasks (WiFi password rotation, SSH hardening)
 ├── macpro-monitor/                  # Node.js webhook monitor
 │   ├── server.js
 │   ├── start.sh / stop.sh / reset.sh
@@ -60,6 +72,11 @@ sudo ./build-iso.sh
 ### Deploy (interactive menu)
 ```bash
 sudo ./prepare-deployment.sh
+```
+
+### Deploy with dry-run
+```bash
+sudo ./prepare-deployment.sh --dry-run
 ```
 
 ### Revert failed deployment
