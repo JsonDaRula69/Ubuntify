@@ -64,13 +64,14 @@ _log_get_severity_color() {
 
 _log_level_to_num() {
     local level_name="$1"
-    case "${level_name^^}" in
+    # Bash 3.2 compat: manual case-fold instead of ${var^^}
+    case "$(printf '%s' "$level_name" | tr 'a-z' 'A-Z')" in
         DEBUG|0) echo 0 ;;
         INFO|1) echo 1 ;;
         WARN|WARNING|2) echo 2 ;;
         ERROR|3) echo 3 ;;
         FATAL|4) echo 4 ;;
-        *) echo 1 ;;  # Default to INFO
+        *) echo 1 ;;
     esac
 }
 

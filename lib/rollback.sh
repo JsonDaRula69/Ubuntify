@@ -20,8 +20,8 @@ source "${LIB_DIR:-./lib}/retry.sh"
 
 ## Constants
 
-readonly STATE_FILE="/var/tmp/macpro-deploy-state.env"
-readonly STATE_DIR="/var/tmp/macpro-deploy"
+STATE_FILE="${STATE_FILE:-/var/tmp/macpro-deploy-state.env}"
+STATE_DIR="${STATE_DIR:-/var/tmp/macpro-deploy}"
 readonly GPT_BACKUP_FILE="${STATE_DIR}/gpt-backup.bin"
 readonly ERROR_REPORT_FILE="${STATE_DIR}/error-report.txt"
 
@@ -116,11 +116,10 @@ journal_set() {
         # Export all current JOURNAL_* variables
         local var_name
         for var_name in $(set 2>/dev/null | grep '^JOURNAL_' | cut -d= -f1 | sort -u); do
-            # Skip the new key if it already exists (we will write the new value below)
             if [ "$var_name" != "JOURNAL_${key}" ]; then
                 eval "local val=\"\${${var_name}}\""
-                # Escape special characters in value
-                val="${val//\"/\\\"}"
+                # Escape double quotes for safe write — use sed for bash 3.2 compat
+                val=$(printf '%s' "$val" | sed 's/"/\\"/g')
                 printf '%s="%s"\n' "$var_name" "$val"
             fi
         done
@@ -209,13 +208,13 @@ snapshot_disk_layout() {
     log_info "Creating disk layout snapshot for ${internal_disk}"
 
     # Save binary GPT backup
-    if ! retry_diskutil sgdisk -b "$GPT_BACKUP_FILE" "$internal_disk"; then
+    if ! sgdisk -b "$GPT_BACKUP_FILE" "$internal_disk"; then
         warn "snapshot_disk_layout: sgdisk backup failed for ${internal_disk}"
         return 1
     fi
 
     # Save text version for reference
-    retry_diskutil sgdisk -p "$internal_disk" > "${STATE_DIR}/gpt-layout.txt" 2>/dev/null || true
+    sgdisk -p "$internal_disk" > "${STATE_DIR}/gpt-layout.txt" 2>/dev/null || true
 
     # Save diskutil list output
     diskutil list "$internal_disk" > "${STATE_DIR}/diskutil-list.txt" 2>/dev/null || true
@@ -234,7 +233,7 @@ snapshot_usb_layout() {
     log_info "Creating USB layout snapshot for ${usb_device}"
 
     # Save binary backup
-    retry_diskutil sgdisk -b "${STATE_DIR}/usb-gpt-backup.bin" "$usb_device" 2>/dev/null || true
+    sgdisk -b "${STATE_DIR}/usb-gpt-backup.bin" "$usb_device" 2>/dev/null || true
 
     # Save diskutil list
     diskutil list "$usb_device" > "${STATE_DIR}/usb-diskutil-list.txt" 2>/dev/null || true
@@ -351,7 +350,7 @@ rollback_internal() {
     local original_boot="${JOURNAL_ORIGINAL_BOOT_DEVICE:-}"
     if [ -n "$original_boot" ]; then
         log_info "Attempting to restore boot device to ${original_boot}"
-        if retry_diskutil bless --mount "$original_boot" --setBoot 2>/dev/null; then
+        if bless --mount "$original_boot" --setBoot 2>/dev/null; then
             rollback_status="${rollback_status}boot_restored "
             log_info "Boot device restored successfully"
         else
@@ -373,7 +372,7 @@ rollback_internal() {
         diskutil unmount "/dev/${esp_device}" 2>/dev/null || true
 
         # Erase to free space
-        if retry_diskutil diskutil eraseVolume free none "/dev/${esp_device}" 2>/dev/null; then
+        if retry_diskutil eraseVolume free none "/dev/${esp_device}" 2>/dev/null; then
             rollback_status="${rollback_status}esp_removed "
             log_info "ESP partition removed"
         else
@@ -390,7 +389,7 @@ rollback_internal() {
     if [ "$apfs_resized" = "1" ] && [ -n "$apfs_container" ]; then
         if [ -n "$original_size" ]; then
             log_info "Restoring APFS container to ${original_size}GB"
-            if retry_diskutil diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null; then
+            if retry_diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null; then
                 rollback_status="${rollback_status}apfs_restored "
                 log_info "APFS container restored"
             else
@@ -401,7 +400,7 @@ rollback_internal() {
 
         # Expand to fill any freed space (best effort)
         log_info "Expanding APFS to fill available space"
-        retry_diskutil diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || true
+        retry_diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || true
     fi
 
     log_info "Internal partition rollback completed (status: ${rollback_status:-none})"
@@ -421,7 +420,7 @@ rollback_usb() {
 
     if [ "$usb_backup" = "yes" ] && [ -n "$usb_device" ] && [ -f "$backup_file" ]; then
         log_info "Restoring USB partition table from backup"
-        if retry_diskutil sgdisk -l "$backup_file" "$usb_device" 2>/dev/null; then
+        if sgdisk -l "$backup_file" "$usb_device" 2>/dev/null; then
             log_info "USB partition table restored"
         else
             warn "rollback_usb: failed to restore USB partition table"

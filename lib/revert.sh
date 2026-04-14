@@ -63,8 +63,8 @@ revert_changes() {
                     diskutil mount "/dev/$esp_device" 2>/dev/null || true
                 fi
 
-                retry_diskutil diskutil unmount "/dev/$esp_device" 2>/dev/null || true
-                retry_diskutil diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || {
+                diskutil unmount "/dev/$esp_device" 2>/dev/null || true
+                diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || {
                     warn "Could not remove ESP partition /dev/$esp_device"
                     REVERT_ERRORS=1
                 }
@@ -78,7 +78,7 @@ revert_changes() {
         # APFS container restoration - prefer journal values
         if [ "$apfs_resized" = "1" ] && [ -n "$apfs_container" ] && [ -n "$original_size" ]; then
             log "Restoring APFS container to ${original_size}GB..."
-            retry_diskutil diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || {
+            diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || {
                 warn "Could not restore APFS container size"
                 REVERT_ERRORS=1
             }
@@ -88,7 +88,7 @@ revert_changes() {
         # After ESP removal, expand APFS to fill freed space
         if [ -n "$apfs_container" ]; then
             log "Expanding APFS container to fill available space..."
-            retry_diskutil diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || {
+            diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || {
                 warn "Could not expand APFS container to fill space"
                 REVERT_ERRORS=1
             }
@@ -100,13 +100,13 @@ revert_changes() {
             MACOS_VOLUME=$(diskutil info "$apfs_container" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
         fi
         if [ -d "$MACOS_VOLUME" ] && [ "$MACOS_VOLUME" != "/" ]; then
-            retry_diskutil bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && \
+            bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && \
                 log "macOS boot device restored" || {
                 warn "Could not restore macOS boot device"
                 REVERT_ERRORS=1
             }
         else
-            retry_diskutil bless --mount / --setBoot 2>/dev/null && \
+            bless --mount / --setBoot 2>/dev/null && \
                 log "macOS boot device restored (root fallback)" || {
                 warn "Could not restore macOS boot device"
                 REVERT_ERRORS=1
@@ -219,8 +219,8 @@ handle_revert_flag() {
 
         if [ -n "${esp_device:-}" ]; then
             log "Removing ESP partition /dev/$esp_device..."
-            retry_diskutil diskutil unmount "/dev/$esp_device" 2>/dev/null || true
-            retry_diskutil diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || warn "Could not remove /dev/$esp_device"
+            diskutil unmount "/dev/$esp_device" 2>/dev/null || true
+            diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || warn "Could not remove ESP partition /dev/$esp_device"
         else
             warn "No $ESP_NAME partition found"
         fi
@@ -229,22 +229,22 @@ handle_revert_flag() {
         local MACOS_VOLUME
         MACOS_VOLUME=$(diskutil info "${apfs_container:-}" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
         if [ -d "$MACOS_VOLUME" ] && [ "$MACOS_VOLUME" != "/" ]; then
-            retry_diskutil bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
+            bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
         else
-            retry_diskutil bless --mount / --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
+            bless --mount / --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
         fi
 
         # Restore APFS container to fill freed space (use original size if available)
         if [ -n "${apfs_container:-}" ]; then
             if [ -n "${original_size:-}" ]; then
                 log "Restoring APFS container to ${original_size}GB, then expanding..."
-                retry_diskutil diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || true
+                diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || true
             fi
 
             local CURRENT_APFS_GB
             CURRENT_APFS_GB=$(diskutil info "$apfs_container" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
             log "Current APFS container: ${CURRENT_APFS_GB:-unknown}GB — expanding to fill free space..."
-            retry_diskutil diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null && \
+            diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null && \
                 log "APFS container expanded to fill freed space" || \
                 warn "Could not expand APFS container (space may need manual recovery)"
         fi
@@ -275,7 +275,7 @@ revert_usb() {
 
     if [ "$gpt_backup" = "yes" ] && [ -f "$backup_file" ]; then
         log "Restoring USB partition table from GPT backup..."
-        if retry_diskutil sgdisk -l "$backup_file" "$usb_device" 2>/dev/null; then
+        if sgdisk -l "$backup_file" "$usb_device" 2>/dev/null; then
             log "USB partition table restored from backup"
         else
             warn "revert_usb: failed to restore GPT from backup"

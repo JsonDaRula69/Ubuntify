@@ -31,9 +31,9 @@ verify_apfs_resize() {
     local diff
     diff=$(echo "$actual_gb - $expected_gb" | sed 's/^-//' 2>/dev/null || echo "999")
 
-    # Use awk for comparison to handle decimals
+    # Use awk for comparison to handle decimals — pass values as variables to prevent injection
     local within_tolerance
-    within_tolerance=$(awk "BEGIN { if ($actual_gb >= $expected_gb - 5 && $actual_gb <= $expected_gb + 5) print 1; else print 0 }")
+    within_tolerance=$(awk -v actual="$actual_gb" -v expected="$expected_gb" 'BEGIN { if (actual >= expected - 5 && actual <= expected + 5) print 1; else print 0 }')
 
     if [ "$within_tolerance" -eq 1 ]; then
         return 0
@@ -54,7 +54,10 @@ verify_esp_mount() {
         warn "verify_esp_mount: $mount_point does not exist, checking journal for ESP"
 
         # Self-healing: try to find ESP in journal and mount it
-        esp_device=$(journal -list | grep -i "cidata\|esp\|efi" | head -1 | awk '{print $1}')
+        if command -v journal_read >/dev/null 2>&1; then
+            journal_read
+            esp_device="${JOURNAL_ESP_DEVICE:-}"
+        fi
 
         if [ -n "$esp_device" ]; then
             warn "verify_esp_mount: attempting to mount $esp_device to $mount_point"
