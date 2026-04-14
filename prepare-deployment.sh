@@ -19,6 +19,9 @@ readonly LIB_DIR="${LIB_DIR:-$SCRIPT_DIR/lib}"
 source "$LIB_DIR/colors.sh"
 source "$LIB_DIR/logging.sh"
 source "$LIB_DIR/tui.sh"
+source "$LIB_DIR/retry.sh"
+source "$LIB_DIR/verify.sh"
+source "$LIB_DIR/rollback.sh"
 source "$LIB_DIR/detect.sh"
 source "$LIB_DIR/disk.sh"
 source "$LIB_DIR/autoinstall.sh"
@@ -78,7 +81,7 @@ export NETWORK_TYPE=""
 show_help() {
     echo "Usage: sudo ./prepare-deployment.sh [OPTIONS]"
     echo ""
-    echo "Mac Pro 2013 Ubuntu Server Deployment Tool v0.2.0"
+    echo "Mac Pro 2013 Ubuntu Server Deployment Tool v0.3.0"
     echo ""
     echo "Options:"
     echo "  --dry-run    Show what would be done without making changes"
@@ -98,7 +101,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)   DRY_RUN=1; shift ;;
         --verbose)   VERBOSE=1; shift ;;
-        --revert)    handle_revert_flag; exit $? ;;
+        --revert)    handle_revert_flag "--revert"; exit $? ;;
         --help|-h)   show_help ;;
         *)           echo "Unknown option: $1"; show_help ;;
     esac
@@ -115,6 +118,7 @@ select_mode() {
     choice=$(tui_menu "Mac Pro 2013 Ubuntu Deployment" "Select operation mode:" \
         "Deploy" "deploy" \
         "Manage" "manage" \
+        "Revert Failed Deploy" "revert" \
         "Exit" "exit") || exit 0
     echo "$choice"
 }
@@ -348,12 +352,42 @@ menu_test_vm() {
 }
 
 menu_revert() {
-    if ! tui_confirm "Revert Deployment" "This will revert all deployment changes:\n\n- Remove ESP partition if created\n- Restore APFS container size if resized\n- Restore macOS boot device\n\nProceed?"; then
+    local revert_msg="This will revert all deployment changes:
+- Remove ESP partition if created
+- Restore APFS container size if resized
+- Restore macOS boot device"
+
+    if command -v journal_read >/dev/null 2>&1; then
+        journal_read
+        if [ -n "${JOURNAL_PHASE:-}" ]; then
+            revert_msg="${revert_msg}
+
+Last incomplete phase: ${JOURNAL_PHASE}
+Deploy method: ${JOURNAL_DEPLOY_METHOD:-unknown}"
+        fi
+    fi
+
+    if ! tui_confirm "Revert Deployment" "${revert_msg}
+
+Proceed?"; then
         return 1
     fi
 
     log_info "Reverting deployment changes..."
-    revert_changes
+    if command -v rollback_from_journal >/dev/null 2>&1; then
+        rollback_from_journal
+    else
+        revert_changes
+    fi
+
+    if command -v show_recovery_instructions >/dev/null 2>&1; then
+        show_recovery_instructions
+    fi
+
+    if command -v journal_destroy >/dev/null 2>&1; then
+        journal_destroy
+    fi
+
     tui_msgbox "Revert Complete" "Deployment changes have been reverted."
 }
 
@@ -642,7 +676,7 @@ main() {
     trap 'log_shutdown; cleanup_on_error; exit 130' SIGINT
     trap 'log_shutdown; cleanup_on_error; exit 143' SIGTERM
 
-    log_info "Mac Pro 2013 Ubuntu Deployment Tool v0.2.0 starting..."
+    log_info "Mac Pro 2013 Ubuntu Deployment Tool v0.3.0 starting..."
     log_info "Log file: $(log_get_file_path)"
     log_info "TUI backend: $TUI_BACKEND"
 
@@ -656,6 +690,13 @@ main() {
                 ;;
             manage)
                 run_manage_mode
+                ;;
+            revert)
+                if command -v handle_revert_flag >/dev/null 2>&1; then
+                    handle_revert_flag "--revert"
+                else
+                    error "Revert module not loaded"
+                fi
                 ;;
             exit)
                 log_info "Exiting..."
