@@ -642,12 +642,17 @@ The following operations are available in agent mode via `--operation OP`:
 | `rollback_status` | `remote_rollback_status()` | Check for incomplete kernel update | No |
 | `reboot` | `remote_reboot()` | Reboot remote system with health check after | Yes |
 | `boot_macos` | `remote_boot_macos()` | Set next boot to macOS and reboot | Yes |
+| `driver_status` | `remote_driver_status()` | WiFi/DKMS driver status check | No |
+| `driver_rebuild` | `remote_driver_rebuild()` | Rebuild DKMS WiFi driver module | Yes |
+| `erase_macos` | `remote_erase_macos()` | Delete macOS partitions, expand Ubuntu to full disk | Yes |
+| `apt_enable` | `remote_apt_enable()` | Enable APT package sources (use kernel_unpin instead) | Yes |
+| `apt_disable` | `remote_apt_disable()` | Disable APT package sources (use kernel_pin instead) | Yes |
 
-**Note**: The following operations listed in older documentation do NOT exist as standalone functions:
-- `driver_status` — use `sysinfo` or `health_check` (DKMS status included)
-- `driver_rebuild` — not implemented as remote operation
-- `erase_macos` — managed via TUI workflow, not direct function call
-- `apt_enable` / `apt_disable` — use `kernel_pin`/`kernel_unpin` or the internal `remote_toggle_apt_sources()` function
+**Note**: The `driver_status`, `driver_rebuild`, `erase_macos`, `apt_enable`, and `apt_disable` operations exist as implemented functions but have recommended alternatives:
+- `driver_status` — `sysinfo` or `health_check` includes DKMS status
+- `driver_rebuild` — specialized operation for DKMS rebuild only
+- `erase_macos` — irreversible, use with extreme caution
+- `apt_enable` / `apt_disable` — `kernel_pin`/`kernel_unpin` are preferred as they manage the full lock/unlock workflow
 
 The `remote_toggle_apt_sources(host, action)` function (line 234 in lib/remote.sh) takes "enable" or "disable" as the action parameter and is used internally by the kernel pin/unpin functions.
 
