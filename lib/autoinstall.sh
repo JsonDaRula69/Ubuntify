@@ -208,17 +208,16 @@ with open('$OUTPUT_PATH', 'w') as f:
     }
 
     _sed_escape_yaml_dq() {
-        # Escape for YAML double-quoted strings: backslash, double-quote,
-        # newline, tab, ampersand, hash. Newlines and tabs become \n and \t
-        # (YAML escape sequences). Uses pure bash substitution to avoid
-        # BSD sed :a/N/$!ba slurp pattern that returns empty on macOS.
+        # Escape for YAML double-quoted strings used as sed replacements.
+        # Must survive: bash expansion → sed replacement → YAML parse.
+        # Pure bash substitution avoids BSD sed :a/N/$!ba returning empty.
         local val="$1"
-        val="${val//\\/\\\\}"       # backslash first (others reference result)
-        val="${val//\"/\\\"}"       # double quote
-        val="${val//$'\n'/\\n}"     # newline → \n
-        val="${val//$'\t'/\\t}"     # tab → \t
-        val="${val//&/\\&}"         # ampersand (sed replacement special)
-        val="${val//#/\\#}"         # hash (sed delimiter special)
+        val="${val//\\/\\\\\\\\}"     # \ -> \\\\ (2 per level: YAML \\ + sed \\)
+        val="${val//\"/\\\\\"}"       # " -> \\\" (YAML \" + sed escape)
+        val="${val//$'\n'/\\n}"       # newline -> \n (YAML escape)
+        val="${val//$'\t'/\\t}"       # tab -> \t (YAML escape)
+        val="${val//&/\\&}"           # & -> \& (sed replacement special)
+        val="${val//#/\\#}"           # # -> \# (sed delimiter special)
         printf '%s' "$val"
     }
 

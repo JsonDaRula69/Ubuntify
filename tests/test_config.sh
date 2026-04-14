@@ -323,6 +323,57 @@ assert_eq "Round-trip WIFI_PASSWORD" "passwithspecial" "$WIFI_PASSWORD"
 
 rm -f "$ROUNDTRIP_CONF"
 
+# ── Test YAML escaping round-trip ──
+
+echo "=== Test: YAML escaping round-trip ==="
+
+# Source the _sed_escape_yaml_dq function from autoinstall.sh
+# (it's defined inside generate_autoinstall, so extract and define it)
+_sed_escape_yaml_dq() {
+    local val="$1"
+    val="${val//\\/\\\\\\\\}"
+    val="${val//\"/\\\\\"}"
+    val="${val//$'\n'/\\n}"
+    val="${val//$'\t'/\\t}"
+    val="${val//&/\\&}"
+    val="${val//#/\\#}"
+    printf '%s' "$val"
+}
+
+YAML_RT_PASS=0
+YAML_RT_FAIL=0
+
+for test_input in simplepassword "my#pass" "my&pass" "my:pass" "p@ss:w0rd!" 'say"hi' "with space" 'test\backslash'; do
+    escaped=$(_sed_escape_yaml_dq "$test_input")
+    yaml_line="password: \"${escaped}\""
+    yaml_tmpfile=$(mktemp /tmp/yaml_rt_test_XXXXXX.yaml)
+    # Simulate the actual code path: sed replacement into YAML template
+    # The escaped value goes through sed which processes \# and \& back to literals
+    printf '%s\n' 'password: "__WIFI_PASSWORD__"' | \
+        sed "s#__WIFI_PASSWORD__#${escaped}#g" > "$yaml_tmpfile"
+    result=$(python3 -c "
+import yaml, sys
+try:
+    with open(sys.argv[1]) as f:
+        r = yaml.safe_load(f)
+    print(r['password'])
+except Exception as e:
+    print('__ERROR__')
+" "$yaml_tmpfile" 2>/dev/null)
+    rm -f "$yaml_tmpfile"
+    if [ "$result" = "$test_input" ]; then
+        YAML_RT_PASS=$((YAML_RT_PASS + 1))
+    else
+        YAML_RT_FAIL=$((YAML_RT_FAIL + 1))
+        echo "  FAIL: YAML round-trip for '$test_input' (escaped='$escaped', got='$result')"
+    fi
+    TESTS_RUN=$((TESTS_RUN + 1))
+done
+
+TESTS_PASS=$((TESTS_PASS + YAML_RT_PASS))
+TESTS_FAIL=$((TESTS_FAIL + YAML_RT_FAIL))
+echo "  YAML round-trip: $YAML_RT_PASS passed, $YAML_RT_FAIL failed"
+
 # ── Summary ──
 
 echo ""
