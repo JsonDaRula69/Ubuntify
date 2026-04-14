@@ -8,6 +8,9 @@
 # Dependencies: lib/colors.sh, lib/logging.sh
 #
 
+[ "${_BLESS_SH_SOURCED:-0}" -eq 1 ] && return 0
+_BLESS_SH_SOURCED=1
+
 source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/dryrun.sh"

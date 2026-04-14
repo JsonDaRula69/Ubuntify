@@ -45,7 +45,11 @@ export AGENT_MODE
 export JSON_OUTPUT
 export CONFIRM_YES
 
-CONF_FILE="${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}/deploy.conf"
+# Resolve config file: try OUTPUT_DIR first (env var override), then default.
+# After parse_conf we re-resolve if OUTPUT_DIR was set in the config.
+OUTPUT_DIR="${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
+OUTPUT_DIR_INITIAL="$OUTPUT_DIR"
+CONF_FILE="${OUTPUT_DIR}/deploy.conf"
 if [ ! -f "$CONF_FILE" ]; then
     warn "deploy.conf not found — using defaults from deploy.conf.example"
     CONF_FILE="${LIB_DIR}/deploy.conf.example"
@@ -102,6 +106,13 @@ parse_conf() {
     done < "$conf"
 }
 parse_conf "$CONF_FILE" || die "Failed to load $CONF_FILE"
+
+# Re-resolve CONF_FILE if OUTPUT_DIR was set in config (different from initial)
+if [ "$OUTPUT_DIR" != "${OUTPUT_DIR_INITIAL:-}" ] && [ -f "$OUTPUT_DIR/deploy.conf" ]; then
+    CONF_FILE="$OUTPUT_DIR/deploy.conf"
+fi
+
+mkdir -p "$OUTPUT_DIR" || die "Cannot create output directory: $OUTPUT_DIR"
 
 # Handle SSH_KEYS_FILE: read keys from file and prepend to SSH_KEYS
 if [ -n "$SSH_KEYS_FILE" ] && [ -f "$SSH_KEYS_FILE" ]; then
@@ -1058,11 +1069,11 @@ menu_kernel() {
             fi
             ;;
         update)
-            if tui_confirm "Update Kernel" "This will run the full kernel update process per How-to-Update.md.\n\nThis is a complex operation with potential to brick the system if WiFi breaks.\n\nProceed?"; then
+            if tui_confirm "Update Kernel" "This will run the full kernel update process per AGENTS.md.\n\nThis is a complex operation with potential to brick the system if WiFi breaks.\n\nProceed?"; then
                 if command -v remote_kernel_update >/dev/null 2>&1; then
                     remote_kernel_update
                 else
-                    tui_msgbox "Not Implemented" "remote_kernel_update not available.\n\nSee How-to-Update.md for manual steps."
+                    tui_msgbox "Not Implemented" "remote_kernel_update not available.\n\nSee AGENTS.md Kernel Update Process section for manual steps."
                 fi
             fi
             ;;
@@ -1132,7 +1143,7 @@ menu_storage() {
                     remote_erase_macos
                     tui_msgbox "macOS Erased" "macOS partitions have been removed and Ubuntu expanded."
                 else
-                    tui_msgbox "Not Implemented" "remote_erase_macos not available.\n\nSee Post-Install.md Operation 1 for manual steps."
+                    tui_msgbox "Not Implemented" "remote_erase_macos not available.\n\nSee AGENTS.md macOS Erasure section for manual steps."
                 fi
             fi
             ;;

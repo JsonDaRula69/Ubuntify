@@ -22,6 +22,11 @@ readonly OUTPUT_DIR="${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
 # VM-specific vs production defaults
 if [ "$VM_MODE" -eq 1 ]; then
     readonly AUTOINSTALL="${PROJECT_DIR}/vm-test/autoinstall-vm.yaml"
+    if [ ! -f "$AUTOINSTALL" ]; then
+        echo "[FATAL] VM autoinstall template not found: $AUTOINSTALL" >&2
+        echo "        Generate it with: sudo ./lib/build-iso.sh --vm" >&2
+        exit 1
+    fi
     readonly OUTPUT_ISO="${OUTPUT_DIR}/ubuntu-vmtest.iso"
     readonly STAGING="/tmp/vmtest-iso-staging"
     readonly VM_PREFIX="[build-vm]"

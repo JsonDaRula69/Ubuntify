@@ -9,6 +9,9 @@
 #               lib/autoinstall.sh, lib/bless.sh
 #
 
+[ "${_DEPLOY_SH_SOURCED:-0}" -eq 1 ] && return 0
+_DEPLOY_SH_SOURCED=1
+
 source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/detect.sh"
@@ -296,16 +299,16 @@ _phase_find_iso() {
 }
 
 _phase_build_iso() {
-    local VM_DIR="$SCRIPT_DIR/vm-test"
-    local VM_ISO="$VM_DIR/ubuntu-vmtest.iso"
+    local VM_DIR="${SCRIPT_DIR}/tests/vm"
+    local VM_ISO="${OUTPUT_DIR}/ubuntu-vmtest.iso"
     export VM_ISO
     if [ ! -f "$VM_ISO" ]; then
         log "Building VM test ISO..."
-        sudo "$VM_DIR/build-iso-vm.sh" || die "VM ISO build failed"
+        sudo "${SCRIPT_DIR}/lib/build-iso.sh" --vm || die "VM ISO build failed"
     else
         log "VM test ISO already exists: $VM_ISO"
         if tui_confirm "Rebuild ISO?" "VM test ISO already exists. Rebuild?"; then
-            sudo "$VM_DIR/build-iso-vm.sh" || die "VM ISO build failed"
+            sudo "${SCRIPT_DIR}/lib/build-iso.sh" --vm || die "VM ISO build failed"
         fi
     fi
     [ -f "$VM_ISO" ] || die "VM test ISO not found after build"
@@ -313,8 +316,8 @@ _phase_build_iso() {
 }
 
 _phase_create_vm() {
-    local VM_DIR="$SCRIPT_DIR/vm-test"
-    local VM_ISO="${1:-$VM_DIR/ubuntu-vmtest.iso}"
+    local VM_DIR="${SCRIPT_DIR}/tests/vm"
+    local VM_ISO="${1:-${OUTPUT_DIR}/ubuntu-vmtest.iso}"
     local VM_NAME="macpro-vmtest"
     export VM_NAME
     if VBoxManage list vms 2>/dev/null | grep -q "\"$VM_NAME\""; then
@@ -359,11 +362,11 @@ deploy_vm_test() {
         echo ""
         echo "  Next steps:"
         echo "    1. Monitor: open http://localhost:8080 in a browser"
-        echo "    2. Run test: cd vm-test \u0026\u0026 ./test-vm.sh"
-        echo "    3. SSH into VM (when ready): ssh -p 2222 teja@localhost"
+        echo "    2. Run test: cd tests/vm && ./test-vm.sh"
+        echo "    3. SSH into VM (when ready): ssh -p 2222 ubuntu@localhost"
         echo "    4. Serial console log: tail -f /tmp/vmtest-serial.log"
-        echo "    5. Stop VM: cd vm-test \u0026\u0026 ./test-vm.sh stop"
-        echo "    6. Grab logs: cd vm-test \u0026\u0026 ./test-vm.sh logs"
+        echo "    5. Stop VM: cd tests/vm && ./test-vm.sh stop"
+        echo "    6. Grab logs: cd tests/vm && ./test-vm.sh logs"
         echo ""
     else
         warn "VM test deployment failed, cleaning up..."
