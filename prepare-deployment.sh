@@ -45,7 +45,7 @@ export AGENT_MODE
 export JSON_OUTPUT
 export CONFIRM_YES
 
-CONF_FILE="${SCRIPT_DIR}/deploy.conf"
+CONF_FILE="${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}/deploy.conf"
 if [ ! -f "$CONF_FILE" ]; then
     warn "deploy.conf not found — using defaults from deploy.conf.example"
     CONF_FILE="${LIB_DIR}/deploy.conf.example"
@@ -220,6 +220,8 @@ prompt_config() {
                     ;;
             esac
         fi
+    elif [ "$AGENT_MODE" -ne 1 ]; then
+        log_info "SSH keys already configured from deploy.conf (${#SSH_KEYS} bytes)"
     fi
     if [ -z "$WIFI_SSID" ]; then
         if [ "$AGENT_MODE" -eq 1 ]; then
@@ -1392,8 +1394,8 @@ main() {
     log_info "Log file: $(log_get_file_path)"
     log_info "TUI backend: $TUI_BACKEND"
 
-    decrypt_config "$CONF_FILE"
     mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
+    decrypt_config "$CONF_FILE"
 
     if ! prompt_config; then
         die "Missing required configuration — check deploy.conf or provide values via CLI flags"

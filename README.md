@@ -43,11 +43,15 @@ Mac Pro has no Ethernet. Broadcom BCM4360 WiFi requires a proprietary `wl` drive
 
 | File | Purpose |
 |------|---------|
-| `lib/autoinstall.yaml` | Autoinstall config template — WiFi driver compilation, SSH, dual-boot storage layout |
-| `lib/build-iso.sh` | Builds modified ISO: extract, overlay, repack preserving EFI boot |
+| `prepare-deployment.sh` | Interactive deployment script: ESP partition, USB, manual, or VM test |
+| `lib/autoinstall.yaml` | Autoinstall config template — all credentials are `__PLACEHOLDER__` markers |
+| `lib/autoinstall.sh` | Template engine: substitutes placeholders from `deploy.conf` into `autoinstall.yaml` |
+| `lib/build-iso.sh` | Builds modified ISO: extract, overlay, repack preserving EFI boot (`--vm` for VM test) |
+| `lib/deploy.conf.example` | Config template: copy to `~/.Ubuntu_Deployment/deploy.conf` and customize |
 | `packages/` | .deb files for driver compilation (34 packages) |
 | `packages/dkms-patches/` | 6 DKMS patches for kernel 6.8+ compatibility (series file + *.patch) |
-| `prepare-deployment.sh` | Interactive deployment script: ESP partition, USB, manual, or VM test |
+| `tests/` | Unit tests (`run_tests.sh`) and VM test environment |
+| `ssh/` | SSH config template (`config.example`) for `macpro` and `macpro-linux` hosts |
 | `prereqs/` | Stock Ubuntu 24.04.4 Server ISO (`*.iso` gitignored) |
 | `macpro-monitor/` | Node.js webhook server for installation monitoring (3-pane dashboard) |
 | `CHANGELOG.md` | Version history — what changed in each release |
@@ -258,12 +262,14 @@ The `macpro-monitor/` server provides a real-time 3-pane dashboard (Subiquity Ev
 
 ### Security: WiFi Credentials
 
-WiFi SSID and password are in plain text in the generated `autoinstall.yaml` (on the FAT32 ESP during install). Mitigations: UFW firewall denies all incoming except SSH, ESP is only accessible during install. Credentials come from `deploy.conf` (encrypted at rest) and are substituted into the template at build time.
+WiFi SSID and password are in plain text in the generated `autoinstall.yaml` (on the FAT32 ESP during install). Mitigations: UFW firewall denies all incoming except SSH, ESP is only accessible during install. Credentials come from `~/.Ubuntu_Deployment/deploy.conf` (encrypted at rest) and are substituted into the template at build time.
 
 ## VM Test Environment
 
 ```bash
-cd vm-test && sudo ./build-iso-vm.sh && ./create-vm.sh && ./test-vm.sh
+cd tests/vm && ./create-vm.sh && ./test-vm.sh
+# Or build the VM test ISO first:
+sudo ./lib/build-iso.sh --vm
 ```
 
 VM uses Ethernet (`enp0s3`) instead of WiFi, DKMS compiles (fatal on failure) but driver init is non-fatal (no Broadcom HW). Webhook targets `10.0.2.2` via NAT.
@@ -374,11 +380,14 @@ CLI flags override `deploy.conf` settings:
 
 | Flag | Overrides |
 |------|-----------|
+| `--username USER` | `USERNAME` |
+| `--hostname HOST` | `HOSTNAME` |
 | `--wifi-ssid SSID` | `WIFI_SSID` |
 | `--wifi-password PASS` | `WIFI_PASSWORD` |
 | `--webhook-host HOST` | `WEBHOOK_HOST` |
 | `--webhook-port PORT` | `WEBHOOK_PORT` |
 | `--host HOST` | Remote SSH host (default: `macpro-linux`) |
+| `--output-dir DIR` | `OUTPUT_DIR` |
 
 ### JSON Output Format
 

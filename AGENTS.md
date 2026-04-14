@@ -26,7 +26,6 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 ```
 /Users/djtchill/Desktop/Mac/
 ├── prepare-deployment.sh             # Main entry point — TUI with Deploy + Manage modes
-├── deploy.conf                       # Runtime config (KEY=VALUE, gitignored)
 ├── lib/                             # Modular library
 │   ├── autoinstall.yaml             # Autoinstall configuration (base template — WiFi + dual-boot)
 │   ├── build-iso.sh                 # ISO builder (xorriso extract-and-repack) — called as subprocess
@@ -77,7 +76,7 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 │   └── logs/
 └── prereqs/                         # Stock Ubuntu ISO (*.iso gitignored)
 
-# Runtime output: ~/.Ubuntu_Deployment/    # Generated files (ISO, autoinstall.yaml, deploy.conf)
+# Runtime output: ~/.Ubuntu_Deployment/    # Generated files (ISO, autoinstall.yaml, deploy.conf, staging)
 ```
 
 ## Build/Lint/Test Commands
@@ -295,7 +294,7 @@ const MAX_UPDATES = 200;
 
 ## deploy.conf Configuration
 
-Runtime configuration file (KEY=VALUE format, gitignored). Copy `lib/deploy.conf.example` to `deploy.conf` and customize.
+Runtime configuration file (KEY=VALUE format). Lives in `~/.Ubuntu_Deployment/deploy.conf` (created on first run). Template at `lib/deploy.conf.example`.
 
 ### Config File Format
 ```
@@ -326,10 +325,15 @@ SSH_KEYS_FILE=/path/to/file  # Load keys from external file
 ### First-Run Prompts
 If `deploy.conf` is missing or keys are empty, `prepare-deployment.sh` prompts for:
 - Username, real name, password (with encryption mode selection)
-- SSH public key or `SSH_KEYS_FILE` path
+- SSH key configuration (interactive menu):
+  - **Provide existing key**: scans `~/.ssh/*.pub` for keys to select, or paste manually
+  - **Generate new key**: `ssh-keygen` with ed25519 (recommended) or RSA-4096
+  - **Skip SSH**: warns about needing console access
+- Offer to create `~/.ssh/config` entries for `macpro` and `macpro-linux`
 - Hostname
 - WiFi credentials (if network=wifi)
 - Webhook URL (optional)
+- Pre-execution summary confirmation before deployment begins
 
 ## DKMS Patch Architecture
 
