@@ -339,7 +339,8 @@ remote_kernel_update() {
         return 1
     fi
     remote_toggle_apt_sources "$host" enable || return 1
-    remote__exec "$host" "echo 'KUPDATE_PHASE=1' > /tmp/macpro-kernel-update.env"
+    dry_run_exec "Setting kernel update phase marker to 1 on $host" \
+        remote__exec "$host" "echo 'KUPDATE_PHASE=1' > /tmp/macpro-kernel-update.env"
     log "Phase 1 complete: apt sources enabled"
 
     if ! tui_confirm "Kernel Update: Phase 2 of 7" "Remove kernel pinning and apt holds?"; then
