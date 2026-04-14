@@ -121,7 +121,7 @@ echo "  ... (preserving original boot structure)"
 
 # BOOT_PARAMS comes from xorriso reading the trusted base ISO;
 # eval is required to properly expand its multi-word arguments as positional args to xorriso
-if echo "$BOOT_PARAMS" | grep -qE '[;&|`$()]'; then
+if echo "$BOOT_PARAMS" | grep -qE '[;&|`$(){}]'; then
     die "Suspicious characters in boot parameters — possible injection"
 fi
 eval "xorriso -as mkisofs \

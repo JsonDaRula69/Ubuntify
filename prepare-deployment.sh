@@ -672,9 +672,9 @@ main() {
     if ! command -v cleanup_on_error >/dev/null 2>&1; then
         cleanup_on_error() { true; }
     fi
-    trap 'log_shutdown; cleanup_on_error' EXIT
-    trap 'log_shutdown; cleanup_on_error; exit 130' SIGINT
-    trap 'log_shutdown; cleanup_on_error; exit 143' SIGTERM
+    trap 'cleanup_on_error' EXIT
+    trap 'cleanup_on_error; exit 130' SIGINT
+    trap 'cleanup_on_error; exit 143' SIGTERM
 
     log_info "Mac Pro 2013 Ubuntu Deployment Tool v0.2.8 starting..."
     log_info "Log file: $(log_get_file_path)"
