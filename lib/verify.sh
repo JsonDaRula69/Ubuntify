@@ -38,9 +38,96 @@ verify_apfs_resize() {
     if [ "$within_tolerance" -eq 1 ]; then
         return 0
     else
-        error "verify_apfs_resize: size mismatch for $container_device (actual: ${actual_gb}GB, expected: ${expected_gb}GB, tolerance: ±5GB)"
+        error "verify_apfs_resize: ${container_device} is ${actual_gb}GB, expected ~${expected_gb}GB (±5GB tolerance)"
         return 1
     fi
+}
+
+# verify_autoinstall_schema file_path [schema_path]
+# Validates autoinstall YAML against Subiquity schema.
+# Returns 0 if valid, 1 if invalid, 0 with warning if validators unavailable.
+verify_autoinstall_schema() {
+    local file_path="$1"
+    local schema_path="${2:-${LIB_DIR:-./lib}/autoinstall-schema.json}"
+
+    if [ ! -f "$schema_path" ]; then
+        warn "verify_autoinstall_schema: schema not found at $schema_path, skipping"
+        return 0
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "verify_autoinstall_schema: python3 not available, skipping"
+        return 0
+    fi
+
+    local escaped_file escaped_schema
+    escaped_file=$(printf '%s\n' "$file_path" | sed "s/'/'\\''/g")
+    escaped_schema=$(printf '%s\n' "$schema_path" | sed "s/'/'\\''/g")
+
+    # Try jsonschema module first (thorough validation)
+    local jsonschema_error
+    jsonschema_error=$(python3 -c "
+import sys
+try:
+    import jsonschema
+    import json, yaml
+    with open('$escaped_schema') as f:
+        schema = json.load(f)
+    with open('$escaped_file') as f:
+        data = yaml.safe_load(f)
+    jsonschema.validate(data, schema)
+except ImportError:
+    sys.exit(42)
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+" 2>&1)
+    local rc=$?
+
+    if [ $rc -eq 42 ]; then
+        # jsonschema not installed — lightweight key validation
+        local key_error
+        key_error=$(python3 -c "
+import yaml, sys
+with open('$escaped_file') as f:
+    data = yaml.safe_load(f)
+if not isinstance(data, dict):
+    print('Root must be a mapping', file=sys.stderr)
+    sys.exit(1)
+if 'autoinstall' not in data:
+    print('Missing required key: autoinstall', file=sys.stderr)
+    sys.exit(1)
+ai = data['autoinstall']
+if not isinstance(ai, dict):
+    print('autoinstall must be a mapping', file=sys.stderr)
+    sys.exit(1)
+required = ['identity']
+for key in required:
+    if key not in ai:
+        print(f'Missing required autoinstall key: {key}', file=sys.stderr)
+        sys.exit(1)
+if 'identity' in ai:
+    ident = ai['identity']
+    if not isinstance(ident, dict):
+        print('identity must be a mapping', file=sys.stderr)
+        sys.exit(1)
+    for k in ['username', 'password', 'hostname']:
+        if k not in ident:
+            print(f'Missing identity key: {k}', file=sys.stderr)
+            sys.exit(1)
+" 2>&1)
+        if [ $? -ne 0 ]; then
+            error "verify_autoinstall_schema: $key_error"
+            return 1
+        fi
+        warn "verify_autoinstall_schema: jsonschema unavailable, performed lightweight key validation only"
+        return 0
+    elif [ $rc -ne 0 ]; then
+        error "verify_autoinstall_schema: schema validation failed: $jsonschema_error"
+        return 1
+    fi
+
+    return 0
 }
 
 # verify_esp_mount mount_point

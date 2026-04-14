@@ -150,6 +150,10 @@ _phase_generate_config() {
         error "YAML syntax verification failed for autoinstall.yaml"
         return 1
     fi
+    if ! verify_autoinstall_schema "$ESP_MOUNT/autoinstall.yaml"; then
+        error "Autoinstall schema validation failed for autoinstall.yaml"
+        return 1
+    fi
 }
 
 _phase_verify_bless() {
@@ -536,6 +540,10 @@ _phase_generate_config_usb() {
     fi
     if ! verify_yaml_syntax "$USB_MOUNT/autoinstall.yaml"; then
         error "YAML syntax verification failed for autoinstall.yaml"
+        return 1
+    fi
+    if ! verify_autoinstall_schema "$USB_MOUNT/autoinstall.yaml"; then
+        error "Autoinstall schema validation failed for autoinstall.yaml"
         return 1
     fi
 }
