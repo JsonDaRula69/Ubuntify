@@ -11,6 +11,7 @@ readonly VM_NAME="macpro-vmtest"
 readonly DISK_SIZE=25600
 
 source "$LIB_DIR/colors.sh"
+source "${LIB_DIR:-../lib}/dryrun.sh"
 
 FORCE=false
 if [ "$1" = "--force" ]; then
@@ -38,9 +39,13 @@ fi
 if VBoxManage list vms 2>/dev/null | grep -q "\"$VM_NAME\""; then
     if [ "$FORCE" = true ]; then
         echo -e "${YELLOW}WARN${NC}: VM '$VM_NAME' already exists. Force recreate enabled."
-        VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
-        sleep 2
-        VBoxManage unregistervm "$VM_NAME" --delete
+        dry_run_exec "Powering off existing VM $VM_NAME" \
+            VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
+        if ! is_dry_run; then
+            sleep 2
+        fi
+        dry_run_exec "Unregistering and deleting existing VM $VM_NAME" \
+            VBoxManage unregistervm "$VM_NAME" --delete
         echo "Deleted existing VM."
     else
         echo -e "${YELLOW}WARN${NC}: VM '$VM_NAME' already exists."
@@ -51,9 +56,13 @@ if VBoxManage list vms 2>/dev/null | grep -q "\"$VM_NAME\""; then
         read -p "Delete existing VM and recreate? [y/N] " -r
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             # Power off if running
-            VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
-            sleep 2
-            VBoxManage unregistervm "$VM_NAME" --delete
+            dry_run_exec "Powering off existing VM $VM_NAME" \
+                VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
+            if ! is_dry_run; then
+                sleep 2
+            fi
+            dry_run_exec "Unregistering and deleting existing VM $VM_NAME" \
+                VBoxManage unregistervm "$VM_NAME" --delete
             echo "Deleted existing VM."
         else
             echo "Keeping existing VM. Exiting."
@@ -71,34 +80,47 @@ echo "  NAT networking with SSH port forwarding (host 2222 -> guest 22)"
 echo ""
 
 # Create VM
-VBoxManage createvm --name "$VM_NAME" --register --ostype "Ubuntu_64" 2>&1
+dry_run_exec "Creating VM $VM_NAME" \
+    VBoxManage createvm --name "$VM_NAME" --register --ostype "Ubuntu_64" 2>&1
 
 # Set EFI firmware (Mac Pro 2013 uses EFI)
-VBoxManage modifyvm "$VM_NAME" --firmware efi
+dry_run_exec "Setting EFI firmware for $VM_NAME" \
+    VBoxManage modifyvm "$VM_NAME" --firmware efi
 
 # Set resources
-VBoxManage modifyvm "$VM_NAME" --cpus 4 --memory 4576
+dry_run_exec "Setting VM resources (4 CPUs, 4.5GB RAM)" \
+    VBoxManage modifyvm "$VM_NAME" --cpus 4 --memory 4576
 
 # Set boot order: DVD first, then hard disk
-VBoxManage modifyvm "$VM_NAME" --boot1 dvd --boot2 disk --boot3 none --boot4 none
+dry_run_exec "Setting VM boot order (DVD first)" \
+    VBoxManage modifyvm "$VM_NAME" --boot1 dvd --boot2 disk --boot3 none --boot4 none
 
 # Create SATA controller and disk
-VBoxManage storagectl "$VM_NAME" --name "SATA" --add sata --controller IntelAhci --portcount 2
+dry_run_exec "Creating SATA controller for $VM_NAME" \
+    VBoxManage storagectl "$VM_NAME" --name "SATA" --add sata --controller IntelAhci --portcount 2
 mkdir -p "$(dirname "$DISK_PATH")" 2>/dev/null || true
-VBoxManage createmedium disk --filename "$DISK_PATH" --size "$DISK_SIZE" --format VDI
-VBoxManage storageattach "$VM_NAME" --storagectl "SATA" --port 0 --device 0 --type hdd --medium "$DISK_PATH"
+dry_run_exec "Creating virtual disk $DISK_PATH" \
+    VBoxManage createmedium disk --filename "$DISK_PATH" --size "$DISK_SIZE" --format VDI
+dry_run_exec "Attaching SATA disk to $VM_NAME" \
+    VBoxManage storageattach "$VM_NAME" --storagectl "SATA" --port 0 --device 0 --type hdd --medium "$DISK_PATH"
 
 # Create IDE controller and attach ISO
-VBoxManage storagectl "$VM_NAME" --name "IDE" --add ide --controller PIIX4
-VBoxManage storageattach "$VM_NAME" --storagectl "IDE" --port 0 --device 0 --type dvddrive --medium "$ISO"
+dry_run_exec "Creating IDE controller for $VM_NAME" \
+    VBoxManage storagectl "$VM_NAME" --name "IDE" --add ide --controller PIIX4
+dry_run_exec "Attaching ISO to $VM_NAME IDE controller" \
+    VBoxManage storageattach "$VM_NAME" --storagectl "IDE" --port 0 --device 0 --type dvddrive --medium "$ISO"
 
-VBoxManage modifyvm "$VM_NAME" --nic1 nat --nictype1 82540EM
-VBoxManage modifyvm "$VM_NAME" --natpf1 "ssh,tcp,,2222,,22"
+dry_run_exec "Configuring NAT network for $VM_NAME" \
+    VBoxManage modifyvm "$VM_NAME" --nic1 nat --nictype1 82540EM
+dry_run_exec "Configuring SSH port forwarding for $VM_NAME" \
+    VBoxManage modifyvm "$VM_NAME" --natpf1 "ssh,tcp,,2222,,22"
 
 # Enable headless mode
-VBoxManage modifyvm "$VM_NAME" --uart1 0x3F8 4 --uartmode1 file /tmp/vmtest-serial.log
+dry_run_exec "Enabling UART1 for serial logging" \
+    VBoxManage modifyvm "$VM_NAME" --uart1 0x3F8 4 --uartmode1 file /tmp/vmtest-serial.log
 
-VBoxManage modifyvm "$VM_NAME" --graphicscontroller vmsvga --vram 128
+dry_run_exec "Setting graphics controller for $VM_NAME" \
+    VBoxManage modifyvm "$VM_NAME" --graphicscontroller vmsvga --vram 128
 
 echo ""
 echo -e "${GREEN}=========================================${NC}"

@@ -10,6 +10,7 @@
 
 source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
+source "${LIB_DIR:-./lib}/dryrun.sh"
 
 ESP_NAME="${ESP_NAME:-CIDATA}"
 ESP_SIZE="${ESP_SIZE:-5g}"
@@ -57,11 +58,6 @@ shrink_apfs_if_needed() {
     local INTERNAL_DISK="$2"
     local _apfs_resized_name="$3"
     local _apfs_original_size_name="$4"
-
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
-        log "[DRY RUN] Would shrink APFS container if needed"
-        return 0
-    fi
 
     if [ "${STORAGE_LAYOUT:-}" != "1" ]; then
         log "Full disk mode selected — skipping APFS resize"
@@ -131,7 +127,8 @@ shrink_apfs_if_needed() {
         tmutil thinlocalsnapshots / 999999999999 2>/dev/null || true
     fi
 
-    diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || die "APFS resize failed"
+    dry_run_exec "Shrink APFS container to ${TARGET_MACOS_GB}GB" \
+        diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || die "APFS resize failed"
     eval "$_apfs_resized_name=1"
     log "APFS container resized to ${TARGET_MACOS_GB}GB"
 }
@@ -140,11 +137,6 @@ create_esp_partition() {
     local INTERNAL_DISK="$1"
     local _esp_created_name="$2"
     local _esp_device_name="$3"
-
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
-        log "[DRY RUN] Would create ESP partition on $INTERNAL_DISK"
-        return 0
-    fi
 
     log "Creating ESP partition for Ubuntu installer..."
 
@@ -160,7 +152,8 @@ create_esp_partition() {
 
     local BEFORE_PARTS AFTER_PARTS ESP_DEVICE ESP_MOUNT
     BEFORE_PARTS=$(diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
-    retry_diskutil addPartition "$INTERNAL_DISK" %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% "$ESP_SIZE" || \
+    dry_run_exec "Create ESP partition on $INTERNAL_DISK" \
+        retry_diskutil addPartition "$INTERNAL_DISK" %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% "$ESP_SIZE" || \
         die "Failed to create ESP partition with EFI System Partition type"
     eval "$_esp_created_name=1"
     sleep 2
@@ -191,13 +184,6 @@ extract_iso_to_esp() {
     local ISO_PATH="$1"
     local ESP_MOUNT="$2"
 
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
-        log "[DRY RUN] Would extract ISO to ESP"
-        log "[DRY RUN]   ISO: $ISO_PATH"
-        log "[DRY RUN]   ESP: $ESP_MOUNT"
-        return 0
-    fi
-
     log "Extracting ISO contents to ESP..."
 
     local ESP_AVAIL ISO_TOTAL
@@ -211,12 +197,13 @@ extract_iso_to_esp() {
         log "Space check: ${ESP_AVAIL}MB available, ${REQUIRED_MIN}MB needed"
     fi
 
-    log "Extracting ISO to ESP via xorriso (this may take a minute)..."
-    retry_xorriso -osirrox on -indev "$ISO_PATH" \
+    dry_run_exec "Extract ISO to ESP" \
+        retry_xorriso -osirrox on -indev "$ISO_PATH" \
         -extract / "$ESP_MOUNT" 2>/dev/null || \
         die "Failed to extract ISO contents"
 
-    rm -rf "$ESP_MOUNT/pool" "$ESP_MOUNT/dists" "$ESP_MOUNT/.disk" "$ESP_MOUNT/boot/grub" 2>/dev/null || true
+    dry_run_exec "Clean up unnecessary files" \
+        rm -rf "$ESP_MOUNT/pool" "$ESP_MOUNT/dists" "$ESP_MOUNT/.disk" "$ESP_MOUNT/boot/grub" 2>/dev/null || true
 
     # Verify required files
     [ -f "$ESP_MOUNT/EFI/boot/bootx64.efi" ] || [ -f "$ESP_MOUNT/EFI/boot/BOOTX64.EFI" ] || die "BOOTX64.EFI missing"

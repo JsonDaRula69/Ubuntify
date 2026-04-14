@@ -18,6 +18,7 @@ source "${LIB_DIR:-./lib}/tui.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/retry.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/rollback.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/verify.sh" 2>/dev/null || true
+source "${LIB_DIR:-./lib}/dryrun.sh"
 
 ## Connection Helpers
 
@@ -129,13 +130,20 @@ remote_kernel_unpin() {
     local kver
     kver=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
 
-    remote__exec "$host" "sudo apt-mark unhold linux-image-${kver} 2>/dev/null || true"
-    remote__exec "$host" "sudo apt-mark unhold linux-headers-${kver} 2>/dev/null || true"
-    remote__exec "$host" "sudo apt-mark unhold linux-modules-${kver} 2>/dev/null || true"
-    remote__exec "$host" "sudo apt-mark unhold linux-modules-extra-${kver} 2>/dev/null || true"
-    remote__exec "$host" "sudo rm /etc/apt/preferences.d/99-pin-kernel 2>/dev/null || true"
-    remote__exec "$host" "sudo systemctl unmask apt-daily.service apt-daily.timer 2>/dev/null || true"
-    remote__exec "$host" "sudo systemctl unmask apt-daily-upgrade.service apt-daily-upgrade.timer 2>/dev/null || true"
+    dry_run_exec "Unholding kernel image package on $host" \
+        remote__exec "$host" "sudo apt-mark unhold linux-image-${kver} 2>/dev/null || true"
+    dry_run_exec "Unholding kernel headers package on $host" \
+        remote__exec "$host" "sudo apt-mark unhold linux-headers-${kver} 2>/dev/null || true"
+    dry_run_exec "Unholding kernel modules package on $host" \
+        remote__exec "$host" "sudo apt-mark unhold linux-modules-${kver} 2>/dev/null || true"
+    dry_run_exec "Unholding kernel modules-extra package on $host" \
+        remote__exec "$host" "sudo apt-mark unhold linux-modules-extra-${kver} 2>/dev/null || true"
+    dry_run_exec "Removing kernel apt preferences on $host" \
+        remote__exec "$host" "sudo rm /etc/apt/preferences.d/99-pin-kernel 2>/dev/null || true"
+    dry_run_exec "Unmasking apt-daily service/timer on $host" \
+        remote__exec "$host" "sudo systemctl unmask apt-daily.service apt-daily.timer 2>/dev/null || true"
+    dry_run_exec "Unmasking apt-daily-upgrade service/timer on $host" \
+        remote__exec "$host" "sudo systemctl unmask apt-daily-upgrade.service apt-daily-upgrade.timer 2>/dev/null || true"
 
     log "Kernel unpinned successfully"
 }
@@ -157,10 +165,14 @@ remote_kernel_repin() {
     kver=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
     abi=$(echo "$kver" | sed 's/-generic$//')
 
-    remote__exec "$host" "sudo apt-mark hold linux-image-${kver}"
-    remote__exec "$host" "sudo apt-mark hold linux-headers-${kver}"
-    remote__exec "$host" "sudo apt-mark hold linux-modules-${kver}"
-    remote__exec "$host" "sudo apt-mark hold linux-modules-extra-${kver} 2>/dev/null || true"
+    dry_run_exec "Holding kernel image package on $host" \
+        remote__exec "$host" "sudo apt-mark hold linux-image-${kver}"
+    dry_run_exec "Holding kernel headers package on $host" \
+        remote__exec "$host" "sudo apt-mark hold linux-headers-${kver}"
+    dry_run_exec "Holding kernel modules package on $host" \
+        remote__exec "$host" "sudo apt-mark hold linux-modules-${kver}"
+    dry_run_exec "Holding kernel modules-extra package on $host" \
+        remote__exec "$host" "sudo apt-mark hold linux-modules-extra-${kver} 2>/dev/null || true"
 
     local prefs_content
     prefs_content="Package: linux-image-*
@@ -186,14 +198,21 @@ Pin-Priority: 1001
 Package: linux-modules-${abi}*
 Pin: release o=Ubuntu
 Pin-Priority: 1001"
-    echo "$prefs_content" | remote__exec "$host" "sudo tee /etc/apt/preferences.d/99-pin-kernel > /dev/null"
+    echo "$prefs_content" | dry_run_exec "Writing kernel apt preferences on $host" \
+        sh -c "remote__exec '$host' 'sudo tee /etc/apt/preferences.d/99-pin-kernel > /dev/null'"
 
-    remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
-    remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; done"
-    remote__exec "$host" "sudo systemctl mask apt-daily.service 2>/dev/null || true"
-    remote__exec "$host" "sudo systemctl mask apt-daily.timer 2>/dev/null || true"
-    remote__exec "$host" "sudo systemctl mask apt-daily-upgrade.service 2>/dev/null || true"
-    remote__exec "$host" "sudo systemctl mask apt-daily-upgrade.timer 2>/dev/null || true"
+    dry_run_exec "Disabling apt sources by commenting out on $host" \
+        remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
+    dry_run_exec "Disabling apt sources in sources.list.d on $host" \
+        remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; done"
+    dry_run_exec "Masking apt-daily service on $host" \
+        remote__exec "$host" "sudo systemctl mask apt-daily.service 2>/dev/null || true"
+    dry_run_exec "Masking apt-daily timer on $host" \
+        remote__exec "$host" "sudo systemctl mask apt-daily.timer 2>/dev/null || true"
+    dry_run_exec "Masking apt-daily-upgrade service on $host" \
+        remote__exec "$host" "sudo systemctl mask apt-daily-upgrade.service 2>/dev/null || true"
+    dry_run_exec "Masking apt-daily-upgrade timer on $host" \
+        remote__exec "$host" "sudo systemctl mask apt-daily-upgrade.timer 2>/dev/null || true"
 
     log "Kernel re-pinned successfully"
 }
@@ -266,18 +285,21 @@ remote_kernel_update() {
         return 1
     fi
     remote_unpin_kernel "$host" || { _remote_kernel_update_rollback "$host" "1"; return 1; }
-    remote__exec "$host" "echo 'KUPDATE_PHASE=2' > /tmp/macpro-kernel-update.env"
+    dry_run_exec "Setting kernel update phase marker to 2 on $host" \
+        remote__exec "$host" "echo 'KUPDATE_PHASE=2' > /tmp/macpro-kernel-update.env"
     log "Phase 2 complete: kernel unpinned, holds removed"
 
     if ! tui_confirm "Kernel Update: Phase 3 of 7" "Run apt-get dist-upgrade? This will install a new kernel if available."; then
         _remote_kernel_update_rollback "$host" "2"
         return 1
     fi
-    remote__exec "$host" "sudo apt-get update && sudo apt-get dist-upgrade -y" || {
+    dry_run_exec "Running apt-get update and dist-upgrade on $host" \
+        remote__exec "$host" "sudo apt-get update && sudo apt-get dist-upgrade -y" || {
         _remote_kernel_update_rollback "$host" "2"
         return 1
     }
-    remote__exec "$host" "echo 'KUPDATE_PHASE=3' > /tmp/macpro-kernel-update.env"
+    dry_run_exec "Setting kernel update phase marker to 3 on $host" \
+        remote__exec "$host" "echo 'KUPDATE_PHASE=3' > /tmp/macpro-kernel-update.env"
     log "Phase 3 complete: dist-upgrade finished"
 
     new_kver=$(remote__exec "$host" "ls /boot/vmlinuz-* | sort -V | tail -1 | sed 's|/boot/vmlinuz-||'")
@@ -313,32 +335,41 @@ remote_kernel_update() {
         fi
         log "wl.ko verified at $wl_path"
 
-        remote__exec "$host" "sudo update-initramfs -u -k $new_kver"
+        dry_run_exec "Updating initramfs for new kernel $new_kver on $host" \
+            remote__exec "$host" "sudo update-initramfs -u -k $new_kver"
     fi
-    remote__exec "$host" "echo 'KUPDATE_PHASE=4' > /tmp/macpro-kernel-update.env"
+    dry_run_exec "Setting kernel update phase marker to 4 on $host" \
+        remote__exec "$host" "echo 'KUPDATE_PHASE=4' > /tmp/macpro-kernel-update.env"
     log "Phase 4 complete: DKMS verified"
 
     if ! tui_confirm "Kernel Update: Phase 5 of 7" "Configure GRUB fallback so old kernel is default?"; then
         _remote_kernel_update_rollback "$host" "4"
         return 1
     fi
-    remote__exec "$host" "sudo sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' /etc/default/grub"
-    remote__exec "$host" "grep -q '^GRUB_SAVEDEFAULT' /etc/default/grub || echo 'GRUB_SAVEDEFAULT=true' | sudo tee -a /etc/default/grub"
-    remote__exec "$host" "sudo grub-set-default 'Ubuntu, with Linux $current_kver'"
-    remote__exec "$host" "sudo update-grub"
+    dry_run_exec "Setting GRUB_DEFAULT to saved on $host" \
+        remote__exec "$host" "sudo sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' /etc/default/grub"
+    dry_run_exec "Adding GRUB_SAVEDEFAULT on $host" \
+        remote__exec "$host" "grep -q '^GRUB_SAVEDEFAULT' /etc/default/grub || echo 'GRUB_SAVEDEFAULT=true' | sudo tee -a /etc/default/grub"
+    dry_run_exec "Setting GRUB default to current kernel on $host" \
+        remote__exec "$host" "sudo grub-set-default 'Ubuntu, with Linux $current_kver'"
+    dry_run_exec "Updating GRUB on $host" \
+        remote__exec "$host" "sudo update-grub"
     local saved_default
     saved_default=$(remote__exec "$host" "sudo grub-editenv list 2>/dev/null" || true)
     log "GRUB saved default: $saved_default"
-    remote__exec "$host" "echo 'KUPDATE_PHASE=5' > /tmp/macpro-kernel-update.env"
+    dry_run_exec "Setting kernel update phase marker to 5 on $host" \
+        remote__exec "$host" "echo 'KUPDATE_PHASE=5' > /tmp/macpro-kernel-update.env"
     log "Phase 5 complete: GRUB fallback configured"
 
     if ! tui_confirm "Kernel Update: Phase 6 of 7" "Reboot into new kernel $new_kver? Power cycle returns to $current_kver if it fails."; then
         _remote_kernel_update_rollback "$host" "5"
         return 1
     fi
-    remote__exec "$host" "sudo grub-reboot 'Ubuntu, with Linux $new_kver'"
+    dry_run_exec "Setting GRUB reboot to new kernel on $host" \
+        remote__exec "$host" "sudo grub-reboot 'Ubuntu, with Linux $new_kver'"
     remote_reboot "$host"
-    remote__exec "$host" "echo 'KUPDATE_PHASE=6' > /tmp/macpro-kernel-update.env"
+    dry_run_exec "Setting kernel update phase marker to 6 on $host" \
+        remote__exec "$host" "echo 'KUPDATE_PHASE=6' > /tmp/macpro-kernel-update.env"
     log "Phase 6 complete: rebooted into new kernel"
 
     if ! tui_confirm "Kernel Update: Phase 7 of 7" "Re-lock the system (pin kernel, disable apt sources, re-enable holds)?"; then
@@ -347,7 +378,8 @@ remote_kernel_update() {
     fi
     remote_pin_kernel "$host"
     remote_toggle_apt_sources "$host" disable
-    remote__exec "$host" "rm -f /tmp/macpro-kernel-update.env"
+    dry_run_exec "Removing kernel update phase marker on $host" \
+        remote__exec "$host" "rm -f /tmp/macpro-kernel-update.env"
 
     log "Kernel update complete!"
     return 0
@@ -361,26 +393,36 @@ _remote_kernel_update_rollback() {
 
     case "$from_phase" in
         0|1)
-            remote_toggle_apt_sources "$host" disable 2>/dev/null || true
+            dry_run_exec "Disabling apt sources on $host (rollback)" \
+                remote_toggle_apt_sources "$host" disable 2>/dev/null || true
             ;;
         2|3)
-            remote_pin_kernel "$host" 2>/dev/null || true
-            remote_toggle_apt_sources "$host" disable 2>/dev/null || true
+            dry_run_exec "Re-pinning kernel on $host (rollback)" \
+                remote_pin_kernel "$host" 2>/dev/null || true
+            dry_run_exec "Disabling apt sources on $host (rollback)" \
+                remote_toggle_apt_sources "$host" disable 2>/dev/null || true
             ;;
         4)
-            remote_pin_kernel "$host" 2>/dev/null || true
-            remote_toggle_apt_sources "$host" disable 2>/dev/null || true
+            dry_run_exec "Re-pinning kernel on $host (rollback)" \
+                remote_pin_kernel "$host" 2>/dev/null || true
+            dry_run_exec "Disabling apt sources on $host (rollback)" \
+                remote_toggle_apt_sources "$host" disable 2>/dev/null || true
             warn "New kernel is installed but NOT verified. Do NOT reboot into it."
             ;;
         5)
-            remote__exec "$host" "sudo grub-set-default 0" 2>/dev/null || true
-            remote__exec "$host" "sudo update-grub" 2>/dev/null || true
-            remote_pin_kernel "$host" 2>/dev/null || true
-            remote_toggle_apt_sources "$host" disable 2>/dev/null || true
+            dry_run_exec "Setting GRUB default to 0 on $host (rollback)" \
+                remote__exec "$host" "sudo grub-set-default 0" 2>/dev/null || true
+            dry_run_exec "Updating GRUB on $host (rollback)" \
+                remote__exec "$host" "sudo update-grub" 2>/dev/null || true
+            dry_run_exec "Re-pinning kernel on $host (rollback)" \
+                remote_pin_kernel "$host" 2>/dev/null || true
+            dry_run_exec "Disabling apt sources on $host (rollback)" \
+                remote_toggle_apt_sources "$host" disable 2>/dev/null || true
             ;;
     esac
 
-    remote__exec "$host" "rm -f /tmp/macpro-kernel-update.env" 2>/dev/null || true
+    dry_run_exec "Removing kernel update phase marker on $host (rollback)" \
+        remote__exec "$host" "rm -f /tmp/macpro-kernel-update.env" 2>/dev/null || true
     log "Rollback complete — system should be in pre-update state"
 }
 
@@ -398,228 +440,32 @@ remote_non_kernel_update() {
     local failed=0
 
     log "Enabling apt sources on $host..."
-    remote__exec "$host" "sudo sed -i 's/^#deb/deb/' /etc/apt/sources.list"
-    remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] \&\& sudo sed -i 's/^#deb/deb/' \"\$list\"; done"
+    dry_run_exec "Enabling apt sources on $host" \
+        remote__exec "$host" "sudo sed -i 's/^#deb/deb/' /etc/apt/sources.list"
+    dry_run_exec "Enabling apt sources in sources.list.d on $host" \
+        remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i 's/^#deb/deb/' \"\$list\"; done"
 
     log "Running apt-get update..."
-    if ! remote__exec "$host" "sudo apt-get update"; then
+    if ! dry_run_exec "Running apt-get update on $host" \
+        remote__exec "$host" "sudo apt-get update"; then
         error "apt-get update failed"
         failed=1
     fi
 
     log "Upgrading non-kernel packages..."
     if [ "$failed" -eq 0 ]; then
-        if ! remote__exec "$host" "sudo apt-get upgrade -y --exclude=linux-image-*,linux-headers-*,linux-modules-*"; then
+        if ! dry_run_exec "Running apt-get upgrade on $host" \
+            remote__exec "$host" "sudo apt-get upgrade -y --exclude=linux-image-*,linux-headers-*,linux-modules-*"; then
             error "Upgrade failed"
             failed=1
         fi
     fi
 
     log "Disabling apt sources..."
-    remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
-    remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] \&\& sudo sed -i '/^deb/ s/^/#/' \"\$list\"; done"
-
-    if [ "$failed" -eq 1 ]; then
-        return 1
-    fi
-
-    log "Non-kernel update completed successfully"
-}
-
-## WiFi/Driver Management
-
-remote_driver_status() {
-    local host
-    host=$(remote__get_host "${1:-}")
-
-    log "Checking driver status on $host..."
-    echo ""
-
-    local wl_loaded dkms_status wifi_iface
-
-    wl_loaded=$(remote__exec "$host" "lsmod | grep -q wl && echo 'loaded' || echo 'NOT loaded'")
-    dkms_status=$(remote__exec "$host" "dkms status broadcom-sta 2>/dev/null || echo 'Not installed'")
-    wifi_iface=$(remote__exec "$host" "ip -br link show | grep -E 'wl' | head -1 | awk '{print \$1}'") || wifi_iface=""
-
-    echo "=== Driver Status ==="
-    echo "  wl module: $wl_loaded"
-    echo "  DKMS status: $dkms_status"
-    echo "  WiFi interface: ${wifi_iface:-Not detected}"
-    echo ""
-}
-
-remote_driver_rebuild() {
-    local host
-    local target_kver=""
-    host=$(remote__get_host "${1:-}")
-    target_kver="${2:-}"
-
-    warn "This will rebuild the DKMS module"
-    read -rp "Type 'yes' to confirm: " confirm
-    if [ "$confirm" != "yes" ]; then
-        log "Operation cancelled"
-        return 1
-    fi
-
-    log "Rebuilding DKMS module on $host..."
-
-    local kver
-    if [ -n "$target_kver" ]; then
-        kver="$target_kver"
-    else
-        kver=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
-    fi
-
-    local patches_check
-    patches_check=$(remote__exec "$host" "ls /usr/src/broadcom-sta-6.30.223.271/*.patch 2>/dev/null | wc -l")
-    if [ "$patches_check" -eq 0 ]; then
-        warn "No DKMS patches found in /usr/src/broadcom-sta-6.30.223.271/"
-        warn "Build may fail on kernel 6.8+ without patches"
-    else
-        log "Found $patches_check DKMS patches"
-    fi
-
-    if ! remote__exec "$host" "sudo dkms build broadcom-sta/6.30.223.271 -k $kver"; then
-        error "DKMS build failed"
-
-        local build_log
-        build_log=$(remote__exec "$host" "cat /var/lib/dkms/broadcom-sta/6.30.223.271/build/make.log 2>/dev/null | tail -20" || echo "Build log not available")
-        error "Build log (last 20 lines): $build_log"
-
-        if [ "$patches_check" -eq 0 ]; then
-            error "DKMS patches not found — cannot build wl driver"
-        fi
-        return 1
-    fi
-
-    if ! remote__exec "$host" "sudo dkms install broadcom-sta/6.30.223.271 -k $kver"; then
-        error "DKMS install failed"
-        return 1
-    fi
-
-    local dkms_status
-    dkms_status=$(remote__exec "$host" "dkms status broadcom-sta/6.30.223.271 -k $kver")
-    if ! echo "$dkms_status" | grep -q "installed"; then
-        error "DKMS module not showing as installed"
-        return 1
-    fi
-    log "DKMS status verified: $dkms_status"
-
-    remote__exec "$host" "sudo modprobe wl" || {
-        error "Failed to load wl module"
-        return 1
-    }
-
-    log "Driver rebuilt and loaded successfully"
-}
-
-## macOS Erasure
-
-remote_erase_macos() {
-    local host
-    host=$(remote__get_host "${1:-}")
-
-    error "=== DANGER: macOS PARTITION ERASURE ==="
-    error "This will PERMANENTLY DELETE all macOS partitions"
-    error "This action CANNOT be undone"
-    echo ""
-
-    remote_get_info "$host" || return 1
-
-    log "Gathering partition information..."
-    echo ""
-
-    local partitions
-    partitions=$(remote__exec "$host" "lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT /dev/sda && echo '---' && sudo sgdisk -p /dev/sda") || {
-        error "Failed to get partition information"
-        return 1
-    }
-
-    echo "$partitions"
-    echo ""
-
-    error "Review the partition table above. The following will be DELETED:"
-    echo "  - APFS partitions (macOS)"
-    echo "  - Apple Boot/Recovery partitions"
-    echo "  - Any partition with FSTYPE=apfs or Apple GUIDs"
-    echo ""
-    warn "Partitions mounted at /, /boot, /boot/efi will NOT be deleted"
-    echo ""
-
-    read -rp "Type 'ERASE MACOS' to confirm PERMANENT deletion: " confirm
-    if [ "$confirm" != "ERASE MACOS" ]; then
-        log "Operation cancelled"
-        return 1
-    fi
-
-    warn "Starting macOS partition erasure..."
-
-    local backup_timestamp
-    backup_timestamp=$(date +%Y%m%d%H%M%S)
-
-    remote__exec "$host" "sudo sgdisk -b /tmp/gpt-backup-${backup_timestamp}.bin /dev/sda" || {
-        error "Failed to backup GPT"
-        return 1
-    }
-    log "GPT backup saved to /tmp/gpt-backup-${backup_timestamp}.bin on remote host"
-
-    remote__exec "$host" "sudo sgdisk -p /dev/sda > /tmp/gpt-layout-${backup_timestamp}.txt" || {
-        warn "Failed to save GPT layout text dump"
-    }
-
-    local apfs_partitions delete_partitions
-    apfs_partitions=$(remote__exec "$host" "lsblk -o NAME,FSTYPE /dev/sda | grep -i apfs | awk '{print \$1}' | sed 's/^..//'") || true
-
-    if [ -z "$apfs_partitions" ]; then
-        warn "No APFS partitions found to delete"
-    else
-        for part in $apfs_partitions; do
-            log "Deleting APFS partition /dev/sda${part}..."
-            remote__exec "$host" "sudo umount /dev/sda${part} 2>/dev/null || true"
-            if remote__exec "$host" "sudo sgdisk -d ${part} /dev/sda"; then
-                log "Partition /dev/sda${part} deleted successfully"
-            else
-                error "Failed to delete partition /dev/sda${part}"
-                warn "Manual intervention required. Restore GPT with: sgdisk -l /tmp/gpt-backup-*.bin /dev/sda"
-                return 1
-            fi
-        done
-    fi
-
-    log "macOS partitions erased successfully"
-
-    local new_layout
-    new_layout=$(remote__exec "$host" "sudo sgdisk -p /dev/sda") || true
-    log "New partition layout:"
-    echo "$new_layout"
-
-    log "To expand Ubuntu partition, use: sudo growpart /dev/sda <partition_num> && sudo resize2fs /dev/sda<partition_num>"
-
-    return 0
-}
-
-## APT Source Management
-
-remote_apt_enable() {
-    local host
-    host=$(remote__get_host "${1:-}")
-
-    log "Enabling apt sources on $host..."
-
-    remote__exec "$host" "sudo sed -i 's/^#deb/deb/' /etc/apt/sources.list"
-    remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i 's/^#deb/deb/' \"\$list\"; done"
-
-    log "Apt sources enabled"
-}
-
-remote_apt_disable() {
-    local host
-    host=$(remote__get_host "${1:-}")
-
-    log "Disabling apt sources on $host..."
-
-    remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
-    remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; done"
+    dry_run_exec "Disabling apt sources on $host" \
+        remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
+    dry_run_exec "Disabling apt sources in sources.list.d on $host" \
+        remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; done"
 
     log "Apt sources disabled"
 }
@@ -708,7 +554,8 @@ remote_reboot() {
     fi
 
     log "Initiating reboot..."
-    remote__exec "$host" "sudo reboot" || true
+    dry_run_exec "Sending reboot command to $host" \
+        remote__exec "$host" "sudo reboot" || true
 
     log "Reboot command sent. Waiting for host to go down..."
     sleep 10
@@ -828,11 +675,13 @@ remote_boot_macos() {
         return 1
     fi
 
-    remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootnext $boot_entry" || {
+    dry_run_exec "Setting macOS as next boot device on $host" \
+        remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootnext $boot_entry" || {
         error "Failed to set macOS as next boot device"
         return 1
     }
 
     log "Rebooting into macOS..."
-    remote__exec "$host" "sudo reboot" || true
+    dry_run_exec "Rebooting $host into macOS" \
+        remote__exec "$host" "sudo reboot" || true
 }

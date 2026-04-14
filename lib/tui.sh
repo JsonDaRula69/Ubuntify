@@ -10,6 +10,7 @@
 _TUI_SH_SOURCED=1
 
 source "${LIB_DIR:-./lib}/colors.sh"
+source "${LIB_DIR:-./lib}/dryrun.sh"
 
 readonly TUI_BACKTITLE="Mac Pro 2013 Ubuntu Server"
 
@@ -59,6 +60,37 @@ tui_menu() {
     local title="$1"
     local description="$2"
     shift 2
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        local selection=""
+        local options=""
+        local opt_count=0
+        local first_tag=""
+        while [ $# -ge 2 ]; do
+            local tag="$2"
+            [ -z "$first_tag" ] && first_tag="$tag"
+            [ -n "$options" ] && options="${options},"
+            options="${options}${tag}"
+            shift 2
+            opt_count=$((opt_count + 1))
+        done
+
+        if [ -n "${AGENT_MENU_SELECTION:-}" ]; then
+            selection="$AGENT_MENU_SELECTION"
+        elif [ -n "$first_tag" ]; then
+            selection="$first_tag"
+        fi
+
+        if [ -n "$selection" ]; then
+            agent_output "menu" "$title" "$selection"
+            echo "$selection"
+            return 0
+        else
+            agent_output "menu_options" "$title" "" "options" "$options"
+            return 1
+        fi
+    fi
+
     local size
     size=$(_tui_get_size)
     local height
@@ -141,6 +173,17 @@ tui_menu() {
 tui_confirm() {
     local title="$1"
     local message="$2"
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        if [ "${CONFIRM_YES:-0}" -eq 1 ]; then
+            agent_output "confirm" "$title" "yes"
+            return 0
+        else
+            agent_output "confirm" "$title" "no"
+            return 1
+        fi
+    fi
+
     local size
     size=$(_tui_get_size)
     local height
@@ -180,6 +223,12 @@ tui_confirm() {
 tui_msgbox() {
     local title="$1"
     local message="$2"
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        agent_output "msgbox" "$title" "$message"
+        return 0
+    fi
+
     local size
     size=$(_tui_get_size)
     local height
@@ -204,6 +253,15 @@ tui_input() {
     local title="$1"
     local label="$2"
     local default_value="$3"
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        local result="${AGENT_INPUT_VALUE:-}"
+        [ -z "$result" ] && result="$default_value"
+        agent_output "input" "$title" "$result"
+        echo "$result"
+        return 0
+    fi
+
     local size
     size=$(_tui_get_size)
     local height
@@ -255,6 +313,14 @@ tui_input() {
 tui_password() {
     local title="$1"
     local label="$2"
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        local result="${AGENT_PASSWORD_VALUE:-}"
+        agent_output "password" "$title" "***"
+        echo "$result"
+        return 0
+    fi
+
     local size
     size=$(_tui_get_size)
     local height
@@ -305,6 +371,15 @@ tui_password() {
 
 tui_progress() {
     local title="$1"
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        local line
+        while IFS= read -r line; do
+            agent_output "progress" "$title" "$line"
+        done
+        return 0
+    fi
+
     local size
     size=$(_tui_get_size)
     local height
@@ -336,6 +411,12 @@ tui_progress() {
 tui_tailbox() {
     local title="$1"
     local filepath="$2"
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        agent_output "tailbox" "$title" "$filepath"
+        return 0
+    fi
+
     local size
     size=$(_tui_get_size)
     local height

@@ -17,6 +17,7 @@ _ROLLBACK_SH_SOURCED=1
 
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/retry.sh"
+source "${LIB_DIR:-./lib}/dryrun.sh"
 
 ## Constants
 
@@ -192,8 +193,8 @@ journal_save_originals() {
 # journal_destroy
 # Removes all state files (cleanup after successful completion)
 journal_destroy() {
-    rm -f "$STATE_FILE"
-    rm -rf "$STATE_DIR"
+    dry_run_exec "Removing state file $STATE_FILE" rm -f "$STATE_FILE"
+    dry_run_exec "Removing state directory $STATE_DIR" rm -rf "$STATE_DIR"
     log_info "State journal destroyed"
     return 0
 }
@@ -207,14 +208,16 @@ snapshot_disk_layout() {
 
     log_info "Creating disk layout snapshot for ${internal_disk}"
 
-    # Save binary GPT backup
-    if ! sgdisk -b "$GPT_BACKUP_FILE" "$internal_disk"; then
+    # Save binary GPT backup (this is a WRITE operation)
+    if ! dry_run_exec "Saving GPT backup for ${internal_disk} to ${GPT_BACKUP_FILE}" \
+        sgdisk -b "$GPT_BACKUP_FILE" "$internal_disk"; then
         warn "snapshot_disk_layout: sgdisk backup failed for ${internal_disk}"
         return 1
     fi
 
     # Save text version for reference
-    sgdisk -p "$internal_disk" > "${STATE_DIR}/gpt-layout.txt" 2>/dev/null || true
+    dry_run_exec "Saving GPT layout text for ${internal_disk}" \
+        sh -c "sgdisk -p '$internal_disk' > '${STATE_DIR}/gpt-layout.txt' 2>/dev/null" || true
 
     # Save diskutil list output
     diskutil list "$internal_disk" > "${STATE_DIR}/diskutil-list.txt" 2>/dev/null || true
@@ -290,6 +293,12 @@ run_phased() {
 
         log_info "=== Phase ${phase_num}/${total_phases}: ${phase_name} ==="
 
+        if is_dry_run; then
+            log_info "[DRY-RUN] Would execute phase: ${phase_name}"
+            current_idx=$((current_idx + 1))
+            continue
+        fi
+
         # Run the phase function
         local exit_code=0
         if $phase_func; then
@@ -319,6 +328,11 @@ handle_phase_failure() {
     local exit_code="$2"
 
     error "Phase ${phase_name} failed with exit code ${exit_code}"
+
+    if is_dry_run; then
+        log_info "[DRY-RUN] Would attempt rollback from phase ${phase_name}"
+        return 1
+    fi
 
     # Collect error context if verify.sh is available
     if command -v collect_error_context >/dev/null 2>&1; then
@@ -350,7 +364,8 @@ rollback_internal() {
     local original_boot="${JOURNAL_ORIGINAL_BOOT_DEVICE:-}"
     if [ -n "$original_boot" ]; then
         log_info "Attempting to restore boot device to ${original_boot}"
-        if bless --mount "$original_boot" --setBoot 2>/dev/null; then
+        if dry_run_exec "Restoring boot device to ${original_boot}" \
+            bless --mount "$original_boot" --setBoot 2>/dev/null; then
             rollback_status="${rollback_status}boot_restored "
             log_info "Boot device restored successfully"
         else
@@ -369,10 +384,12 @@ rollback_internal() {
         log_info "Removing created ESP partition ${esp_device}"
 
         # Unmount first
-        diskutil unmount "/dev/${esp_device}" 2>/dev/null || true
+        dry_run_exec "Unmounting ESP /dev/${esp_device}" \
+            diskutil unmount "/dev/${esp_device}" 2>/dev/null || true
 
         # Erase to free space
-        if retry_diskutil eraseVolume free none "/dev/${esp_device}" 2>/dev/null; then
+        if dry_run_exec "Erasing ESP partition ${esp_device} to free space" \
+            retry_diskutil eraseVolume free none "/dev/${esp_device}" 2>/dev/null; then
             rollback_status="${rollback_status}esp_removed "
             log_info "ESP partition removed"
         else
@@ -389,7 +406,8 @@ rollback_internal() {
     if [ "$apfs_resized" = "1" ] && [ -n "$apfs_container" ]; then
         if [ -n "$original_size" ]; then
             log_info "Restoring APFS container to ${original_size}GB"
-            if retry_diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null; then
+            if dry_run_exec "Restoring APFS container to ${original_size}GB" \
+                retry_diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null; then
                 rollback_status="${rollback_status}apfs_restored "
                 log_info "APFS container restored"
             else
@@ -400,7 +418,8 @@ rollback_internal() {
 
         # Expand to fill any freed space (best effort)
         log_info "Expanding APFS to fill available space"
-        retry_diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || true
+        dry_run_exec "Expanding APFS to fill available space" \
+            retry_diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || true
     fi
 
     log_info "Internal partition rollback completed (status: ${rollback_status:-none})"
@@ -420,7 +439,8 @@ rollback_usb() {
 
     if [ "$usb_backup" = "yes" ] && [ -n "$usb_device" ] && [ -f "$backup_file" ]; then
         log_info "Restoring USB partition table from backup"
-        if sgdisk -l "$backup_file" "$usb_device" 2>/dev/null; then
+        if dry_run_exec "Restoring USB partition table from backup" \
+            sgdisk -l "$backup_file" "$usb_device" 2>/dev/null; then
             log_info "USB partition table restored"
         else
             warn "rollback_usb: failed to restore USB partition table"
@@ -431,7 +451,8 @@ rollback_usb() {
 
     # Unmount USB
     if [ -n "$usb_device" ]; then
-        diskutil unmountDisk "$usb_device" 2>/dev/null || true
+        dry_run_exec "Unmounting USB device ${usb_device}" \
+            diskutil unmountDisk "$usb_device" 2>/dev/null || true
     fi
 
     return 0
@@ -444,11 +465,15 @@ rollback_vm() {
 
     if command -v VBoxManage >/dev/null 2>&1; then
         # Power off VM if running
-        VBoxManage controlvm macpro-vmtest poweroff 2>/dev/null || true
-        sleep 1
+        dry_run_exec "Powering off VM macpro-vmtest" \
+            VBoxManage controlvm macpro-vmtest poweroff 2>/dev/null || true
+        if ! is_dry_run; then
+            sleep 1
+        fi
 
         # Unregister and delete
-        VBoxManage unregistervm macpro-vmtest --delete 2>/dev/null || true
+        dry_run_exec "Unregistering and deleting VM macpro-vmtest" \
+            VBoxManage unregistervm macpro-vmtest --delete 2>/dev/null || true
 
         log_info "VM test environment cleaned up"
     else

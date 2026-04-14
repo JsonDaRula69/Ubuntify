@@ -18,6 +18,8 @@ source "${LIB_DIR:-./lib}/bless.sh"
 source "${LIB_DIR:-./lib}/retry.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/verify.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/rollback.sh" 2>/dev/null || true
+source "${LIB_DIR:-./lib}/tui.sh"
+source "${LIB_DIR:-./lib}/dryrun.sh"
 
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 STORAGE_LAYOUT="${STORAGE_LAYOUT:-1}"
@@ -193,18 +195,6 @@ preflight_checks() {
 deploy_internal_partition() {
     log "Starting internal partition deployment..."
 
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
-        log "[DRY RUN] Would deploy to internal partition"
-        log "[DRY RUN]   - Analyze disk layout"
-        log "[DRY RUN]   - Shrink APFS if needed (dual-boot)"
-        log "[DRY RUN]   - Create ESP partition"
-        log "[DRY RUN]   - Extract ISO contents"
-        log "[DRY RUN]   - Copy driver packages"
-        log "[DRY RUN]   - Generate autoinstall config"
-        log "[DRY RUN]   - Attempt bless"
-        return 0
-    fi
-
     journal_init "1" || die "Cannot initialize deployment journal"
 
     # State vars (global for rollback access)
@@ -244,16 +234,6 @@ deploy_internal_partition() {
 
 deploy_usb() {
     log "Starting USB deployment..."
-
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
-        log "[DRY RUN] Would deploy to USB drive"
-        log "[DRY RUN]   - Detect USB device"
-        log "[DRY RUN]   - Partition USB with FAT32"
-        log "[DRY RUN]   - Extract ISO contents"
-        log "[DRY RUN]   - Copy driver packages"
-        log "[DRY RUN]   - Generate autoinstall config"
-        return 0
-    fi
 
     journal_init "2" || die "Cannot initialize deployment journal"
 
@@ -320,8 +300,7 @@ _phase_build_iso() {
         sudo "$VM_DIR/build-iso-vm.sh" || die "VM ISO build failed"
     else
         log "VM test ISO already exists: $VM_ISO"
-        read -rp "Rebuild? (y/N): " rebuild
-        if [ "$rebuild" = "y" ] || [ "$rebuild" = "Y" ]; then
+        if tui_confirm "Rebuild ISO?" "VM test ISO already exists. Rebuild?"; then
             sudo "$VM_DIR/build-iso-vm.sh" || die "VM ISO build failed"
         fi
     fi
@@ -336,8 +315,7 @@ _phase_create_vm() {
     export VM_NAME
     if VBoxManage list vms 2>/dev/null | grep -q "\"$VM_NAME\""; then
         log "VM '$VM_NAME' already exists"
-        read -rp "Recreate? (y/N): " recreate
-        if [ "$recreate" = "y" ] || [ "$recreate" = "Y" ]; then
+        if tui_confirm "Recreate VM?" "VM '$VM_NAME' already exists. Recreate?"; then
             "$VM_DIR/create-vm.sh" --force || die "VM creation failed"
         fi
     else
@@ -358,16 +336,6 @@ _phase_start_monitor() {
 
 deploy_vm_test() {
     log "Starting VM test deployment..."
-
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
-        log "[DRY RUN] Would deploy VM test environment"
-        log "[DRY RUN]   - Check VirtualBox availability"
-        log "[DRY RUN]   - Find base Ubuntu ISO"
-        log "[DRY RUN]   - Build VM ISO if needed"
-        log "[DRY RUN]   - Create or recreate VM"
-        log "[DRY RUN]   - Start monitoring server"
-        return 0
-    fi
 
     journal_init "4" || die "Cannot initialize deployment journal"
 
@@ -404,13 +372,6 @@ deploy_vm_test() {
 deploy_manual() {
     log "Starting full manual USB deployment..."
 
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
-        log "[DRY RUN] Would deploy manual USB"
-        log "[DRY RUN]   - Select USB device"
-        log "[DRY RUN]   - Write ISO directly to USB with dd"
-        return 0
-    fi
-
     show_header
     echo "Full Manual Mode"
     echo ""
@@ -428,7 +389,7 @@ deploy_manual() {
     done
 
     if [ -z "$ISO_PATH" ]; then
-        read -rp "Enter path to standard Ubuntu Server ISO: " ISO_PATH
+        ISO_PATH=$(tui_input "ISO Path" "Enter path to standard Ubuntu Server ISO" "$ISO_PATH")
     fi
 
     if [ ! -f "$ISO_PATH" ]; then
@@ -444,8 +405,7 @@ deploy_manual() {
         warn "WARNING: $TARGET_DEVICE does not appear to be a USB/removable device!"
         warn "Writing to an internal device could DESTROY all data on it."
         echo ""
-        read -rp "Type 'I UNDERSTAND THE RISK' to continue, or anything else to cancel: " confirm
-        if [ "$confirm" != "I UNDERSTAND THE RISK" ]; then
+        if ! tui_confirm "WARNING" "This will ERASE ALL DATA on the selected USB drive.\n\nProceed?"; then
             die "Deployment cancelled — target device does not appear to be removable"
         fi
     fi
@@ -456,8 +416,7 @@ deploy_manual() {
     echo ""
     echo "WARNING: This will ERASE all data on $TARGET_DEVICE"
     echo "The ISO will be written directly to the device (dd style)"
-    read -rp "Type 'yes' to proceed: " confirm
-    if [ "$confirm" != "yes" ]; then
+    if ! tui_confirm "Confirm" "Ready to write ISO to USB. Proceed?"; then
         die "Manual deployment cancelled"
     fi
 
@@ -466,9 +425,8 @@ deploy_manual() {
     retry_diskutil unmountDisk "$TARGET_DEVICE" 2>/dev/null || true
     sleep 2
 
-    if ! sudo dd if="$ISO_PATH" of="$TARGET_DEVICE" bs=1m; then
-        die "Failed to write ISO to USB"
-    fi
+    dry_run_exec "Write ISO to USB with dd" \
+        sudo dd if="$ISO_PATH" of="$TARGET_DEVICE" bs=1m || die "Failed to write ISO to USB"
 
     sync
     log "ISO written successfully"
@@ -490,8 +448,7 @@ _phase_detect_usb() {
         warn "WARNING: $TARGET_DEVICE does not appear to be a USB/removable device!"
         warn "Writing to an internal device could DESTROY all data on it."
         echo ""
-        read -rp "Type 'I UNDERSTAND THE RISK' to continue, or anything else to cancel: " confirm_usb
-        if [ "$confirm_usb" != "I UNDERSTAND THE RISK" ]; then
+        if ! tui_confirm "WARNING" "This will ERASE ALL DATA on the selected USB drive.\n\nProceed?"; then
             die "Deployment cancelled — target device does not appear to be removable"
         fi
     fi
@@ -502,7 +459,8 @@ _phase_partition_usb() {
     retry_diskutil unmountDisk "$TARGET_DEVICE" 2>/dev/null || true
     sleep 2
     log "Creating FAT32 partition on USB..."
-    retry_diskutil partitionDisk "$TARGET_DEVICE" GPT FAT32 "CIDATA" 100% 2>/dev/null || die "Failed to partition USB device"
+    dry_run_exec "Partition USB device $TARGET_DEVICE" \
+        retry_diskutil partitionDisk "$TARGET_DEVICE" GPT FAT32 "CIDATA" 100% 2>/dev/null || die "Failed to partition USB device"
     sleep 2
     local USB_PARTITION
     USB_PARTITION=$(diskutil list "$TARGET_DEVICE" | grep "CIDATA" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)

@@ -265,3 +265,182 @@ VM uses Ethernet (`enp0s3`) instead of WiFi, DKMS compiles (fatal on failure) bu
 ### Serial Console
 
 Both production and VM GRUB configs include `console=ttyS0,115200` for serial console output. In VirtualBox, UART1 is configured to log to `/tmp/vmtest-serial.log`.
+
+## For Agents
+
+`prepare-deployment.sh` supports a non-interactive agent mode designed for LLM agents (Claude Code, Cursor, etc.) that cannot interact with TUI dialogs. All operations can be driven via CLI flags with structured JSON output.
+
+### Agent Mode Flags
+
+```bash
+sudo ./prepare-deployment.sh --agent --yes [OPERATION FLAGS]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--agent` | Enable non-interactive agent mode (auto-sets `--json`) |
+| `--yes` | Auto-confirm all destructive operation prompts |
+| `--json` | Output structured JSON lines (NDJSON) to stdout |
+| `--dry-run` | Print what would happen without executing |
+| `--verbose` | Enable DEBUG-level logging |
+
+### Deploy Mode (Local Operations)
+
+```bash
+# Build the ISO
+sudo ./prepare-deployment.sh --agent --yes --method 1
+
+# Deploy to internal ESP partition (dual-boot, WiFi)  
+sudo ./prepare-deployment.sh --agent --yes --method 1 --storage 1 --network 1
+
+# Deploy to USB (full-disk, Ethernet)
+sudo ./prepare-deployment.sh --agent --yes --method 2 --storage 2 --network 2
+
+# Dry-run deploy (show what would happen)
+sudo ./prepare-deployment.sh --agent --dry-run --method 1 --storage 1 --network 1
+
+# VM test
+sudo ./prepare-deployment.sh --agent --yes --method 4
+```
+
+| Flag | Values | Description |
+|------|--------|-------------|
+| `--method` | `1` | Internal partition (ESP) |
+| | `2` | USB drive |
+| | `3` | Full manual (standard ISO to USB) |
+| | `4` | VM test (VirtualBox) |
+| `--storage` | `1` | Dual-boot (preserve macOS) |
+| | `2` | Full disk (replace macOS) |
+| `--network` | `1` | WiFi only (Broadcom BCM4360) |
+| | `2` | Ethernet available |
+
+### Manage Mode (Remote SSH Operations)
+
+```bash
+# System info
+sudo ./prepare-deployment.sh --agent --operation sysinfo --host macpro-linux
+
+# Kernel status
+sudo ./prepare-deployment.sh --agent --operation kernel_status
+
+# Pin kernel
+sudo ./prepare-deployment.sh --agent --yes --operation kernel_pin
+
+# Rebuild WiFi driver
+sudo ./prepare-deployment.sh --agent --yes --operation driver_rebuild
+
+# Erase macOS (requires --yes)
+sudo ./prepare-deployment.sh --agent --yes --operation erase_macos
+
+# APT enable/disable
+sudo ./prepare-deployment.sh --agent --yes --operation apt_enable
+sudo ./prepare-deployment.sh --agent --yes --operation apt_disable
+
+# Reboot
+sudo ./prepare-deployment.sh --agent --yes --operation reboot
+
+# Boot to macOS
+sudo ./prepare-deployment.sh --agent --yes --operation boot_macos
+```
+
+| Operation | Description | Destructive? |
+|-----------|-------------|-------------|
+| `sysinfo` | System information | No |
+| `kernel_status` | Kernel version, pin status | No |
+| `kernel_pin` | Pin current kernel, disable updates | Yes |
+| `kernel_unpin` | Unpin kernel, enable updates | Yes |
+| `kernel_update` | Full 7-phase kernel update | Yes |
+| `security_update` | Non-kernel security updates | Yes |
+| `driver_status` | WiFi driver and DKMS status | No |
+| `driver_rebuild` | Rebuild Broadcom WiFi driver | Yes |
+| `disk_usage` | Disk usage information | No |
+| `erase_macos` | Delete macOS partitions, expand Ubuntu | **Irreversible** |
+| `apt_enable` | Enable APT sources | Yes |
+| `apt_disable` | Disable APT sources | Yes |
+| `reboot` | Reboot remote system | Yes |
+| `boot_macos` | Set next boot to macOS | Yes |
+
+### Configuration Overrides
+
+CLI flags override `deploy.conf` settings:
+
+| Flag | Overrides |
+|------|-----------|
+| `--wifi-ssid SSID` | `WIFI_SSID` |
+| `--wifi-password PASS` | `WIFI_PASSWORD` |
+| `--webhook-host HOST` | `WEBHOOK_HOST` |
+| `--webhook-port PORT` | `WEBHOOK_PORT` |
+| `--host HOST` | Remote SSH host (default: `macpro-linux`) |
+
+### JSON Output Format
+
+In agent mode, output is newline-delimited JSON (NDJSON) to stdout:
+
+```json
+{"type":"confirm","title":"Pin Kernel","value":"yes"}
+{"type":"settings","title":"Deploy Configuration","value":"","method":"1","storage":"1","network":"1"}
+{"type":"progress","title":"Build ISO","value":"starting"}
+{"type":"result","title":"Deploy","value":"success","exitCode":"0"}
+{"type":"error","title":"Error","value":"Missing --method","exitCode":"12"}
+```
+
+| Type | When Emitted |
+|------|-------------|
+| `confirm` | Confirmation prompt result |
+| `menu` | Menu selection result |
+| `menu_options` | Available choices when no selection provided |
+| `msgbox` | Information display |
+| `input` | Input prompt result |
+| `settings` | Configuration summary before action |
+| `progress` | Operation started |
+| `result` | Operation completed (success/failed) |
+| `error` | Error with exit code |
+
+### Exit Codes
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| 0 | `E_SUCCESS` | Success |
+| 1 | `E_GENERAL` | General error |
+| 2 | `E_USAGE` | Invalid usage / missing arguments |
+| 3 | `E_CONFIG` | Configuration error |
+| 4 | `E_CHECK` | Pre-flight check failed |
+| 5 | `E_PARTIAL` | Partial success |
+| 6 | `E_DEPENDENCY` | Missing dependency |
+| 7 | `E_NETWORK` | Network error |
+| 8 | `E_DISK` | Disk/partition error |
+| 9 | `E_TIMEOUT` | Timeout |
+| 10 | `E_AUTH` | Authentication error |
+| 11 | `E_DRY_RUN_OK` | Dry-run completed (no changes made) |
+| 12 | `E_AGENT_PARAM` | Agent mode: missing required parameter |
+| 13 | `E_AGENT_DENIED` | Agent mode: confirmation denied |
+
+### Example: Full Deploy via Agent
+
+```bash
+# 1. Build ISO
+sudo ./prepare-deployment.sh --agent --yes --method 1 2>/dev/null
+# Output: {"type":"settings","title":"Deploy Configuration",...}
+#         {"type":"result","title":"Deploy","value":"success",...}
+
+# 2. Dry-run to verify
+sudo ./prepare-deployment.sh --agent --dry-run --method 1 --storage 1 --network 1
+
+# 3. Actual deploy
+sudo ./prepare-deployment.sh --agent --yes --method 1 --storage 1 --network 1
+
+# 4. Check system after install
+sudo ./prepare-deployment.sh --agent --operation sysinfo --host macpro-linux
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_MODE` | `0` | Set by `--agent` |
+| `CONFIRM_YES` | `0` | Set by `--yes` |
+| `JSON_OUTPUT` | `0` | Set by `--json` (auto-set by `--agent`) |
+| `DRY_RUN` | `0` | Set by `--dry-run` |
+| `AGENT_MENU_SELECTION` | | Pre-select menu choice |
+| `AGENT_INPUT_VALUE` | | Pre-fill input prompt |
+| `AGENT_PASSWORD_VALUE` | | Pre-fill password prompt |

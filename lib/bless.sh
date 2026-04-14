@@ -10,6 +10,7 @@
 
 source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
+source "${LIB_DIR:-./lib}/dryrun.sh"
 
 ESP_NAME="${ESP_NAME:-CIDATA}"
 
@@ -70,7 +71,8 @@ attempt_bless() {
     # Method 1: systemsetup
     if command -v systemsetup >/dev/null 2>&1; then
         log "Attempting systemsetup..."
-        if systemsetup -setstartupdisk "$ESP_MOUNT" 2>/dev/null; then
+        if dry_run_exec "Setting startup disk via systemsetup" \
+            systemsetup -setstartupdisk "$ESP_MOUNT" 2>/dev/null; then
             log "systemsetup succeeded"
             BLESS_OK=1
         fi
@@ -79,7 +81,8 @@ attempt_bless() {
     # Method 2: bless --nextonly
     if [ "$BLESS_OK" -eq 0 ]; then
         log "Attempting bless --nextonly..."
-        if bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>/dev/null; then
+        if dry_run_exec "Setting boot device via bless --nextonly" \
+            bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>/dev/null; then
             BLESS_OK=1
         else
             # SIP blocks NVRAM writes (0xe00002e2) — expected with SIP enabled
@@ -90,7 +93,8 @@ attempt_bless() {
     # Method 3: bless --device
     if [ "$BLESS_OK" -eq 0 ]; then
         log "Attempting bless --device..."
-        if bless --verbose --device "/dev/$ESP_DEVICE" --setBoot --nextonly 2>/dev/null; then
+        if dry_run_exec "Setting boot device via bless --device" \
+            bless --verbose --device "/dev/$ESP_DEVICE" --setBoot --nextonly 2>/dev/null; then
             BLESS_OK=1
         else
             log "bless --device also failed"

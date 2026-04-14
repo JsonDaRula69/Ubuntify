@@ -10,6 +10,7 @@
 
 source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
+source "${LIB_DIR:-./lib}/tui.sh"
 
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
@@ -25,8 +26,7 @@ detect_iso() {
     done
 
     if [ -z "$iso_path" ]; then
-        echo "ISO file not found automatically."
-        read -rp "Enter path to Ubuntu ISO: " iso_path
+        iso_path=$(tui_input "ISO Path" "Enter path to Ubuntu ISO" "")
     fi
 
     if [ ! -f "$iso_path" ]; then
@@ -89,21 +89,29 @@ select_usb_device() {
         die "No USB devices found"
     fi
 
-    while true; do
-        read -rp "Select USB device [1-$i]: " choice
-        case "$choice" in
-            ''|*[!0-9]*)
-                echo "Invalid choice. Please enter a number."
-                continue
-                ;;
-        esac
-        if [ "$choice" -ge 1 ] && [ "$choice" -le "$i" ]; then
-            local _target_device_val="${device_list[$((choice-1))]}"
-            eval "$_target_device_name=\"\$_target_device_val\""
-            break
-        fi
-        echo "Invalid choice. Please enter a number between 1 and $i."
-    done
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        local _target_device_val="${device_list[0]}"
+        eval "$_target_device_name=\"\$_target_device_val\""
+        log "Agent mode: auto-selected USB device $_target_device_val"
+    else
+        while true; do
+            local choice
+            choice=$(tui_input "Select USB Device" "Enter device number" "1")
+            case "$choice" in
+                ''|*[!0-9]*)
+                    echo "Invalid choice. Please enter a number."
+                    continue
+                    ;;
+            esac
+            if [ "$choice" -ge 1 ] && [ "$choice" -le "$i" ]; then
+                local _target_device_val="${device_list[$((choice-1))]}"
+                eval "$_target_device_name=\"\$_target_device_val\""
+                break
+            fi
+            echo "Invalid choice. Please enter a number between 1 and $i."
+        done
+    fi
 
     # Get device size
     local device_size
@@ -111,9 +119,7 @@ select_usb_device() {
     log "Selected USB device: $_target_device_val ($device_size)"
 
     echo ""
-    echo "WARNING: All data on $_target_device_val will be erased!"
-    read -rp "Type 'yes' to confirm: " confirm
-    if [ "$confirm" != "yes" ]; then
+    if ! tui_confirm "WARNING" "All data on $_target_device_val will be erased!"; then
         die "USB device selection cancelled"
     fi
 }

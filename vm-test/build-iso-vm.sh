@@ -13,6 +13,7 @@ readonly OUTPUT_ISO="${SCRIPT_DIR}/ubuntu-vmtest.iso"
 readonly STAGING="/tmp/vmtest-iso-staging"
 
 source "$LIB_DIR/colors.sh"
+source "${LIB_DIR:-../lib}/dryrun.sh"
 
 log()   { echo -e "${GREEN}[build]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -63,12 +64,15 @@ else
 fi
 echo ""
 log "[1/5] Cleaning and preparing staging area..."
-rm -rf "$STAGING" 2>/dev/null || sudo rm -rf "$STAGING"
+dry_run_exec "Removing staging directory $STAGING" \
+    rm -rf "$STAGING" 2>/dev/null || sudo rm -rf "$STAGING"
 mkdir -p "$STAGING/iso_root"
 
 log "[2/5] Extracting original ISO contents..."
-xorriso -osirrox on -indev "$BASE_ISO" -extract / "$STAGING/iso_root/"
-chmod -R u+w "$STAGING/iso_root"
+dry_run_exec "Extracting ISO contents from $BASE_ISO" \
+    xorriso -osirrox on -indev "$BASE_ISO" -extract / "$STAGING/iso_root/"
+dry_run_exec "Setting write permissions on extracted files" \
+    chmod -R u+w "$STAGING/iso_root"
 
 log "[3/5] Overlaying custom files..."
 
@@ -123,11 +127,12 @@ echo "  ... (preserving original boot structure)"
 if echo "$BOOT_PARAMS" | grep -qE '[;&|`$()]'; then
     die "Suspicious characters in boot parameters — possible injection"
 fi
-eval "xorriso -as mkisofs \
-    $BOOT_PARAMS \
-    -V \"cidata\" \
-    -o \"${OUTPUT_ISO}\" \
-    \"${STAGING}/iso_root\""
+dry_run_exec "Building ISO image ${OUTPUT_ISO}" \
+    sh -c "eval \"xorriso -as mkisofs \
+        $BOOT_PARAMS \
+        -V 'cidata' \
+        -o '${OUTPUT_ISO}' \
+        '${STAGING}/iso_root'\""
 
 if [ ! -f "$OUTPUT_ISO" ]; then
     die "ISO creation failed — output file not found"
@@ -149,7 +154,8 @@ echo ""
 echo "Boot parameters in output ISO:"
 xorriso -indev "$OUTPUT_ISO" -report_el_torito plain 2>/dev/null | head -20 | sed 's/^/  /'
 
-rm -rf "$STAGING"
+dry_run_exec "Removing staging directory $STAGING" \
+    rm -rf "$STAGING"
 
 SIZE=$(du -h "$OUTPUT_ISO" | cut -f1)
 echo ""

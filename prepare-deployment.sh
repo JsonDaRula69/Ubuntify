@@ -7,6 +7,11 @@ export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
 # CLI flags
 DRY_RUN=0
 VERBOSE=0
+AGENT_MODE=0
+CONFIRM_YES=0
+JSON_OUTPUT=0
+REMOTE_HOST=""
+REMOTE_OPERATION=""
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly ESP_NAME="CIDATA"
@@ -19,6 +24,7 @@ readonly LIB_DIR="${LIB_DIR:-$SCRIPT_DIR/lib}"
 source "$LIB_DIR/colors.sh"
 source "$LIB_DIR/logging.sh"
 source "$LIB_DIR/tui.sh"
+source "$LIB_DIR/dryrun.sh"
 source "$LIB_DIR/retry.sh"
 source "$LIB_DIR/verify.sh"
 source "$LIB_DIR/rollback.sh"
@@ -35,6 +41,9 @@ if [ -f "$LIB_DIR/remote.sh" ]; then
 fi
 
 export DRY_RUN
+export AGENT_MODE
+export JSON_OUTPUT
+export CONFIRM_YES
 
 CONF_FILE="${SCRIPT_DIR}/deploy.conf"
 if [ ! -f "$CONF_FILE" ]; then
@@ -81,29 +90,75 @@ export NETWORK_TYPE=""
 show_help() {
     echo "Usage: sudo ./prepare-deployment.sh [OPTIONS]"
     echo ""
-    echo "Mac Pro 2013 Ubuntu Server Deployment Tool v0.2.8"
+    echo "Mac Pro 2013 Ubuntu Server Deployment Tool v0.2.10"
     echo ""
     echo "Options:"
-    echo "  --dry-run    Show what would be done without making changes"
-    echo "  --verbose    Enable verbose logging"
-    echo "  --revert     Revert previous deployment changes"
-    echo "  --help       Show this help message"
+    echo "  --dry-run             Show what would be done without making changes"
+    echo "  --verbose             Enable verbose logging"
+    echo "  --revert              Revert previous deployment changes"
+    echo "  --help                Show this help message"
+    echo ""
+    echo "Agent Mode (non-interactive, for LLM agents):"
+    echo "  --agent               Enable agent mode (non-interactive, JSON output)"
+    echo "  --yes                 Auto-confirm all prompts (use with --agent)"
+    echo "  --json                Output structured JSON (auto-set by --agent)"
+    echo "  --method 1|2|3|4     Deployment method (1=ESP, 2=USB, 3=manual, 4=VM)"
+    echo "  --storage 1|2         Storage layout (1=dual-boot, 2=full-disk)"
+    echo "  --network 1|2         Network type (1=WiFi, 2=Ethernet)"
+    echo "  --host HOST           Remote host for Manage mode (default: macpro-linux)"
+    echo "  --operation OP        Manage mode operation (see README)"
+    echo "  --wifi-ssid SSID      Override WiFi SSID from deploy.conf"
+    echo "  --wifi-password PASS  Override WiFi password from deploy.conf"
+    echo "  --webhook-host HOST   Override webhook host from deploy.conf"
+    echo "  --webhook-port PORT   Override webhook port from deploy.conf"
     echo ""
     echo "Modes:"
     echo "  Deploy   - Local operations: Build ISO, deploy to ESP/USB/VM, monitor"
     echo "  Manage   - Remote SSH operations (requires lib/remote.sh)"
     echo ""
     echo "Without flags, the TUI menu will start."
+    echo ""
+    echo "Exit Codes:"
+    echo "  0  Success"
+    echo "  1  General error"
+    echo "  2  Usage error (missing/invalid arguments)"
+    echo "  3  Config error"
+    echo "  7  Network error"
+    echo "  8  Disk error"
+    echo "  11 Dry-run completed (no changes made)"
+    echo "  12 Agent mode: missing required parameter"
+    echo "  13 Agent mode: confirmation denied"
     exit 0
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --dry-run)   DRY_RUN=1; shift ;;
-        --verbose)   VERBOSE=1; shift ;;
-        --revert)    handle_revert_flag "--revert"; exit $? ;;
-        --help|-h)   show_help ;;
-        *)           echo "Unknown option: $1"; show_help ;;
+        --dry-run)           DRY_RUN=1; shift ;;
+        --verbose)           VERBOSE=1; shift ;;
+        --agent)             AGENT_MODE=1; JSON_OUTPUT=1; shift ;;
+        --yes)               CONFIRM_YES=1; shift ;;
+        --json)              JSON_OUTPUT=1; shift ;;
+        --method)            DEPLOY_METHOD="$2"; shift 2 ;;
+        --method=*)          DEPLOY_METHOD="${1#*=}"; shift ;;
+        --storage)           STORAGE_LAYOUT="$2"; shift 2 ;;
+        --storage=*)         STORAGE_LAYOUT="${1#*=}"; shift ;;
+        --network)           NETWORK_TYPE="$2"; shift 2 ;;
+        --network=*)         NETWORK_TYPE="${1#*=}"; shift ;;
+        --host)              REMOTE_HOST="$2"; shift 2 ;;
+        --host=*)            REMOTE_HOST="${1#*=}"; shift ;;
+        --operation)         REMOTE_OPERATION="$2"; shift 2 ;;
+        --operation=*)       REMOTE_OPERATION="${1#*=}"; shift ;;
+        --wifi-ssid)         WIFI_SSID="$2"; shift 2 ;;
+        --wifi-ssid=*)       WIFI_SSID="${1#*=}"; shift ;;
+        --wifi-password)     WIFI_PASSWORD="$2"; shift 2 ;;
+        --wifi-password=*)   WIFI_PASSWORD="${1#*=}"; shift ;;
+        --webhook-host)      WEBHOOK_HOST="$2"; shift 2 ;;
+        --webhook-host=*)    WEBHOOK_HOST="${1#*=}"; shift ;;
+        --webhook-port)      WEBHOOK_PORT="$2"; shift 2 ;;
+        --webhook-port=*)    WEBHOOK_PORT="${1#*=}"; shift ;;
+        --revert)            handle_revert_flag "--revert"; exit $? ;;
+        --help|-h)           show_help ;;
+        *)                   echo "Unknown option: $1"; show_help ;;
     esac
 done
 
@@ -662,6 +717,139 @@ confirm_settings() {
     fi
 }
 
+# ── Agent Mode ──
+
+# Maps --operation names to remote.sh functions
+_AGENT_OPERATIONS="sysinfo kernel_status kernel_pin kernel_unpin kernel_update "
+_AGENT_OPERATIONS="${AGENT_OPERATIONS}security_update driver_status driver_rebuild "
+_AGENT_OPERATIONS="${AGENT_OPERATIONS}disk_usage erase_macos apt_enable apt_disable reboot boot_macos"
+
+_validate_agent_deploy() {
+    [ -z "${DEPLOY_METHOD:-}" ] && agent_error "Missing --method (1=ESP, 2=USB, 3=manual, 4=VM)" "$E_AGENT_PARAM"
+    if [ "$DEPLOY_METHOD" != "3" ] && [ "$DEPLOY_METHOD" != "4" ]; then
+        [ -z "${STORAGE_LAYOUT:-}" ] && agent_error "Missing --storage (1=dual-boot, 2=full-disk)" "$E_AGENT_PARAM"
+        [ -z "${NETWORK_TYPE:-}" ] && agent_error "Missing --network (1=WiFi, 2=Ethernet)" "$E_AGENT_PARAM"
+    fi
+    case "$DEPLOY_METHOD" in
+        1|2|3|4) ;;
+        *) agent_error "Invalid --method: $DEPLOY_METHOD (must be 1-4)" "$E_USAGE" ;;
+    esac
+    if [ -n "${STORAGE_LAYOUT:-}" ]; then
+        case "$STORAGE_LAYOUT" in
+            1|2) ;;
+            *) agent_error "Invalid --storage: $STORAGE_LAYOUT (must be 1 or 2)" "$E_USAGE" ;;
+        esac
+    fi
+    if [ -n "${NETWORK_TYPE:-}" ]; then
+        case "$NETWORK_TYPE" in
+            1|2) ;;
+            *) agent_error "Invalid --network: $NETWORK_TYPE (must be 1 or 2)" "$E_USAGE" ;;
+        esac
+    fi
+}
+
+_agent_deploy() {
+    _validate_agent_deploy
+    agent_output "settings" "Deploy Configuration" "" \
+        "method" "$DEPLOY_METHOD" \
+        "storage" "${STORAGE_LAYOUT:-N/A}" \
+        "network" "${NETWORK_TYPE:-N/A}" \
+        "wifiSsid" "${WIFI_SSID:-}" \
+        "dryRun" "${DRY_RUN:-0}"
+
+    local deploy_rc=0
+    case "$DEPLOY_METHOD" in
+        1) deploy_internal_partition || deploy_rc=$? ;;
+        2) deploy_usb || deploy_rc=$? ;;
+        3) deploy_manual || deploy_rc=$? ;;
+        4) deploy_vm_test || deploy_rc=$? ;;
+    esac
+
+    if [ "$deploy_rc" -eq 0 ]; then
+        agent_output "result" "Deploy" "success" "exitCode" "0"
+        return 0
+    else
+        agent_output "result" "Deploy" "failed" "exitCode" "$deploy_rc"
+        return "$deploy_rc"
+    fi
+}
+
+_agent_manage() {
+    local op="${REMOTE_OPERATION:-}"
+    [ -z "$op" ] && agent_error "Missing --operation for manage mode. Available: $_AGENT_OPERATIONS" "$E_AGENT_PARAM"
+
+    local host="${REMOTE_HOST:-macpro-linux}"
+
+    case "$op" in
+        sysinfo)         remote_get_info "$host" ;;
+        kernel_status)   remote_kernel_status "$host" ;;
+        kernel_pin)      remote_kernel_repin "$host" ;;
+        kernel_unpin)    remote_kernel_unpin "$host" ;;
+        kernel_update)   remote_kernel_update "$host" ;;
+        security_update) remote_non_kernel_update "$host" ;;
+        driver_status)   remote_driver_status "$host" ;;
+        driver_rebuild)  remote_driver_rebuild "$host" ;;
+        disk_usage)      remote_get_info "$host" ;;
+        erase_macos)     remote_erase_macos "$host" ;;
+        apt_enable)      remote_apt_enable "$host" ;;
+        apt_disable)     remote_apt_disable "$host" ;;
+        reboot)          remote_reboot "$host" ;;
+        boot_macos)      remote_boot_macos "$host" ;;
+        *) agent_error "Unknown operation: $op. Available: $_AGENT_OPERATIONS" "$E_USAGE" ;;
+    esac
+}
+
+_agent_build_iso() {
+    if [ ! -f "$SCRIPT_DIR/build-iso.sh" ]; then
+        agent_error "build-iso.sh not found in $SCRIPT_DIR" "$E_CONFIG"
+    fi
+    agent_output "progress" "Build ISO" "starting"
+    "$SCRIPT_DIR/build-iso.sh"
+    local rc=$?
+    agent_output "result" "Build ISO" "$([ "$rc" -eq 0 ] && echo success || echo failed)" "exitCode" "$rc"
+    return "$rc"
+}
+
+_agent_revert() {
+    agent_output "progress" "Revert" "starting"
+    if command -v rollback_from_journal >/dev/null 2>&1; then
+        rollback_from_journal
+    else
+        revert_changes
+    fi
+    agent_output "result" "Revert" "complete"
+}
+
+run_agent_mode() {
+    log_info "Agent mode activated (JSON=$JSON_OUTPUT, YES=$CONFIRM_YES)"
+
+    # Determine what to do from CLI flags
+    if [ -n "${REMOTE_OPERATION:-}" ]; then
+        # Manage mode
+        _agent_manage
+    elif [ -n "${DEPLOY_METHOD:-}" ]; then
+        # Deploy mode
+        _agent_deploy
+    elif [ "${DRY_RUN:-0}" -eq 1 ] && [ -z "${DEPLOY_METHOD:-}" ]; then
+        # Dry-run without method — run full deploy dry-run
+        DEPLOY_METHOD="${DEPLOY_METHOD:-1}"
+        STORAGE_LAYOUT="${STORAGE_LAYOUT:-1}"
+        NETWORK_TYPE="${NETWORK_TYPE:-1}"
+        agent_output "settings" "Dry-Run Deploy (defaults)" "" \
+            "method" "$DEPLOY_METHOD" \
+            "storage" "$STORAGE_LAYOUT" \
+            "network" "$NETWORK_TYPE"
+        _agent_deploy
+    else
+        # No operation specified — output available operations and exit
+        agent_output "error" "No Operation" \
+            "Specify --method for deploy, --operation for manage, or --revert" \
+            "availableDeployMethods" "1,2,3,4" \
+            "availableManageOperations" "$_AGENT_OPERATIONS"
+        return "$E_AGENT_PARAM"
+    fi
+}
+
 # ── Main Entry Point ──
 
 main() {
@@ -676,9 +864,16 @@ main() {
     trap 'cleanup_on_error; exit 130' SIGINT
     trap 'cleanup_on_error; exit 143' SIGTERM
 
-    log_info "Mac Pro 2013 Ubuntu Deployment Tool v0.2.8 starting..."
+    log_info "Mac Pro 2013 Ubuntu Deployment Tool v0.2.10 starting..."
     log_info "Log file: $(log_get_file_path)"
     log_info "TUI backend: $TUI_BACKEND"
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        run_agent_mode
+        local agent_rc=$?
+        log_shutdown
+        exit "$agent_rc"
+    fi
 
     while true; do
         local mode

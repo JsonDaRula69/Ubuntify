@@ -9,6 +9,7 @@
 #
 
 source "${LIB_DIR:-./lib}/colors.sh"
+source "${LIB_DIR:-./lib}/dryrun.sh"
 
 LOG_FILE="${LOG_FILE:-/tmp/macpro-deploy.log}"
 
@@ -17,10 +18,6 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
 error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; }
 info()  { echo -e "${BLUE}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
 die()   {
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
-        error "[DRY RUN] Would exit with error: $1"
-        return 0
-    fi
     error "$1"
     exit 1
 }

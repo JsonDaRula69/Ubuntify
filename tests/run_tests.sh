@@ -10,7 +10,7 @@ FAILURES=""
 for test_file in tests/test_*.sh; do
     [ -f "$test_file" ] || continue
     echo "Running: $test_file"
-    if bash "$test_file" 2>&1; then
+    if source lib/colors.sh && source lib/logging.sh && bash "$test_file" 2>&1; then
         PASS=$((PASS + 1))
         echo "  PASS"
     else

@@ -11,6 +11,7 @@
 source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/rollback.sh" 2>/dev/null || true
+source "${LIB_DIR:-./lib}/dryrun.sh"
 
 ESP_NAME="${ESP_NAME:-CIDATA}"
 
@@ -18,15 +19,6 @@ revert_changes() {
     # Load journal state at start
     journal_read
 
-    if [ "${DRY_RUN:-0}" -eq 1 ]; then
-        log "[DRY RUN] Would revert changes:"
-        log "[DRY RUN]   - Remove ESP partition if created"
-        log "[DRY RUN]   - Restore APFS container size if resized"
-        log "[DRY RUN]   - Restore macOS boot device"
-        return 0
-    fi
-
-    echo ""
     error "Reverting deployment changes..."
     local REVERT_ERRORS=0
 
@@ -64,7 +56,8 @@ revert_changes() {
                 fi
 
                 diskutil unmount "/dev/$esp_device" 2>/dev/null || true
-                diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || {
+                dry_run_exec "Remove ESP partition /dev/$esp_device" \
+                    diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || {
                     warn "Could not remove ESP partition /dev/$esp_device"
                     REVERT_ERRORS=1
                 }
@@ -78,7 +71,8 @@ revert_changes() {
         # APFS container restoration - prefer journal values
         if [ "$apfs_resized" = "1" ] && [ -n "$apfs_container" ] && [ -n "$original_size" ]; then
             log "Restoring APFS container to ${original_size}GB..."
-            diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || {
+            dry_run_exec "Restore APFS container to ${original_size}GB" \
+                diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || {
                 warn "Could not restore APFS container size"
                 REVERT_ERRORS=1
             }
@@ -88,7 +82,8 @@ revert_changes() {
         # After ESP removal, expand APFS to fill freed space
         if [ -n "$apfs_container" ]; then
             log "Expanding APFS container to fill available space..."
-            diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || {
+            dry_run_exec "Expand APFS container to fill free space" \
+                diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || {
                 warn "Could not expand APFS container to fill space"
                 REVERT_ERRORS=1
             }
@@ -100,13 +95,15 @@ revert_changes() {
             MACOS_VOLUME=$(diskutil info "$apfs_container" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
         fi
         if [ -d "$MACOS_VOLUME" ] && [ "$MACOS_VOLUME" != "/" ]; then
-            bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && \
+            dry_run_exec "Restore macOS boot device" \
+                bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && \
                 log "macOS boot device restored" || {
                 warn "Could not restore macOS boot device"
                 REVERT_ERRORS=1
             }
         else
-            bless --mount / --setBoot 2>/dev/null && \
+            dry_run_exec "Restore macOS boot device (root fallback)" \
+                bless --mount / --setBoot 2>/dev/null && \
                 log "macOS boot device restored (root fallback)" || {
                 warn "Could not restore macOS boot device"
                 REVERT_ERRORS=1

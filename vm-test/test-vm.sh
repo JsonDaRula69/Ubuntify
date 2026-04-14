@@ -9,6 +9,7 @@ readonly LIB_DIR="${PROJECT_DIR}/lib"
 readonly VM_NAME="macpro-vmtest"
 
 source "$LIB_DIR/colors.sh"
+source "${LIB_DIR:-../lib}/dryrun.sh"
 
 echo "========================================="
 echo " Mac Pro VM Test Runner"
@@ -101,7 +102,8 @@ case "${1:-run}" in
             echo -e "${YELLOW}VM is already running${NC}"
         else
             echo "Starting VM..."
-            VBoxManage startvm "$VM_NAME" --type headless
+            dry_run_exec "Starting VM $VM_NAME" \
+                VBoxManage startvm "$VM_NAME" --type headless
             echo "VM started (headless). Installation will begin automatically."
         fi
         echo ""
@@ -159,28 +161,37 @@ case "${1:-run}" in
     stop)
         check_vm
         echo "Powering off VM..."
-        VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
+        dry_run_exec "Powering off VM $VM_NAME" \
+            VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
         echo "VM powered off."
         ;;
 
     reset)
         check_vm
-        VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
-        sleep 2
+        dry_run_exec "Powering off VM $VM_NAME" \
+            VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
+        if ! is_dry_run; then
+            sleep 2
+        fi
         DISK=$(VBoxManage showvminfo "$VM_NAME" 2>/dev/null | grep "SATA.*UUID" | head -1 | grep -oE '/[^ ]+\.vdi' || true)
         if [ -n "$DISK" ]; then
             echo "Resetting disk: $DISK"
             DISK_UUID=$(VBoxManage showvminfo "$VM_NAME" 2>/dev/null | grep "SATA.*UUID" | head -1 | grep -oE '{[^}]+}' | head -1)
-            VBoxManage mediumproperty reset "$DISK_UUID" 2>/dev/null || true
+            dry_run_exec "Resetting disk medium $DISK_UUID" \
+                VBoxManage mediumproperty reset "$DISK_UUID" 2>/dev/null || true
         fi
         echo "Disk reset. Start fresh with: ./test-vm.sh run"
         ;;
 
     destroy)
         check_vm
-        VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
-        sleep 2
-        VBoxManage unregistervm "$VM_NAME" --delete
+        dry_run_exec "Powering off VM $VM_NAME" \
+            VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
+        if ! is_dry_run; then
+            sleep 2
+        fi
+        dry_run_exec "Unregistering and deleting VM $VM_NAME" \
+            VBoxManage unregistervm "$VM_NAME" --delete
         echo -e "${GREEN}VM destroyed.${NC}"
         ;;
 
