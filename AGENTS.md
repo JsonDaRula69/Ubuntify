@@ -24,7 +24,7 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 ## Project Structure
 
 ```
-/Users/djtchill/Desktop/Mac/
+./
 ├── prepare-deployment.sh             # Main entry point — TUI with Deploy + Manage modes
 ├── lib/                             # Modular library
 │   ├── autoinstall.yaml             # Autoinstall configuration (base template — WiFi + dual-boot)
@@ -325,6 +325,10 @@ SSH_KEYS_FILE=/path/to/file  # Load keys from external file
 | `HOSTNAME` | Ubuntu system hostname |
 | `SSH_KEY` | SSH public key (repeat for multiple keys) |
 | `SSH_KEYS_FILE` | Path to file containing SSH public keys |
+| `WIFI_SSID` | WiFi network name (for WiFi network mode) |
+| `WIFI_PASSWORD` | WiFi network password |
+| `WEBHOOK_HOST` | Webhook monitoring host IP/hostname |
+| `WEBHOOK_PORT` | Webhook monitoring port |
 | `ENCRYPTION` | Password encryption mode (see below) |
 | `OUTPUT_DIR` | Override runtime output directory (default: ~/.Ubuntu_Deployment/) |
 

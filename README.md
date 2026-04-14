@@ -273,7 +273,7 @@ modinfo wl 2>/dev/null || modinfo /lib/modules/$CURRENT_KERNEL/updates/dkms/wl.k
 
 **If any of these fail, DO NOT proceed.** Fix the current system first.
 
-### Update Process (8 Phases)
+### Update Process (7 Phases)
 
 #### Phase 1: Enable apt Sources
 
@@ -509,7 +509,7 @@ lsmod | grep wl
 ping -c 3 google.com
 ```
 
-#### Phase 8: Clean Up Old Kernel (Optional)
+#### Old Kernel Cleanup (Optional)
 
 **Only after confirming the new kernel is fully stable.** Keep the old kernel as a fallback for at least a few days.
 
@@ -1048,11 +1048,18 @@ sudo ./prepare-deployment.sh --agent --yes --operation boot_macos
 | `kernel_unpin` | Unpin kernel, enable updates | Yes |
 | `kernel_update` | Full kernel update process (7 phases with rollback) | Yes |
 | `security_update` | Non-kernel security updates | Yes |
+| `health_check` | Comprehensive health check (SSH, WiFi, disk, DKMS, kernel) | No |
+| `rollback_status` | Check for incomplete kernel update | No |
+| `driver_status` | WiFi/DKMS driver status check | No |
+| `driver_rebuild` | Rebuild DKMS WiFi driver module | Yes |
 | `disk_usage` | Disk usage information | No |
+| `erase_macos` | Delete macOS partitions, expand Ubuntu to full disk | Yes |
+| `apt_enable` | Enable APT package sources | Yes |
+| `apt_disable` | Disable APT package sources | Yes |
 | `reboot` | Reboot remote system | Yes |
 | `boot_macos` | Set next boot to macOS | Yes |
 
-**Note**: macOS erasure is a manual process documented in the [Erasing macOS and Expanding to Full Disk](#erasing-macos-and-expanding-to-full-disk) section above. It is not available as an agent `--operation` flag.
+**Note**: `erase_macos` is an automated agent operation that deletes macOS partitions and expands Ubuntu to full disk. This is irreversible — see the [Erasing macOS and Expanding to Full Disk](#erasing-macos-and-expanding-to-full-disk) section for full documentation.
 
 ### Configuration Overrides
 
