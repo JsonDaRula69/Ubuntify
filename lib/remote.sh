@@ -813,8 +813,10 @@ EOF
     }
 
     log "Step 4: Updating GRUB and removing macOS boot entry..."
-    remote__exec "$host" "sudo rm -f /etc/grub.d/40_macos" || true
-    remote__exec "$host" "sudo update-grub" 2>/dev/null || true
+    dry_run_exec "Removing macOS GRUB configuration on $host" \
+        remote__exec "$host" "sudo rm -f /etc/grub.d/40_macos" || true
+    dry_run_exec "Updating GRUB on $host" \
+        remote__exec "$host" "sudo update-grub" 2>/dev/null || true
 
     local macos_boot
     macos_boot=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -i macos | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || true
@@ -823,7 +825,8 @@ EOF
             remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --delete-bootnum --bootnum $macos_boot" || true
     fi
 
-    remote__exec "$host" "sudo rm -f /usr/local/bin/boot-macos" || true
+    dry_run_exec "Removing boot-macos script on $host" \
+        remote__exec "$host" "sudo rm -f /usr/local/bin/boot-macos" || true
 
     log "Step 5: Verifying system integrity..."
     local wifi_ok root_ok grub_ok

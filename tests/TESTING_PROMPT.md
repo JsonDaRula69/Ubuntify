@@ -202,7 +202,7 @@ Test invalid flag values: --method 5, --storage 3, --network 0
 Test missing required arguments: --method without value, --operation without value
 Test --help output matches actual flag implementation
 Test --revert flag standalone (should work without other flags)
-Test --build-iso flag (agent mode only)
+Test that --build-iso flag is NOT accepted (it does not exist; ISO is built via `sudo ./lib/build-iso.sh`)
 Verify exit codes match documentation (0=success, 1=general, 2=usage, etc.)
 Test build-iso.sh flags: --vm flag for VM mode, default behavior for production mode
 
@@ -230,7 +230,7 @@ Execute all primary workflows that can be safely executed:
 - prepare-deployment.sh --help
 - prepare-deployment.sh --dry-run --agent --method 1 --storage 1 --network 1 --yes --json
 - prepare-deployment.sh --dry-run --agent --method 2 --storage 2 --network 2 --yes --json
-- prepare-deployment.sh --agent --build-iso --json
+- sudo ./lib/build-iso.sh --json (ISO builder)
 - prepare-deployment.sh --agent --operation kernel_status --host macpro-linux --json
 
 Test with valid inputs across boundary conditions
@@ -593,12 +593,13 @@ Verify deploy.conf.example documents ALL keys that parse_conf() accepts
 Verify Exit code documentation in --help matches E_* constants in dryrun.sh
 Verify DKMS patch instructions in AGENTS.md match actual patches in packages/dkms-patches/
 Verify AGENTS.md Kernel Update and macOS Erasure sections cover all manage mode operations from lib/remote.sh
-Verify AGENTS.md agent operations table has NO phantom operations (driver_status, driver_rebuild, erase_macos, apt_enable, apt_disable — these functions DO NOT EXIST)
+Verify AGENTS.md agent operations table documents all operations in _AGENT_OPERATIONS (including driver_status, driver_rebuild, erase_macos, apt_enable, apt_disable — these functions exist in lib/remote.sh as remote_driver_status, remote_driver_rebuild, remote_erase_macos, remote_apt_enable, remote_apt_disable)
 Verify AGENTS.md agent operations table includes health_check and rollback_status (these exist but may be missing)
 Verify documentation does NOT reference --build-iso flag (it does not exist; use `sudo ./lib/build-iso.sh` directly)
 Verify documentation does NOT reference How-to-Update.md or Post-Install.md (they have been deleted; content is in AGENTS.md and README.md)
 Verify README.md kernel update phase count matches code (7 phases in remote_kernel_update, not 8)
-Verify README.md macOS erasure step count matches code (6 steps, not 7)
+Verify README.md macOS erasure step count matches code (6 steps)
+Verify README.md agent mode operations table includes all 16 operations from _AGENT_OPERATIONS
 Verify CHANGELOG.md version tags correspond to actual git tags (`git tag --list`)
 Verify CHANGELOG.md entries match commit messages at each tag (`git log -1 <tag>`)
 
@@ -651,8 +652,9 @@ METHOD 4: VM Test
 - Verify: VM-specific autoinstall is used (autoinstall-vm.yaml)
 
 Build ISO
-- prepare-deployment.sh --agent --build-iso --dry-run --json
-- Verify: ISO build steps are walked in dry-run
+- sudo ./lib/build-iso.sh (production mode)
+- sudo ./lib/build-iso.sh --vm (VM test mode)
+- Verify: ISO build produces valid output
 
 Manage Mode Operations
 - prepare-deployment.sh --agent --operation kernel_status --host macpro-linux --json
