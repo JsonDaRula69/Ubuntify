@@ -553,6 +553,9 @@ AGENTS.md MUST contain (and README.md must NOT duplicate):
 - Context Management Rules (memory, context reduction, session notes)
 - YAML generation internals (string replacement vs yaml.dump, block scalar handling)
 - DKMS Patch Architecture (install order, symlink behavior, patch guards)
+- Kernel Update Process internals (7-phase function, rollback function, apt preferences internals, DKMS circular dependency)
+- macOS Erasure internals (partition classification rules, sgdisk commands, GRUB update commands, rollback function)
+- Agent Operations Reference (exact --operation flag mappings, function names, destructive flags)
 
 README.md MUST contain (and AGENTS.md must NOT duplicate):
 - Quick Start guide
@@ -563,6 +566,8 @@ README.md MUST contain (and AGENTS.md must NOT duplicate):
 - Switching between macOS and Ubuntu table
 - Serial console instructions
 - VM test environment usage
+- Updating the System (Kernel Updates) — step-by-step commands, pre-update checklist, rollback procedures
+- Erasing macOS and Expanding to Full Disk — step-by-step commands, danger warnings, partition classification
 
 CHANGELOG.md MUST contain (and neither other doc should duplicate):
 - Version-by-version change lists
@@ -574,6 +579,8 @@ BOTH documents should contain (with appropriate framing for their audience):
 - Agent mode CLI flags (README: usage examples, AGENTS: flag implementation details)
 - Exit codes (README: table with meanings, AGENTS: constant names and values)
 - deploy.conf keys (README: what each key means, AGENTS: parsing behavior, encryption modes)
+- Kernel update process (README: step-by-step commands, AGENTS: function internals, phase names, rollback logic)
+- macOS erasure (README: step-by-step commands and warnings, AGENTS: partition classification rules, agent prompt template)
 
 #### 4.4.3 Accuracy Verification
 Verify AGENTS.md project structure tree matches actual filesystem (`ls -R`)
@@ -584,8 +591,14 @@ Verify README.md --help output matches actual prepare-deployment.sh --help outpu
 Verify README.md agent mode operations table matches actual _AGENT_OPERATIONS in code
 Verify deploy.conf.example documents ALL keys that parse_conf() accepts
 Verify Exit code documentation in --help matches E_* constants in dryrun.sh
-Verify DKMS patch instructions in How-to-Update.md match actual patches in packages/dkms-patches/
-Verify Post-Install.md covers all manage mode operations from lib/remote.sh
+Verify DKMS patch instructions in AGENTS.md match actual patches in packages/dkms-patches/
+Verify AGENTS.md Kernel Update and macOS Erasure sections cover all manage mode operations from lib/remote.sh
+Verify AGENTS.md agent operations table has NO phantom operations (driver_status, driver_rebuild, erase_macos, apt_enable, apt_disable — these functions DO NOT EXIST)
+Verify AGENTS.md agent operations table includes health_check and rollback_status (these exist but may be missing)
+Verify documentation does NOT reference --build-iso flag (it does not exist; use `sudo ./lib/build-iso.sh` directly)
+Verify documentation does NOT reference How-to-Update.md or Post-Install.md (they have been deleted; content is in AGENTS.md and README.md)
+Verify README.md kernel update phase count matches code (7 phases in remote_kernel_update, not 8)
+Verify README.md macOS erasure step count matches code (6 steps, not 7)
 Verify CHANGELOG.md version tags correspond to actual git tags (`git tag --list`)
 Verify CHANGELOG.md entries match commit messages at each tag (`git log -1 <tag>`)
 
@@ -597,6 +610,9 @@ Check for TODO/FIXME/NOTE/HACK markers that should be resolved or documented
 Verify no documentation references bug fixes or changes — those belong in CHANGELOG.md
 Verify no documentation contains version-specific deltas — those belong in CHANGELOG.md
 Verify vm-test/ section in AGENTS.md reflects that vm-test/ is superseded by --vm flag
+Check for references to deleted files (How-to-Update.md, Post-Install.md — content moved to AGENTS.md/README.md)
+Check for agent operations that reference nonexistent functions (driver_status → remote_driver_status, driver_rebuild → remote_driver_rebuild, erase_macos → remote_erase_macos, apt_enable → remote_apt_enable, apt_disable → remote_apt_disable)
+Check for references to --build-iso flag (does not exist — ISO is built via `sudo ./lib/build-iso.sh`)
 
 ---
 

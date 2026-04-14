@@ -67,8 +67,6 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 │       └── test-vm.sh              # Run/monitor/SSH/stop
 ├── README.md                        # Documentation (human-oriented)
 ├── CHANGELOG.md                     # Version history (change log per release)
-├── How-to-Update.md                 # Kernel update safety guide (7 phases with rollback)
-├── Post-Install.md                  # Post-install operations (erase macOS, system update)
 ├── macpro-monitor/                  # Node.js webhook monitor
 │   ├── server.js                    # HTTP server with event bus and progress tracking
 │   ├── package.json                 # Node.js package manifest
@@ -200,19 +198,26 @@ sudo ./prepare-deployment.sh --agent --yes --method 2 --storage 2 --network 2 --
 # Manage - check kernel status
 sudo ./prepare-deployment.sh --agent --operation kernel_status --host macpro-linux --json
 
-# Manage - erase macOS
-sudo ./prepare-deployment.sh --agent --yes --operation erase_macos --host macpro-linux --json
-
-# Build ISO only
-sudo ./prepare-deployment.sh --agent --build-iso --json
-
 # Revert via agent
 sudo ./prepare-deployment.sh --agent --revert --json
 ```
 
-Flags: `--agent`, `--yes`, `--dry-run`, `--json`, `--method N`, `--storage N`, `--network N`, `--operation OP`, `--host HOST`, `--wifi-ssid`, `--wifi-password`, `--webhook-host`, `--webhook-port`, `--revert`, `--build-iso`, `--username USER`, `--hostname HOST`, `--vm`
+Flags: `--agent`, `--yes`, `--dry-run`, `--json`, `--method N`, `--storage N`, `--network N`, `--operation OP`, `--host HOST`, `--wifi-ssid`, `--wifi-password`, `--webhook-host`, `--webhook-port`, `--revert`, `--username USER`, `--hostname HOST`, `--vm`
 
 Exit codes: 0=success, 1=general, 2=usage, 3=config, 4=check, 5=partial, 6=dependency, 7=network, 8=disk, 9=timeout, 10=auth, 11=dry-run-ok, 12=agent-param, 13=agent-denied
+
+## Manage Mode TUI Menu Structure
+
+The Manage mode presents a menu that maps to remote.sh functions:
+
+| Menu Item | Submenu/Action | Function Called |
+|-----------|---------------|-----------------|
+| System Info | — | `remote_get_info` |
+| Kernel Management | Status, Pin, Unpin, Update, Security-only | `remote_kernel_status`, `remote_kernel_repin`, `remote_kernel_unpin`, `remote_kernel_update`, `remote_non_kernel_update` |
+| WiFi/Driver | (submenu via remote.sh functions) | Various WiFi diagnostic functions |
+| Storage | Disk usage, Erase macOS | `remote_get_info` (disk_usage), erase workflow |
+| APT Sources | Enable/Disable | `remote_toggle_apt_sources(host, "enable"|"disable")` |
+| Reboot | Reboot, Boot to macOS | `remote_reboot`, `remote_boot_macos` |
 
 ## Code Style Guidelines
 
@@ -348,6 +353,296 @@ The `broadcom-sta-dkms` package (`6.30.223.271-23ubuntu1`) requires patches to c
 
 Patches use `#if LINUX_VERSION_CODE >= KERNEL_VERSION(...)` guards and compile cleanly on 6.8 while enabling forward compatibility.
 
+## Kernel Update Process
+
+This section documents the kernel update workflow for the headless Mac Pro with WiFi-only networking. A kernel update that breaks the WiFi driver bricks the machine remotely — this process exists to prevent that outcome.
+
+### The Circular Dependency Problem
+
+```
+New kernel installed → DKMS must recompile wl driver for new kernel
+     ↑                                        ↓
+     └── if wl fails on new kernel boot → NO SSH (no Ethernet) → BRICKED
+```
+
+The `broadcom-sta-dkms` package uses DKMS to auto-compile the `wl` WiFi driver when a new kernel is installed. During installation, 6 compatibility patches are applied to `/usr/src/broadcom-sta-6.30.223.271/` to make the driver compile on kernel 6.8+. These patches persist on disk. DKMS will attempt to use them when building for any new kernel.
+
+If the patches don't apply to the new kernel (ABI break, new kernel API changes), the build fails, `wl.ko` is not produced for that kernel, and rebooting into it means no WiFi, no SSH, no recovery.
+
+### Current Safeguards Installed
+
+The autoinstall config locks the system down to prevent accidental kernel updates:
+
+| Layer | File/Command | Effect |
+|-------|-------------|--------|
+| apt preferences | `/etc/apt/preferences.d/99-pin-kernel` | Blocks all `linux-{image,headers,modules}-*` at priority -1; allows only `6.8.0-100*` at 1001 |
+| apt-mark hold | `linux-image-6.8.0-100-generic` etc. | `apt-get upgrade` skips held packages |
+| Sources commented out | `/etc/apt/sources.list` | `apt-get update` finds nothing |
+| Auto-updates disabled | `apt-daily*` masked, `APT::Periodic::* = 0` | Nothing runs automatically |
+| Snap held | `snap refresh --hold=forever` | Snap kernel snaps frozen |
+
+**These must be temporarily removed for the update, then re-applied afterward.**
+
+### The 7-Phase Update Process (remote_kernel_update)
+
+The `remote_kernel_update()` function in `lib/remote.sh` implements a 7-phase interactive process with rollback capability at each step:
+
+| Phase | Action | Can Rollback? |
+|-------|--------|---------------|
+| 1 | Enable apt package sources | Yes |
+| 2 | Remove holds and pinning | Yes |
+| 3 | `apt-get update && dist-upgrade` | Partial — kernel installed but not booted |
+| 4 | Verify DKMS built wl.ko for new kernel | Yes — if DKMS fails, don't reboot |
+| 5 | Configure GRUB fallback (old kernel = default) | Yes |
+| 6 | `grub-reboot` into new kernel (one-time) | No after reboot — but power cycle reverts |
+| 7 | Re-lock system (holds, preferences, sources) | N/A — final state |
+
+Each phase writes a marker to `/tmp/macpro-kernel-update.env` to track progress. The `_remote_kernel_update_rollback()` function can roll back from any phase.
+
+### ABORT AND ROLLBACK Procedures
+
+**Scenario A: DKMS build failed (before reboot)**
+
+The new kernel is installed but you haven't rebooted. You're still on the working kernel.
+
+```bash
+# Re-apply all safeguards immediately
+KVER="$(uname -r)"
+sudo apt-mark hold "linux-image-${KVER}"
+sudo apt-mark hold "linux-headers-${KVER}"
+sudo apt-mark hold "linux-modules-${KVER}"
+sudo apt-mark hold "linux-modules-extra-${KVER}" 2>/dev/null || true
+
+# Re-create apt preferences
+NEW_ABI="$(echo "$KVER" | sed 's/-generic$//')"
+sudo tee /etc/apt/preferences.d/99-pin-kernel > /dev/null << PREFS
+Package: linux-image-*
+Pin: release o=Ubuntu
+Pin-Priority: -1
+
+Package: linux-headers-*
+Pin: release o=Ubuntu
+Pin-Priority: -1
+
+Package: linux-modules-*
+Pin: release o=Ubuntu
+Pin-Priority: -1
+
+Package: linux-image-${NEW_ABI}*
+Pin: release o=Ubuntu
+Pin-Priority: 1001
+
+Package: linux-headers-${NEW_ABI}*
+Pin: release o=Ubuntu
+Pin-Priority: 1001
+
+Package: linux-modules-${NEW_ABI}*
+Pin: release o=Ubuntu
+Pin-Priority: 1001
+PREFS
+
+# Comment out sources
+sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list
+for list in /etc/apt/sources.list.d/*.list; do
+  [ -f "$list" ] && sudo sed -i '/^deb/ s/^/#/' "$list"
+done
+
+echo "ROLLBACK COMPLETE — system remains on working kernel $KVER"
+```
+
+**Scenario B: New kernel booted but WiFi doesn't work**
+
+You rebooted and can't SSH in. This is the worst case.
+
+1. **Power cycle the Mac Pro** (pull power — this machine has no IPMI)
+2. GRUB is configured with `GRUB_DEFAULT=saved` and `GRUB_SAVEDEFAULT=true` from Phase 5. Since the new kernel was selected via `grub-reboot` (one-time override), the **saved default** is still the old kernel. A normal reboot (not `grub-reboot`) will boot the old kernel.
+3. If a simple reboot doesn't work (GRUB saved the new kernel as default because it booted successfully), you'll need:
+   - **SSH from macOS side**: If macOS is still on the disk and `bless` was set with `--nextonly`, the firmware may revert to macOS. From macOS, you can re-bless the Ubuntu ESP and use `grub-editenv` or modify GRUB config to default to the old kernel.
+   - **Physical access as last resort**: Hold Option at boot → select macOS → fix GRUB from macOS.
+
+**Mitigation**: Before rebooting in Phase 6, verify that `sudo grub-editenv list` shows the old kernel as the saved default. The `grub-reboot` command only overrides for ONE boot; the saved default remains unchanged.
+
+### Agent Mandatory Rules
+
+When an AI agent performs a kernel update on this machine, it MUST follow these rules:
+
+1. **NEVER run `apt-get dist-upgrade` or install a new kernel without following the 7-phase process.**
+2. **NEVER reboot without first configuring GRUB fallback** (Phase 5).
+3. **NEVER skip Phase 4 verification** — DKMS status MUST show `installed` for the new kernel before rebooting.
+4. **NEVER remove the apt preferences, holds, or commented-out sources without immediately re-applying them after the update.**
+5. **NEVER assume DKMS auto-build succeeded** — always verify explicitly with `dkms status`.
+6. **ALWAYS confirm WiFi works post-reboot before re-locking the system** (Phase 7).
+7. **ALWAYS use `grub-reboot` for the first boot into a new kernel** — never set it as the GRUB default until verified working.
+8. **If DKMS build fails, ALWAYS enter ABORT AND ROLLBACK immediately** — never attempt to reboot into a kernel without a working `wl.ko`.
+
+### Update Frequency Recommendations
+
+| Update Type | Frequency | Risk |
+|-------------|-----------|------|
+| Security updates (non-kernel) | Monthly or as needed for critical CVEs | Low — DKMS not involved |
+| Kernel update | Only when required by security CVE | Medium-High — requires full process above |
+| Full `dist-upgrade` | Quarterly at most | High — likely pulls new kernel |
+
+### Non-Kernel Updates (security_update operation)
+
+For security updates that do NOT touch the kernel, use the `security_update` operation (maps to `remote_non_kernel_update()` in lib/remote.sh):
+
+```bash
+sudo ./prepare-deployment.sh --agent --yes --operation security_update --host macpro-linux --json
+```
+
+This operation:
+1. Temporarily enables APT sources
+2. Runs `apt-get upgrade` excluding kernel packages
+3. Disables APT sources again
+
+This avoids the kernel entirely while still getting security patches for all other packages.
+
+### Rollback Function Reference
+
+The `_remote_kernel_update_rollback(host, from_phase)` function in `lib/remote.sh` handles rollback from any phase:
+
+- Phase 0-1: Disables apt sources
+- Phase 2-3: Re-pins kernel, disables apt sources
+- Phase 4: Re-pins kernel, disables apt sources, warns about unverified new kernel
+- Phase 5: Resets GRUB default, updates GRUB, re-pins kernel, disables apt sources
+
+The `remote_rollback_status()` function checks `/tmp/macpro-kernel-update.env` to detect incomplete updates and provides recovery instructions.
+
+## macOS Erasure and Full-Disk Expansion
+
+This section documents the process for erasing macOS partitions and expanding Ubuntu to use the full disk. This operation is **irreversible** — once macOS partitions are deleted, they cannot be recovered.
+
+### Overview
+
+The erase operation (managed via the TUI Storage menu) performs these steps:
+1. Identifies and deletes all macOS/APFS partitions
+2. Expands the Ubuntu root (`/`) partition into the freed space
+3. Updates GRUB and removes macOS boot entries
+4. Verifies the system still boots and WiFi works
+
+### Danger Summary
+
+| Risk | Consequence | Mitigation |
+|------|-------------|------------|
+| Deleting the wrong partition | Data loss, unbootable system | Step 1 has explicit partition identification with verification prompts |
+| Root partition resize fails | Root filesystem corruption | Step 2 reads current state first, uses `growpart` + `resize2fs` (safe, in-place) |
+| GRUB misconfiguration after partition deletion | Unbootable system | Step 3 regenerates GRUB, Step 4 verifies before declaring success |
+| Boot-recovery partition accidentally deleted | No fallback | EFI System Partition (ESP) is never touched — it's a separate partition |
+
+### 6-Step Process Overview
+
+**Step 1: Identify Partition Layout**
+- Read GPT partition table with `sgdisk -p /dev/sda`
+- Classify every partition as macOS or Ubuntu
+- **NEVER delete partitions mounted at `/`, `/boot`, or `/boot/efi`**
+
+**Step 2: Delete macOS Partitions**
+- Create GPT backup: `sgdisk -b /tmp/gpt-backup-$(date +%Y%m%d%H%M%S).bin /dev/sda`
+- Delete macOS partitions one at a time using `sgdisk -d N /dev/sda`
+- Re-read partition table after each deletion (partition numbers may shift)
+
+**Step 3: Expand Root Partition**
+- Identify root partition: `lsblk -no NAME,MOUNTPOINT /dev/sda | grep ' /$'`
+- Verify free space is adjacent: `parted /dev/sda print free`
+- Expand partition: `growpart /dev/sda $PART_NUM`
+- Resize filesystem: `resize2fs /dev/sda${PART_NUM}`
+- Verify: `df -h /`
+
+**Step 4: Update GRUB**
+- Remove macOS GRUB entry: `rm -f /etc/grub.d/40_macos`
+- Update GRUB: `update-grub`
+- Remove macOS EFI entry: `efibootmgr --delete-bootnum --bootnum $MACOS_ENTRY`
+- Remove boot-macos script: `rm -f /usr/local/bin/boot-macos`
+
+**Step 5: Verify and Reboot**
+- Verify WiFi: `ping -c 3 google.com`
+- Verify all filesystems mounted: `df -h / /boot /boot/efi`
+- Verify GRUB clean: `grep -i "macos\|apple" /boot/grub/grub.cfg` should return nothing
+- Reboot: `sudo reboot`
+- After reboot, re-verify SSH, WiFi, and disk space
+
+**Step 6: Optional Swap**
+- If root partition was significantly expanded, consider adding swap:
+- `sudo fallocate -l 8G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`
+- Add to `/etc/fstab` for persistence
+
+### Partition Classification Rules
+
+| Partition Type | Classification | Action |
+|---------------|----------------|--------|
+| Mounted at `/` | Ubuntu root | **DO NOT DELETE** |
+| Mounted at `/boot` | Ubuntu boot | **DO NOT DELETE** |
+| Mounted at `/boot/efi` | EFI System Partition | **DO NOT DELETE** — shared by both OSes |
+| FSTYPE contains `apfs` | macOS | Target for deletion |
+| TYPE GUID `7C3457EF-...` | Apple APFS container | Target for deletion |
+| TYPE GUID `426F6F74-...` | Apple Boot/Recovery | Target for deletion |
+| LABEL contains `Macintosh` or `Recovery` | macOS | Target for deletion |
+| Swap partition (FSTYPE=`swap`) | Ubuntu | **DO NOT DELETE** |
+
+### Rollback Information
+
+**Once macOS partitions are deleted (Step 2), there is NO rollback.** macOS data is gone. The GPT backup saved in Step 2 only restores the partition table entries, not the data.
+
+The only reversible step is the partition expansion — if `growpart` fails before `resize2fs`, the partition table can be restored from the GPT backup:
+
+```bash
+# EMERGENCY ONLY: Restore GPT from backup
+sudo sgdisk -l /tmp/gpt-backup-*.bin /dev/sda
+sudo reboot
+```
+
+**Agent instruction: If Step 2 has been executed (partitions deleted), there is no undo. Proceed with Steps 3-5. If Step 2 has NOT been executed yet, the operation can be safely cancelled.**
+
+### Agent Prompt Template
+
+When delegating macOS erasure to an agent, use this condensed prompt:
+
+```
+You are erasing macOS on a headless Mac Pro 2013 running Ubuntu 24.04 via SSH. This machine has ZERO physical access and WiFi-only networking via a proprietary Broadcom BCM4360 wl driver.
+
+Execute the 6-step process from AGENTS.md (macOS Erasure section):
+
+1. Identify: Read partition table with sgdisk -p /dev/sda. Classify EVERY partition as macOS or Ubuntu. Output your classification for confirmation.
+2. Delete: Create GPT backup first. Delete macOS partitions ONE AT A TIME. Re-read partition table after each deletion (numbers shift).
+3. Expand: Verify free space is ADJACENT to root partition. Use growpart then resize2fs.
+4. GRUB: Remove 40_macos, update-grub, remove macOS EFI entry, remove boot-macos script.
+5. Verify: Check WiFi (ping), filesystems (df), GRUB clean (grep). Then reboot.
+6. Swap: Optional — add swapfile if desired.
+
+CRITICAL:
+- NEVER delete partitions mounted at /, /boot, or /boot/efi
+- NEVER delete the EFI System Partition
+- If growpart reports free space not adjacent, STOP and ask user
+- After Step 2 executes, there is NO ROLLBACK — proceed to completion
+```
+
+## Agent Operations Reference
+
+The following operations are available in agent mode via `--operation OP`:
+
+| Operation | Maps to Function | Description | Destructive? |
+|-----------|-----------------|-------------|-------------|
+| `sysinfo` | `remote_get_info()` | System information (kernel, WiFi, disk, uptime, apt, DKMS) | No |
+| `kernel_status` | `remote_kernel_status()` | Kernel version, pin status, held packages, apt preferences | No |
+| `kernel_pin` | `remote_kernel_repin()` | Pin current kernel, disable apt sources, enable holds | Yes |
+| `kernel_unpin` | `remote_kernel_unpin()` | Unpin kernel, enable apt sources, remove holds | Yes |
+| `kernel_update` | `remote_kernel_update()` | Full 7-phase kernel update with rollback | Yes |
+| `security_update` | `remote_non_kernel_update()` | Non-kernel security updates only | Yes |
+| `health_check` | `remote_health_check()` | Comprehensive health check (SSH, WiFi, disk, DKMS, kernel) | No |
+| `disk_usage` | `remote_get_info()` | Same as sysinfo (includes disk info) | No |
+| `rollback_status` | `remote_rollback_status()` | Check for incomplete kernel update | No |
+| `reboot` | `remote_reboot()` | Reboot remote system with health check after | Yes |
+| `boot_macos` | `remote_boot_macos()` | Set next boot to macOS and reboot | Yes |
+
+**Note**: The following operations listed in older documentation do NOT exist as standalone functions:
+- `driver_status` — use `sysinfo` or `health_check` (DKMS status included)
+- `driver_rebuild` — not implemented as remote operation
+- `erase_macos` — managed via TUI workflow, not direct function call
+- `apt_enable` / `apt_disable` — use `kernel_pin`/`kernel_unpin` or the internal `remote_toggle_apt_sources()` function
+
+The `remote_toggle_apt_sources(host, action)` function (line 234 in lib/remote.sh) takes "enable" or "disable" as the action parameter and is used internally by the kernel pin/unpin functions.
+
 ## Key Constraints
 
 - **Zero physical access** — all operations must be performed remotely via SSH
@@ -382,6 +677,7 @@ Patches use `#if LINUX_VERSION_CODE >= KERNEL_VERSION(...)` guards and compile c
 - **169.254.x.x link-local addresses** — must be excluded from DHCP lease checks; `grep -q "inet 169\.254\."` guard on all IP validation
 - **Serial console output** — GRUB `console=ttyS0,115200` param enables serial output for headless debugging; VirtualBox UART1 maps to `/tmp/vmtest-serial.log`
 - **Blacklist loop redirect** — for-loop writing to blacklist file must use `>>` (append), not `>` (overwrite); `>` truncates on each iteration, only keeping the last driver entry
+- **macOS erasure is irreversible** — once macOS partitions are deleted, they cannot be recovered; the GPT backup only restores partition table entries, not data
 
 ## Runtime Output Directory
 
