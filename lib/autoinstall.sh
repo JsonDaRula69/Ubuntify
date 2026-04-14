@@ -14,7 +14,7 @@ _AUTOINSTALL_SH_SOURCED=1
 source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 
-SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+: "${SCRIPT_DIR:=$(cd "$(dirname "$0")" && pwd)}"
 
 write_grub_config() {
     local ESP_MOUNT="$1"

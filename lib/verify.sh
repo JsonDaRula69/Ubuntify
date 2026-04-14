@@ -28,9 +28,6 @@ verify_apfs_resize() {
     fi
 
     # Compare with ±5GB tolerance
-    local diff
-    diff=$(echo "$actual_gb - $expected_gb" | sed 's/^-//' 2>/dev/null || echo "999")
-
     # Use awk for comparison to handle decimals — pass values as variables to prevent injection
     local within_tolerance
     within_tolerance=$(awk -v actual="$actual_gb" -v expected="$expected_gb" 'BEGIN { if (actual >= expected - 5 && actual <= expected + 5) print 1; else print 0 }')

@@ -16,7 +16,7 @@ source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/rollback.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/dryrun.sh"
 
-ESP_NAME="${ESP_NAME:-CIDATA}"
+: "${ESP_NAME:=CIDATA}"
 
 revert_changes() {
     # Load journal state at start

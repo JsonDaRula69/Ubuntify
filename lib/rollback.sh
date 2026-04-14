@@ -423,6 +423,13 @@ rollback_internal() {
     fi
 
     log_info "Internal partition rollback completed (status: ${rollback_status:-none})"
+
+    case "$rollback_status" in
+        *failed*)
+            warn "Rollback had partial failures"
+            return 1
+            ;;
+    esac
     return 0
 }
 
@@ -430,6 +437,7 @@ rollback_internal() {
 # Reverts USB device changes
 rollback_usb() {
     log_info "Starting USB rollback"
+    local errors=0
 
     journal_read
 
@@ -444,6 +452,7 @@ rollback_usb() {
             log_info "USB partition table restored"
         else
             warn "rollback_usb: failed to restore USB partition table"
+            errors=$((errors + 1))
         fi
     else
         warn "rollback_usb: no USB backup available, manual reformat may be needed"
@@ -455,7 +464,7 @@ rollback_usb() {
             diskutil unmountDisk "$usb_device" 2>/dev/null || true
     fi
 
-    return 0
+    [ $errors -eq 0 ]
 }
 
 # rollback_vm
@@ -463,23 +472,21 @@ rollback_usb() {
 rollback_vm() {
     log_info "Starting VM rollback"
 
-    if command -v VBoxManage >/dev/null 2>&1; then
-        # Power off VM if running
-        dry_run_exec "Powering off VM macpro-vmtest" \
-            VBoxManage controlvm macpro-vmtest poweroff 2>/dev/null || true
-        if ! is_dry_run; then
-            sleep 1
-        fi
-
-        # Unregister and delete
-        dry_run_exec "Unregistering and deleting VM macpro-vmtest" \
-            VBoxManage unregistervm macpro-vmtest --delete 2>/dev/null || true
-
-        log_info "VM test environment cleaned up"
-    else
+    if ! command -v VBoxManage >/dev/null 2>&1; then
         warn "rollback_vm: VBoxManage not available"
+        return 1
     fi
 
+    dry_run_exec "Powering off VM macpro-vmtest" \
+        VBoxManage controlvm macpro-vmtest poweroff 2>/dev/null || true
+    if ! is_dry_run; then
+        sleep 1
+    fi
+
+    dry_run_exec "Unregistering and deleting VM macpro-vmtest" \
+        VBoxManage unregistervm macpro-vmtest --delete 2>/dev/null || true
+
+    log_info "VM test environment cleaned up"
     return 0
 }
 
@@ -496,7 +503,7 @@ rollback_from_journal() {
         internal|1)
             rollback_internal
             ;;
-        usb|2)
+        usb|2|manual|3)
             rollback_usb
             ;;
         vm|4)

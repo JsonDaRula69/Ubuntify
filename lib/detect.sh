@@ -15,7 +15,7 @@ source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/tui.sh"
 
-SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+: "${SCRIPT_DIR:=$(cd "$(dirname "$0")" && pwd)}"
 
 detect_iso() {
     local iso_path=""

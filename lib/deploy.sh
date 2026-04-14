@@ -24,7 +24,7 @@ source "${LIB_DIR:-./lib}/rollback.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/tui.sh"
 source "${LIB_DIR:-./lib}/dryrun.sh"
 
-SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+: "${SCRIPT_DIR:=$(cd "$(dirname "$0")" && pwd)}"
 STORAGE_LAYOUT="${STORAGE_LAYOUT:-1}"
 NETWORK_TYPE="${NETWORK_TYPE:-1}"
 INTERNAL_DISK="${INTERNAL_DISK:-}"

@@ -80,7 +80,6 @@ _log_level_to_num() {
 log_init() {
     local log_dir="${1:-}"
     local webhook_url="${2:-}"
-    local serial_device=""
 
     _LOGGING_INIT=1
 

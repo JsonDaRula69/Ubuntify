@@ -1,3 +1,5 @@
+#!/bin/bash
+# shellcheck shell=bash
 [ "${_RETRY_SH_SOURCED:-0}" -eq 1 ] && return 0; _RETRY_SH_SOURCED=1
 
 source "${LIB_DIR:-./lib}/logging.sh"

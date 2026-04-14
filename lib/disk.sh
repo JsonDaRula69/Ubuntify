@@ -15,8 +15,8 @@ source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/dryrun.sh"
 
-ESP_NAME="${ESP_NAME:-CIDATA}"
-ESP_SIZE="${ESP_SIZE:-5g}"
+: "${ESP_NAME:=CIDATA}"
+: "${ESP_SIZE:=5g}"
 STORAGE_LAYOUT="${STORAGE_LAYOUT:-1}"
 
 analyze_disk_layout() {
@@ -157,7 +157,7 @@ create_esp_partition() {
         sleep 1
     fi
 
-    local BEFORE_PARTS AFTER_PARTS ESP_DEVICE ESP_MOUNT
+    local BEFORE_PARTS AFTER_PARTS ESP_MOUNT
     BEFORE_PARTS=$(diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
     dry_run_exec "Create ESP partition on $INTERNAL_DISK" \
         retry_diskutil addPartition "$INTERNAL_DISK" %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% "$ESP_SIZE" || \

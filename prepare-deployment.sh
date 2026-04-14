@@ -63,7 +63,6 @@ HOSTNAME="macpro-linux"
 SSH_KEYS=""
 SSH_KEYS_FILE=""
 ENCRYPTION="plaintext"
-OUTPUT_DIR="${HOME}/.Ubuntu_Deployment"
 WHURL=""
 
 parse_conf() {
@@ -128,7 +127,12 @@ ${SSH_KEYS}}"
 fi
 
 # Compute derived values
-WHURL="http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/webhook"
+if [ -n "$WEBHOOK_HOST" ]; then
+    WEBHOOK_PORT="${WEBHOOK_PORT:-8080}"
+    WHURL="http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/webhook"
+else
+    WHURL=""
+fi
 
 export WIFI_SSID
 export WIFI_PASSWORD
@@ -443,8 +447,8 @@ configure_ssh_config() {
     if [ -f "$ssh_config" ]; then
         while IFS= read -r line; do
             case "$line" in
-                *"Host macpro"*) has_macpro=1 ;;
                 *"Host macpro-linux"*) has_macpro_linux=1 ;;
+                *"Host macpro"*) has_macpro=1 ;;
             esac
         done < "$ssh_config"
     fi
@@ -640,7 +644,7 @@ decrypt_config() {
 show_help() {
     echo "Usage: sudo ./prepare-deployment.sh [OPTIONS]"
     echo ""
-    echo "Mac Pro 2013 Ubuntu Server Deployment Tool v0.2.16"
+    echo "Mac Pro 2013 Ubuntu Server Deployment Tool v0.2.24"
     echo ""
     echo "Options:"
     echo "  --dry-run             Show what would be done without making changes"
@@ -664,6 +668,7 @@ show_help() {
     echo "  --username USER       Override username from deploy.conf"
     echo "  --hostname HOST       Override hostname from deploy.conf"
     echo "  --vm                  Use VM test mode (autoinstall-vm.yaml)"
+    echo "  --output-dir DIR      Override runtime output directory (default: ~/.Ubuntu_Deployment/)"
     echo ""
     echo "Modes:"
     echo "  Deploy   - Local operations: Build ISO, deploy to ESP/USB/VM, monitor"
@@ -676,8 +681,13 @@ show_help() {
     echo "  1  General error"
     echo "  2  Usage error (missing/invalid arguments)"
     echo "  3  Config error"
+    echo "  4  Pre-flight check failed"
+    echo "  5  Partial success"
+    echo "  6  Missing dependency"
     echo "  7  Network error"
     echo "  8  Disk error"
+    echo "  9  Timeout"
+    echo "  10 Authentication error"
     echo "  11 Dry-run completed (no changes made)"
     echo "  12 Agent mode: missing required parameter"
     echo "  13 Agent mode: confirmation denied"
@@ -713,7 +723,9 @@ while [ $# -gt 0 ]; do
         --username=*)        USERNAME="${1#*=}"; shift ;;
         --hostname)          HOSTNAME="$2"; shift 2 ;;
         --hostname=*)        HOSTNAME="${1#*=}"; shift ;;
-        --vm)                VM_MODE=1; shift ;;
+        --vm)                DEPLOY_METHOD=4; shift ;;
+        --output-dir)        OUTPUT_DIR="$2"; shift 2 ;;
+        --output-dir=*)      OUTPUT_DIR="${1#*=}"; shift ;;
         --revert)            handle_revert_flag "--revert"; exit $? ;;
         --help|-h)           show_help ;;
         *)                   echo "Unknown option: $1"; show_help ;;
@@ -839,7 +851,6 @@ menu_deploy() {
 
 menu_monitor() {
     local monitor_dir="$SCRIPT_DIR/macpro-monitor"
-    local log_file="/tmp/macpro-monitor.log"
 
     if [ ! -f "$monitor_dir/server.js" ]; then
         tui_msgbox "Error" "Monitor server not found at $monitor_dir/server.js"
@@ -1258,8 +1269,9 @@ confirm_settings() {
 
 # Maps --operation names to remote.sh functions
 _AGENT_OPERATIONS="sysinfo kernel_status kernel_pin kernel_unpin kernel_update "
-_AGENT_OPERATIONS="${AGENT_OPERATIONS}security_update driver_status driver_rebuild "
-_AGENT_OPERATIONS="${AGENT_OPERATIONS}disk_usage erase_macos apt_enable apt_disable reboot boot_macos"
+_AGENT_OPERATIONS="${_AGENT_OPERATIONS}security_update health_check rollback_status "
+_AGENT_OPERATIONS="${_AGENT_OPERATIONS}driver_status driver_rebuild disk_usage erase_macos "
+_AGENT_OPERATIONS="${_AGENT_OPERATIONS}apt_enable apt_disable reboot boot_macos"
 
 _validate_agent_deploy() {
     [ -z "${DEPLOY_METHOD:-}" ] && agent_error "Missing --method (1=ESP, 2=USB, 3=manual, 4=VM)" "$E_AGENT_PARAM"
@@ -1324,6 +1336,8 @@ _agent_manage() {
         kernel_unpin)    remote_kernel_unpin "$host" ;;
         kernel_update)   remote_kernel_update "$host" ;;
         security_update) remote_non_kernel_update "$host" ;;
+        health_check)    remote_health_check "$host" ;;
+        rollback_status)  remote_rollback_status "$host" ;;
         driver_status)   remote_driver_status "$host" ;;
         driver_rebuild)  remote_driver_rebuild "$host" ;;
         disk_usage)      remote_get_info "$host" ;;
@@ -1401,7 +1415,7 @@ main() {
     trap 'cleanup_on_error; exit 130' SIGINT
     trap 'cleanup_on_error; exit 143' SIGTERM
 
-    log_info "Mac Pro 2013 Ubuntu Deployment Tool v0.2.16 starting..."
+    log_info "Mac Pro 2013 Ubuntu Deployment Tool v0.2.24 starting..."
     log_info "Log file: $(log_get_file_path)"
     log_info "TUI backend: $TUI_BACKEND"
 

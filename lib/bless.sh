@@ -15,7 +15,7 @@ source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/dryrun.sh"
 
-ESP_NAME="${ESP_NAME:-CIDATA}"
+: "${ESP_NAME:=CIDATA}"
 
 verify_esp_contents() {
     local ESP_MOUNT="$1"

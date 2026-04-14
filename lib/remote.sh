@@ -97,7 +97,7 @@ remote_kernel_status() {
     log "Checking kernel status on $host..."
     echo ""
 
-    local kernel pinned held prefs
+    local kernel pinned held
 
     kernel=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
     pinned=$(remote__exec "$host" "cat /etc/apt/preferences.d/99-pin-kernel 2>/dev/null || echo 'No pinning configured'")
@@ -249,6 +249,68 @@ remote_toggle_apt_sources() {
             return 1
             ;;
     esac
+}
+
+## APT Source Management (standalone wrappers)
+
+remote_apt_enable() {
+    local host
+    host=$(remote__get_host "${1:-}")
+    remote_toggle_apt_sources "$host" enable
+}
+
+remote_apt_disable() {
+    local host
+    host=$(remote__get_host "${1:-}")
+    remote_toggle_apt_sources "$host" disable
+}
+
+## WiFi/Driver Status
+
+remote_driver_status() {
+    local host
+    host=$(remote__get_host "${1:-}")
+    local kver dkms_status wl_status
+
+    log "Checking WiFi/driver status on $host..."
+
+    kver=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
+    log "Kernel: $kver"
+
+    dkms_status=$(remote__exec "$host" "dkms status 2>/dev/null || echo 'DKMS not available'")
+    log "DKMS status: $dkms_status"
+
+    wl_status=$(remote__exec "$host" "lsmod | grep '^wl ' 2>/dev/null || echo 'wl module not loaded'")
+    log "wl module: $wl_status"
+
+    remote__exec "$host" "iwconfig 2>/dev/null | grep -E 'ESSID|IEEE' || echo 'No wireless interfaces'"
+}
+
+## WiFi/Driver Rebuild
+
+remote_driver_rebuild() {
+    local host="${1:-macpro-linux}"
+    local kver="${2:-}"
+    local detected_kver
+
+    log "Rebuilding WiFi (wl) driver on $host..."
+
+    if [ -z "$kver" ]; then
+        detected_kver=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
+        kver="$detected_kver"
+    fi
+    log "Kernel: $kver"
+
+    dry_run_exec "Removing old wl module on $host" \
+        remote__exec "$host" "sudo rmmod wl 2>/dev/null || true"
+
+    dry_run_exec "Rebuilding broadcom-sta DKMS module for kernel $kver on $host" \
+        remote__exec "$host" "sudo dkms remove broadcom-sta/6.30.223.271 -k '$kver' 2>/dev/null; sudo dkms build broadcom-sta/6.30.223.271 -k '$kver' && sudo dkms install broadcom-sta/6.30.223.271 -k '$kver'"
+
+    dry_run_exec "Loading wl module on $host" \
+        remote__exec "$host" "sudo modprobe wl"
+
+    log "Driver rebuild complete on $host"
 }
 
 remote_kernel_update() {
@@ -418,6 +480,14 @@ _remote_kernel_update_rollback() {
                 remote_pin_kernel "$host" 2>/dev/null || true
             dry_run_exec "Disabling apt sources on $host (rollback)" \
                 remote_toggle_apt_sources "$host" disable 2>/dev/null || true
+            ;;
+        6|7)
+            dry_run_exec "Re-pinning kernel on $host (rollback)" \
+                remote_pin_kernel "$host" 2>/dev/null || true
+            dry_run_exec "Disabling apt sources on $host (rollback)" \
+                remote_toggle_apt_sources "$host" disable 2>/dev/null || true
+            warn "System has already rebooted into new kernel. Verify WiFi works (ping google.com)."
+            warn "If WiFi is broken, power-cycle the Mac Pro — GRUB default was set to old kernel before reboot."
             ;;
     esac
 
@@ -648,6 +718,125 @@ remote_rollback_status() {
     echo "To rollback: _remote_kernel_update_rollback $host $phase_num"
 
     return 1
+}
+
+## macOS Erasure
+
+remote_erase_macos() {
+    local host="${1:-macpro-linux}"
+    local part_info part_type part_num root_part
+    local macos_parts=""
+    local errors=0
+
+    warn "erase_macos: This will DELETE all macOS partitions and expand Ubuntu."
+    warn "erase_macos: This CANNOT be undone."
+    if ! tui_confirm "ERASE macOS" "This will permanently delete all macOS partitions\nand expand Ubuntu to use the full disk.\n\nThis CANNOT be undone.\n\nProceed?"; then
+        log "macOS erase cancelled"
+        return 1
+    fi
+
+    log "Step 1: Identifying partition layout on $host..."
+    part_info=$(remote__exec "$host" "sudo sgdisk -p /dev/sda") || {
+        error "Failed to read partition table"
+        return 1
+    }
+    echo "$part_info"
+
+    local root_part=""
+    while IFS= read -r line; do
+        part_num=$(echo "$line" | awk '{print $1}')
+        part_type=$(echo "$line" | awk '{for(i=4;i<=NF;i++) printf "%s ",$i}')
+
+        case "$part_type" in
+            *"/"*" "*"/boot"*|*"/boot/efi"*)
+                if echo "$line" | grep -q ' /$'; then
+                    root_part="$part_num"
+                elif echo "$line" | grep -q ' /boot/efi'; then
+                    : # EFI partition — never delete
+                elif echo "$line" | grep -q ' /boot$'; then
+                    part_num=""
+                fi
+                ;;
+        esac
+    done <<EOF
+$(remote__exec "$host" "lsblk -no NAME,MOUNTPOINT,FSTYPE,SIZE /dev/sda")
+EOF
+
+    macos_parts=$(remote__exec "$host" "sudo sgdisk -p /dev/sda | awk '\$3 ~ /7C3457EF|426F6F74|C12A7328/ || tolower(\$5) ~ /apfs|apple|hfs/ {print \$1}'") || true
+
+    if [ -z "$macos_parts" ]; then
+        log "No macOS partitions found on $host"
+        return 0
+    fi
+
+    log "Step 2: Creating GPT backup and deleting macOS partitions..."
+
+    remote__exec "$host" "sudo sgdisk -b /tmp/gpt-backup-\$(date +%Y%m%d%H%M%S).bin /dev/sda" || {
+        error "Failed to create GPT backup"
+        return 1
+    }
+
+    for pnum in $macos_parts; do
+        local mount_check
+        mount_check=$(remote__exec "$host" "lsblk -no MOUNTPOINT /dev/sda${pnum}" 2>/dev/null)
+        case "$mount_check" in
+            "/"|"/boot"|"/boot/efi")
+                error "Partition $pnum is mounted at $mount_check — refusing to delete"
+                errors=$((errors + 1))
+                continue
+                ;;
+        esac
+
+        log "Deleting macOS partition $pnum..."
+        dry_run_exec "Deleting partition $pnum" \
+            remote__exec "$host" "sudo sgdisk -d ${pnum} /dev/sda && sudo partprobe /dev/sda" || {
+            error "Failed to delete partition $pnum"
+            errors=$((errors + 1))
+        }
+    done
+
+    if [ $errors -gt 0 ]; then
+        error "Errors during partition deletion — aborting before resize"
+        return 1
+    fi
+
+    log "Step 3: Expanding root partition..."
+    root_part=$(remote__exec "$host" "lsblk -no NAME,MOUNTPOINT /dev/sda | grep ' /$' | awk '{print \$1}' | sed 's/sda//'") || {
+        error "Cannot identify root partition"
+        return 1
+    }
+
+    dry_run_exec "Expanding partition ${root_part}" \
+        remote__exec "$host" "sudo growpart /dev/sda ${root_part} && sudo resize2fs /dev/sda${root_part}" || {
+        error "Failed to expand root partition"
+        return 1
+    }
+
+    log "Step 4: Updating GRUB and removing macOS boot entry..."
+    remote__exec "$host" "sudo rm -f /etc/grub.d/40_macos" || true
+    remote__exec "$host" "sudo update-grub" 2>/dev/null || true
+
+    local macos_boot
+    macos_boot=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -i macos | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || true
+    if [ -n "$macos_boot" ]; then
+        dry_run_exec "Removing macOS EFI boot entry" \
+            remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --delete-bootnum --bootnum $macos_boot" || true
+    fi
+
+    remote__exec "$host" "sudo rm -f /usr/local/bin/boot-macos" || true
+
+    log "Step 5: Verifying system integrity..."
+    local wifi_ok root_ok grub_ok
+    wifi_ok=$(remote__exec "$host" "ping -c 3 google.com >/dev/null 2>&1 && echo ok || echo FAIL")
+    root_ok=$(remote__exec "$host" "df -h / | tail -1 | awk '{print \$5}'")
+    grub_ok=$(remote__exec "$host" "grep -ic 'macos\|apple' /boot/grub/grub.cfg 2>/dev/null || echo 0")
+
+    echo "WiFi: $wifi_ok"
+    echo "Root usage: $root_ok"
+    echo "GRUB macOS entries: $grub_ok"
+
+    log "macOS erasure complete on $host. Reboot recommended."
+    return 0
 }
 
 ## Boot Management
