@@ -555,8 +555,9 @@ tui_checklist() {
 
 tui_animated_intro() {
     local subtitle="${1:-Mac Pro Conversion and Management Tool}"
-    if command -v durdraw >/dev/null 2>&1; then
-        durdraw -p "$HOME/.ubuntify/intro.dur" -x 1 -d 2 2>/dev/null || tui_cool_header "$subtitle"
+    source "$LIB_DIR/animated_header.sh" 2>/dev/null
+    if declare -f tui_animated_header >/dev/null 2>&1; then
+        tui_animated_header "$subtitle" 0.15 0
     else
         tui_cool_header "$subtitle"
     fi
@@ -564,35 +565,27 @@ tui_animated_intro() {
 
 tui_cool_header() {
     local subtitle="${1:-Mac Pro Conversion and Management Tool}"
-    if command -v figlet >/dev/null 2>&1; then
-        local art=$(figlet -f standard "Ubuntify" 2>/dev/null)
-    else
-        local art=" _   _ _                 _   _  __       
+    local art=" _   _ _                 _   _  __       
 | | | | |__  _   _ _ __ | |_(_)/ _|_   _ 
 | | | | '_ \| | | | '_ \| __| | |_| | | |
-|_| |_| |_) | |_| | | | | |_| |  _| |_| |
- \___/|_.__/ \__,_|_| |_|\__|_|_|  \__, |
+| _  | |_) | |_| | | | | |_| |  _| |_| |
+|_| |_|_.__/ \__,_|_| |_|\__|_|_|  \__, |
                                    |___/ "
-    fi
-    local max_width=0
+    [ -z "$art" ] && command -v figlet >/dev/null 2>&1 && art=$(figlet -f standard "Ubuntify" 2>/dev/null)
+    local max_width=0 line
     while IFS= read -r line; do
-        local len=${#line}
-        [ "$len" -gt "$max_width" ] && max_width=$len
+        [ "${#line}" -gt "$max_width" ] && max_width=${#line}
     done <<< "$art"
-    local subtitle_len=${#subtitle}
-    [ "$subtitle_len" -gt "$max_width" ] && max_width=$subtitle_len
+    [ "${#subtitle}" -gt "$max_width" ] && max_width=${#subtitle}
     max_width=$((max_width + 4))
-    local dashes=$(printf '%*s' $max_width '')
+    local bar=$(printf '%*s' $max_width '' | tr ' ' '─')
     echo ""
-    echo "┌─${dashes// /─}─┐"
+    echo -e "  \033[0;32m┌─${bar}─┐\033[0m"
     while IFS= read -r line; do
-        local len=${#line}
-        local padding=$((max_width - len))
-        echo "│ $(printf '%s%*s' "$line" $padding '') │"
+        printf "  \033[0;32m│\033[0m \033[1;32m%s\033[0m\033[0;32m%*s│\033[0m\n" "$line" $((max_width - ${#line})) ''
     done <<< "$art"
-    local padding=$((max_width - subtitle_len))
-    echo "│ $(printf '%s%*s' "$subtitle" $padding '') │"
-    echo "└─${dashes// /─}─┘"
+    printf "  \033[0;32m│\033[0m \033[1;32m%s\033[0m\033[0;32m%*s│\033[0m\n" "$subtitle" $((max_width - ${#subtitle} - 1)) ''
+    echo -e "  \033[0;32m└─${bar}─┘\033[0m"
     echo ""
 }
 

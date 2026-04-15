@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ubuntify - Hybrid Mockup</title>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0f;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Space Mono', monospace;
+        }
+        .container {
+            text-align: center;
+            padding: 50px 60px;
+            border: 1px solid #1a3a1a;
+            background: linear-gradient(180deg, #0a0a0f 0%, #0d120d 100%);
+            position: relative;
+            box-shadow: 0 0 60px rgba(35,134,54,0.15);
+            animation: borderGlow 4s ease-in-out infinite;
+        }
+        @keyframes borderGlow {
+            0%, 100% { box-shadow: 0 0 40px rgba(35,134,54,0.2); border-color: #1a3a1a; }
+            50% { box-shadow: 0 0 80px rgba(46,160,67,0.3); border-color: #238636; }
+        }
+        .container::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #238636, transparent);
+        }
+        .ascii {
+            font-size: 12px;
+            line-height: 1.3;
+            white-space: pre;
+            color: #2ea043;
+            text-shadow: 0 0 10px rgba(35,134,54,0.8), 0 0 20px rgba(46,160,67,0.5);
+            animation: textGlow 4s ease-in-out infinite;
+        }
+        @keyframes textGlow {
+            0%, 100% { color: #238636; text-shadow: 0 0 10px rgba(35,134,54,0.8); }
+            50% { color: #2ea043; text-shadow: 0 0 20px rgba(46,160,67,1), 0 0 40px rgba(35,134,54,0.6); }
+        }
+        .ascii .line {
+            opacity: 0;
+            animation: lineReveal 0.4s ease-out forwards;
+        }
+        @keyframes lineReveal {
+            from { opacity: 0; transform: translateY(-5px); filter: blur(3px); }
+            to { opacity: 1; transform: translateY(0); filter: blur(0); }
+        }
+        .subtitle {
+            margin-top: 25px;
+            font-size: 10px;
+            color: #484f58;
+            letter-spacing: 5px;
+            text-transform: uppercase;
+            animation: subtitleReveal 1.5s ease-out 0.5s both, subtitlePulse 4s ease-in-out infinite;
+        }
+        @keyframes subtitleReveal {
+            from { opacity: 0; letter-spacing: 20px; }
+            to { opacity: 1; letter-spacing: 5px; }
+        }
+        @keyframes subtitlePulse {
+            0%, 100% { color: #484f58; }
+            50% { color: #2ea043; }
+        }
+        .label {
+            position: absolute;
+            top: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #0a0a0f;
+            padding: 0 15px;
+            font-size: 9px;
+            color: #238636;
+            letter-spacing: 3px;
+        }
+        .version {
+            margin-top: 20px;
+            font-size: 9px;
+            color: #333;
+            letter-spacing: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <span class="label">Hybrid: Minimal Layout + Matrix Green Glow</span>
+        <div class="ascii">
+<div class="line" style="animation-delay: 0.1s"> _   _ _                 _   _  __       </div>
+<div class="line" style="animation-delay: 0.2s">| | | | |__  _   _ _ __ | |_(_)/ _|_   _ </div>
+<div class="line" style="animation-delay: 0.3s">| | | | '_ \| | | | '_ \| __| | |_| | | |</div>
+<div class="line" style="animation-delay: 0.4s">|_| |_| |_) | |_| | | | | |_| |  _| |_| |</div>
+<div class="line" style="animation-delay: 0.5s"> \___/|_.__/ \__,_|_| |_|\__|_|_|  \__, |</div>
+<div class="line" style="animation-delay: 0.6s">                                   |___/ </div>
+        </div>
+        <div class="subtitle">Mac Pro Conversion and Management Tool</div>
+        <div class="version">v0.2.47</div>
+    </div>
+</body>
+</html>
