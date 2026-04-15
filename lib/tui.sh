@@ -555,22 +555,37 @@ tui_checklist() {
 
 tui_ascii_header() {
     local subtitle="${1:-Mac Pro Conversion and Management Tool}"
-    cat << 'EOF'
+    if command -v neofetch >/dev/null 2>&1; then
+        neofetch --ascii_distro ubuntu --ascii_colors 1 --no_info 2>/dev/null | head -20
+        echo ""
+        echo "    ${subtitle}"
+    else
+        cat << 'EOF'
 
-    ┌─────────────────────────────────────────────────────────────────────────┐
-    │                                                                         │
-    │   ██████╗ ██╗██╗  ██╗ █████╗ ██████╗ ██╗   ██╗███╗   ██╗██████╗    │
-    │   ██╔══██╗██║╚██╗██╔╝██╔══██╗██╔══██╗██║   ██║████╗  ██║██╔══██╗   │
-    │   ██║  ██║██║ ╚███╔╝ ███████║██████╔╝██║   ██║██╔██╗ ██║██║  ██║   │
-    │   ██║  ██║██║ ██╔██╗ ██╔══██║██╔═══╝ ██║   ██║██║╚██╗██║██║  ██║   │
-    │   ██████╔╝██║██╔╝ ██╗██║  ██║██║     ╚██████╔╝██║ ╚████║██████╔╝   │
-    │   ╚═════╝ ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝      ╚═════╝ ╚═╝  ╚═══╝╚═════╝    │
-    │                                                                         │
-    │                         ${subtitle}                                    │
-    │                                                                         │
-    └─────────────────────────────────────────────────────────────────────────┘
+            .-/+oossssoo+/-.
+        `:+ssssssssssssssssss+:`
+      -+ssssssssssssssssssyyssss+-
+    .ossssssssssssssssssdMMMNysssso.
+   /ssssssssssshdmmNNmmyNMMMMhssssss/
+  +sssssssssshmydMMMMMMMNddddyssssssss+
+ /sssssssshNMMMyhhyyyyhmNMMMNhssssssss/
+.ssssssssdMMMNhsssssssssshNMMMdssssssss.
++sssshhhyNMMNyssssssssssssyNMMMysssssss+
+ossyNMMMNyMMhsssssssssssssshmmmhssssssso
+ossyNMMMNyMMhsssssssssssssshmmmhssssssso
++sssshhhyNMMNyssssssssssssyNMMMysssssss+
+.ssssssssdMMMNhsssssssssshNMMMdssssssss.
+ /sssssssshNMMMyhhyyyyhdNMMMNhssssssss/
+  +sssssssssdmydMMMMMMMMddddyssssssss+
+   /ssssssssssshdmNNNNmyNMMMMhssssss/
+    .ossssssssssssssssssdMMMNysssso.
+      -+sssssssssssssssssyyyssss+-
+        `:+ssssssssssssssssss+:`
+            .-/+oossssoo+/-.
 
 EOF
+        echo "    ${subtitle}"
+    fi
 }
 
 tui_box() {
