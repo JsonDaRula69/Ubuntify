@@ -4,6 +4,9 @@ All notable changes to the Mac Pro 2013 Ubuntu Autoinstall project are documente
 
 ## v0.2.x — TUI Architecture, Agent Mode, and Config System
 
+### v0.2.38 — Fix tui_checklist raw TUI missing /dev/tty
+- fix: tui_checklist raw fallback read from stdin instead of /dev/tty
+
 ### v0.2.37 — Fix tui_menu raw TUI shows numbered menu options
 - fix: tui_menu raw TUI fallback now displays numbered menu options (was showing confirmation dialog)
 

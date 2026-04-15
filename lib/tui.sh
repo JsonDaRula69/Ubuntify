@@ -533,7 +533,7 @@ tui_checklist() {
         echo "" >&2
         echo "Enter numbers to toggle (comma-separated), empty to finish:" >&2
         local choices
-        read -rp "> " choices
+        read -rp "> " choices < /dev/tty
         local result=""
         if [ -n "$choices" ]; then
             local choice
