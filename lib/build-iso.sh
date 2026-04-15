@@ -21,12 +21,7 @@ readonly OUTPUT_DIR="${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
 
 # VM-specific vs production defaults
 if [ "$VM_MODE" -eq 1 ]; then
-    readonly AUTOINSTALL="${PROJECT_DIR}/vm-test/autoinstall-vm.yaml"
-    if [ ! -f "$AUTOINSTALL" ]; then
-        echo "[FATAL] VM autoinstall template not found: $AUTOINSTALL" >&2
-        echo "        Generate it with: sudo ./lib/build-iso.sh --vm" >&2
-        exit 1
-    fi
+    readonly AUTOINSTALL=""
     readonly OUTPUT_ISO="${OUTPUT_DIR}/ubuntu-vmtest.iso"
     readonly STAGING="/tmp/vmtest-iso-staging"
     readonly VM_PREFIX="[build-vm]"
@@ -45,6 +40,7 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; }
 die()   { error "$1"; exit 1; }
 
 source "${LIB_DIR}/dryrun.sh"
+source "${LIB_DIR}/autoinstall.sh"
 
 cleanup() {
     local exit_code=$?
@@ -70,7 +66,7 @@ echo "========================================="
 echo ""
 
 [ -f "$BASE_ISO" ] || die "Base ISO not found: $BASE_ISO"
-[ -f "$AUTOINSTALL" ] || die "autoinstall.yaml not found: $AUTOINSTALL"
+[ "$VM_MODE" -eq 0 ] && [ ! -f "$AUTOINSTALL" ] && die "autoinstall.yaml not found: $AUTOINSTALL"
 [ -d "$PKGS_DIR" ] || die "packages/ directory not found: $PKGS_DIR"
 mkdir -p "$OUTPUT_DIR"
 
@@ -110,23 +106,37 @@ dry_run_exec "Setting write permissions on extracted files" \
 
 log "[3/5] Overlaying custom files..."
 
-cp "$AUTOINSTALL" "$STAGING/iso_root/autoinstall.yaml"
-
 mkdir -p "$STAGING/iso_root/cidata"
-cp "$AUTOINSTALL" "$STAGING/iso_root/cidata/user-data"
+mkdir -p "$STAGING/iso_root/macpro-pkgs"
+
 if [ "$VM_MODE" -eq 1 ]; then
+    # Generate VM autoinstall YAML using generate_autoinstall (ethernet, full-disk)
+    # Use deploy.conf values if available, otherwise fall back to VM defaults
+    _VM_USERNAME="${USERNAME:-teja}"
+    _VM_REALNAME="${REALNAME:-VM Test User}"
+    _VM_PASSWD_HASH="${PASSWORD_HASH:-\$6\$rounds=656000\$TejaTestHashForVM123456}"
+    _VM_HOSTNAME="${HOSTNAME:-macpro-vmtest}"
+    _VM_WHURL="${WHURL:-http://10.0.2.2:8081/webhook}"
+    _VM_SSH_KEYS="${SSH_KEYS:-}"
+    generate_autoinstall "$STAGING/iso_root/autoinstall.yaml" fulldisk ethernet || \
+        die "Failed to generate VM autoinstall configuration"
+    cp "$STAGING/iso_root/autoinstall.yaml" "$STAGING/iso_root/cidata/user-data"
     echo "instance-id: vmtest-i1" > "$STAGING/iso_root/cidata/meta-data"
+    cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || die "Failed to copy .deb packages"
+    mkdir -p "$STAGING/iso_root/macpro-pkgs/dkms-patches"
+    cp "${PKGS_DIR}/dkms-patches/"*.patch "$STAGING/iso_root/macpro-pkgs/dkms-patches/" 2>/dev/null || true
+    cp "${PKGS_DIR}/dkms-patches/series" "$STAGING/iso_root/macpro-pkgs/dkms-patches/" 2>/dev/null || true
 else
+    cp "$AUTOINSTALL" "$STAGING/iso_root/autoinstall.yaml" || \
+        die "autoinstall.yaml not found: $AUTOINSTALL"
+    cp "$AUTOINSTALL" "$STAGING/iso_root/cidata/user-data"
     echo "instance-id: macpro-linux-i1" > "$STAGING/iso_root/cidata/meta-data"
+    cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || die "Failed to copy .deb packages"
+    mkdir -p "$STAGING/iso_root/macpro-pkgs/dkms-patches"
+    cp "${PKGS_DIR}/dkms-patches/"*.patch "$STAGING/iso_root/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS patches"
+    cp "${PKGS_DIR}/dkms-patches/series" "$STAGING/iso_root/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS series file"
 fi
 touch "$STAGING/iso_root/cidata/vendor-data"
-
-mkdir -p "$STAGING/iso_root/macpro-pkgs"
-cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || die "Failed to copy .deb packages"
-
-mkdir -p "$STAGING/iso_root/macpro-pkgs/dkms-patches"
-cp "${PKGS_DIR}/dkms-patches/"*.patch "$STAGING/iso_root/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS patches"
-cp "${PKGS_DIR}/dkms-patches/series" "$STAGING/iso_root/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS series file"
 
 if [ "$VM_MODE" -eq 1 ]; then
     cat > "$STAGING/grub.cfg" << 'GRUBEOF'

@@ -1090,7 +1090,7 @@ manage_menu() {
         printf '    > '
 
         local choice_num
-        read -r choice_num
+        read -r choice_num < /dev/tty
         case "$choice_num" in
             1) echo "sysinfo" ;;
             2) echo "kernel" ;;
@@ -1152,7 +1152,7 @@ menu_kernel() {
         printf '    > '
 
         local choices
-        read -r choices
+        read -r choices < /dev/tty
         if [ -z "$choices" ]; then
             return 1
         fi
