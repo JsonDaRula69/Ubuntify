@@ -112,9 +112,9 @@ mkdir -p "$STAGING/iso_root/macpro-pkgs"
 if [ "$VM_MODE" -eq 1 ]; then
     # Generate VM autoinstall YAML using generate_autoinstall (ethernet, full-disk)
     # Use deploy.conf values if available, otherwise fall back to VM defaults
-    _VM_USERNAME="${USERNAME:-teja}"
+    _VM_USERNAME="${USERNAME:-ubuntu}"
     _VM_REALNAME="${REALNAME:-VM Test User}"
-    _VM_PASSWD_HASH="${PASSWORD_HASH:-\$6\$rounds=656000\$TejaTestHashForVM123456}"
+    _VM_PASSWD_HASH="${PASSWORD_HASH:-$(openssl passwd -6 "ubuntu" 2>/dev/null || echo "*")}"
     _VM_HOSTNAME="${HOSTNAME:-macpro-vmtest}"
     _VM_WHURL="${WHURL:-http://10.0.2.2:8081/webhook}"
     _VM_SSH_KEYS="${SSH_KEYS:-}"
