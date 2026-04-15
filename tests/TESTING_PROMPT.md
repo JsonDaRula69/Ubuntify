@@ -8,7 +8,10 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
 
 - [Phase 0: Codebase Architecture Model](#phase-0-codebase-architecture-model)
 - [Phase 1: Static Code Analysis](#phase-1-static-code-analysis)
+  - [1.1.1 TUI Module Raw Fallback Audit](#111-tui-module-raw-fallback-audit)
 - [Phase 2: Functional Behavior Testing](#phase-2-functional-behavior-testing)
+  - [2.8 TUI Interactive Prompt Testing](#28-tui-interactive-prompt-testing)
+  - [2.9 Option Selection Flow Pathway Tracing](#29-option-selection-flow-pathway-tracing)
 - [Phase 3: Integration and System Testing](#phase-3-integration-and-system-testing)
 - [Phase 4: Best Practices and Patterns](#phase-4-best-practices-and-patterns)
 - [Phase 5: Execution and Validation](#phase-5-execution-and-validation)
@@ -102,6 +105,40 @@ Run formatting validation: `shfmt -i 2 -ci -bn -d`
 Run Node.js syntax validation on macpro-monitor/server.js (`node --check`)
 Document EVERY warning, error, and suggestion — do not filter
 Classify each finding as P0/P1/P2/P3
+
+### 1.1.1 TUI Module Raw Fallback Audit
+lib/tui.sh contains multi-backend TUI functions (dialog, whiptail, raw). The raw fallback is the most error-prone — it is the code path executed when neither dialog nor whiptail is available. Copy-paste contamination between function fallbacks has caused P1 bugs. For each function, verify:
+
+**Contamination check** — grep for function-crossing patterns that should NOT appear outside their respective fallbacks:
+- `grep -n "Proceed\?" lib/tui.sh` — "Proceed?" should ONLY appear in tui_confirm raw fallback
+- `grep -n "yes/no" lib/tui.sh` — "yes/no" prompt should ONLY appear in tui_confirm raw fallback
+- `grep -n "Press Enter" lib/tui.sh` — "Press Enter to continue" should ONLY appear in tui_msgbox raw fallback
+- `grep -n '\$message' lib/tui.sh` — `$message` is a tui_confirm parameter; `$description` is a tui_menu parameter; verify each usage is in the correct function
+
+**Variable scope check** — for each raw fallback branch (else branch after dialog/whiptail checks):
+- tui_menu: uses `$description` (NOT `$message`)
+- tui_confirm: uses `$message` (NOT `$description`)
+- tui_input: uses `$label`, `$default_value`
+- tui_password: uses `$label`, reads with `IFS= read -rs`
+- tui_checklist: uses `$description`, reads from `/dev/tty`
+- tui_msgbox: uses `$message`
+- tui_progress: output-only, no input
+- tui_tailbox: uses `$title`, `$filepath`
+
+**/dev/tty consistency check** — verify ALL raw input functions read from /dev/tty:
+- `grep -n 'read.*< /dev/tty' lib/tui.sh` — should find exactly 6 matches (tui_menu, tui_confirm, tui_msgbox, tui_input, tui_password, tui_checklist)
+- tui_progress and tui_tailbox are output-only and should NOT read from /dev/tty
+- Any function reading from stdin (`read -rp`) without `< /dev/tty` is a P1 bug — stdin is consumed by heredoc/pipe in scripted contexts
+
+**Return type check** — verify raw fallbacks return expected types:
+- tui_menu returns: tag string (e.g., "existing", "generate", "skip")
+- tui_confirm returns: 0 (yes) or 1 (no)
+- tui_input returns: user-entered string
+- tui_password returns: user-entered password
+- tui_checklist returns: space-separated tag string
+- tui_msgbox returns: nothing (displays and exits)
+
+**set -u compatibility check** — source lib/tui.sh with `set -u` active, call each function with test args. Any "unbound variable" error indicates a missing local declaration or wrong parameter name in a fallback branch.
 
 ### 1.2 Variable and Scope Analysis
 Audit ALL variable declarations (local, readonly, declare, export)
@@ -302,6 +339,135 @@ Test the WiFi connectivity verification circuit breaker that prevents disk wipe 
 - Test what happens when WiFi interface is detected but DHCP fails
 - Verify `grep -q "inet "` checks exclude `inet 169.254.` per project constraint
 - Verify POSIX `if ! cmd1 || cmd2` correctly means `(!cmd1) || cmd2` — both failure modes caught
+
+### 2.8 TUI Interactive Prompt Testing
+Test TUI functions with actual interactive input (requires keyboard, cannot be piped). The raw TUI backend (`TUI_BACKEND=raw`) is the fallback when dialog/whiptail are unavailable and is the most bug-prone code path.
+
+**Menu option selection test** (tui_menu raw fallback):
+```
+TUI_BACKEND=raw ./prepare-deployment.sh --help 2>&1 | head -5
+# Should show: "=== Mac Pro 2013 Ubuntu Deployment ===" and "Select operation mode:"
+# Should show numbered options: "1) Deploy", "2) Manage", "3) Revert Failed Deploy", "4) Exit"
+# Should show: "Enter choice [1-4]:"
+```
+Test: `echo "1" | ./prepare-deployment.sh` — should enter Deploy flow (not crash, not show "yes/no" prompt)
+
+**SSH Key Configuration menu test** (first-run config flow):
+```
+TUI_BACKEND=raw source lib/colors.sh lib/tui.sh 2>/dev/null
+echo "existing" | tui_menu "SSH Key Configuration" "Choose how to provide SSH public key:" \
+    "Provide existing key" "existing" "Generate new key" "generate" "Skip SSH setup" "skip"
+# Should display: "=== SSH Key Configuration ===", description, "1) Provide existing key", "2) Generate new key", "3) Skip SSH setup"
+# Should show: "Enter choice [1-3]:"
+# Should return: "existing" (the tag value, NOT "yes" or "no")
+```
+
+**Checklist selection test** (tui_checklist raw fallback):
+- Verify numbered options are displayed with checkbox state
+- Verify comma-separated input works: `echo "1,3" | tui_checklist ...`
+- Verify /dev/tty read (not stdin — test by running from script with piped input)
+
+**Error path tests**:
+- Enter invalid choice: `echo "99" | tui_menu ...` — should re-prompt with error
+- Enter empty input on tui_input: should use default value
+- Enter empty password on tui_password: should use empty value
+- Keyboard interrupt (Ctrl-C) during tui_input/tui_password: should exit cleanly
+
+### 2.9 Option Selection Flow Pathway Tracing
+Every menu choice, checklist selection, confirmation, and input value flows through a chain: TUI function → caller → conditional logic → next step. Trace EVERY selection pathway end-to-end to verify the resolved behavior matches the user's expectation.
+
+**Trace methodology**: For each TUI call site in prepare-deployment.sh, document: (1) which TUI function is called, (2) what the expected return type is, (3) how the return value is used, (4) what the final resolved behavior is.
+
+**Deploy mode menu** (tui_menu, tag → case dispatch):
+```
+Line 764: choice=$(tui_menu "Mac Pro 2013 Ubuntu Deployment" "Select operation mode:" ...)
+  → returns tag: "deploy", "manage", "revert", "exit"
+  → Line 766: case "$choice" in deploy|...) menu_deploy ;;
+  → Line 775: case "$choice" in esp|usb|manual|vm) menu_deploy "$choice" ;;
+  → ...
+  Verify: user selects "1" → gets "Deploy" → gets deployment method submenu
+  Verify: each tag maps to the correct function with correct arguments
+```
+
+**SSH key configuration flow** (tui_menu → conditional):
+```
+Line 411: choice=$(tui_menu "SSH Key Configuration" ...)
+  → returns tag: "existing", "generate", "skip"
+  → Line 415: case "$choice" in
+      existing) prompt_existing_key ;;
+      generate) prompt_generate_key ;;
+      skip) ... ;; esac
+  Verify: "existing" → scans ~/.ssh/*.pub → if none found → warns user
+  Verify: "generate" → prompts key type → runs ssh-keygen → saves to ~/.ssh/macpro_ubuntu_*
+  Verify: "skip" → skips SSH setup → warns about console access
+```
+
+**Kernel management submenu** (tui_menu, tag → multi-step confirm):
+```
+Line 1064: choice=$(tui_menu "Kernel Management" ...)
+  → returns tag: "status", "pin", "unpin", "update", "security", "back"
+  → Line 1072: case "$choice" in
+      pin) if tui_confirm "Pin Kernel" ...; then remote_kernel_repin ...; fi ;;
+      unpin) if tui_confirm "Unpin Kernel" ...; then remote_kernel_unpin ...; fi ;;
+      ...
+  Verify: "pin" → shows tui_confirm dialog → on yes → calls remote_kernel_repin
+  Verify: "unpin" → shows tui_confirm dialog → on yes → calls remote_kernel_unpin
+  Verify: each destructive operation (pin/unpin/update/security) requires tui_confirm "yes"
+  Verify: read-only operations (status) do NOT require confirmation
+```
+
+**WiFi/Driver submenu** (tui_menu, destructive with confirm):
+```
+Line 1126: choice=$(tui_menu "WiFi/Driver" ...)
+  → Line 1131: case "$choice" in
+      status) remote_driver_status ;;  # no confirm
+      rebuild) if tui_confirm "Rebuild Driver" ...; then remote_driver_rebuild ...; fi ;;
+      back) return ;;
+  Verify: "rebuild" requires explicit confirm before calling remote function
+```
+
+**Storage submenu** (tui_menu, ERASE is destructive):
+```
+Line 1156: choice=$(tui_menu "Storage" ...)
+  → Line 1161: case "$choice" in
+      disk) remote_get_info ... ;;  # read-only, no confirm
+      erase) if tui_confirm "ERASE macOS" "WARNING: This will DELETE..."; then remote_erase_macos ...; fi ;;
+  Verify: "erase" shows explicit warning in tui_confirm, user must type "yes" to proceed
+```
+
+**Password input flow** (tui_password → validation):
+```
+prompt_config: tui_password "Password" "Enter password for $USERNAME:"
+  → returns: password string (raw, may be empty)
+  → prompt_config: if [ -z "$PASS" ]; then tui_password "Confirm Password" ...; fi
+  → if [ "$PASS" != "$CONFIRM" ]; then echo "[FATAL] Passwords do not match" ...; fi
+  Verify: password mismatch → FATAL, does not continue
+  Verify: password match → proceeds to next step (SSH config)
+```
+
+**Tracing requirements** — for each flow pathway:
+1. List all TUI functions called in order
+2. List all expected return types (tag string, boolean via tui_confirm, string via tui_input, password via tui_password)
+3. List all conditional branches (case statements, if statements)
+4. For each branch, document the final resolved behavior (what actually happens)
+5. Flag any pathway where: the return type doesn't match the caller's expectation, or the branch logic seems wrong
+
+**Automated trace** (grep + sed):
+```bash
+# Extract all tui_* calls and their immediate context
+grep -n 'tui_menu\|tui_confirm\|tui_input\|tui_password\|tui_checklist\|tui_msgbox' prepare-deployment.sh | \
+  grep -A3 '$(tui_menu\||| tui_confirm\|if.*tui_confirm\|tui_input\|tui_password\|tui_checklist'
+
+# For each tui_menu call, verify the returned tag is used in a case statement with matching values
+```
+
+**Key invariants to verify for every flow**:
+- Menu tag values in `tui_menu` calls match the `case` statements that consume them
+- All destructive operations (APFS resize, ESP create, kernel pin/unpin/update, macOS erase) are gated by `tui_confirm`
+- All tui_menu callers capture output as `choice=$(tui_menu ...)` — NOT as `if tui_menu ...`
+- All tui_confirm callers use it as `if tui_confirm ...` or `||` — NOT capturing output
+- tui_input and tui_password results are checked for emptiness before use
+- Back/exit choices always return from the function or exit the script, never fall through
 
 ---
 

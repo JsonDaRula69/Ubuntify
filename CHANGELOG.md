@@ -4,6 +4,11 @@ All notable changes to the Mac Pro 2013 Ubuntu Autoinstall project are documente
 
 ## v0.2.x — TUI Architecture, Agent Mode, and Config System
 
+### v0.2.39 — Enhance TESTING_PROMPT.md with TUI audit and flow tracing
+- docs: add 1.1.1 TUI raw fallback audit (contamination, variable scope, /dev/tty, return types)
+- docs: add 2.8 TUI interactive prompt testing section
+- docs: add 2.9 option selection flow pathway tracing section
+
 ### v0.2.38 — Fix tui_checklist raw TUI missing /dev/tty
 - fix: tui_checklist raw fallback read from stdin instead of /dev/tty
 
