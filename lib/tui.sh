@@ -141,7 +141,7 @@ tui_menu() {
         trap - ERR
         echo "" >&2
         echo "=== $title ===" >&2
-        echo -e "$message" >&2
+        echo -e "$description" >&2
         echo "" >&2
         local response
         while true; do
