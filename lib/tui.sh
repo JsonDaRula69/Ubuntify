@@ -555,37 +555,21 @@ tui_checklist() {
 
 tui_ascii_header() {
     local subtitle="${1:-Mac Pro Conversion and Management Tool}"
-    if command -v neofetch >/dev/null 2>&1; then
-        neofetch --ascii_distro ubuntu --ascii_colors 1 --no_info 2>/dev/null | head -20
-        echo ""
-        echo "    ${subtitle}"
+    echo ""
+    if command -v figlet >/dev/null 2>&1; then
+        figlet -f slant "Ubuntify" 2>/dev/null | sed 's/^/    /'
     else
         cat << 'EOF'
-
-            .-/+oossssoo+/-.
-        `:+ssssssssssssssssss+:`
-      -+ssssssssssssssssssyyssss+-
-    .ossssssssssssssssssdMMMNysssso.
-   /ssssssssssshdmmNNmmyNMMMMhssssss/
-  +sssssssssshmydMMMMMMMNddddyssssssss+
- /sssssssshNMMMyhhyyyyhmNMMMNhssssssss/
-.ssssssssdMMMNhsssssssssshNMMMdssssssss.
-+sssshhhyNMMNyssssssssssssyNMMMysssssss+
-ossyNMMMNyMMhsssssssssssssshmmmhssssssso
-ossyNMMMNyMMhsssssssssssssshmmmhssssssso
-+sssshhhyNMMNyssssssssssssyNMMMysssssss+
-.ssssssssdMMMNhsssssssssshNMMMdssssssss.
- /sssssssshNMMMyhhyyyyhdNMMMNhssssssss/
-  +sssssssssdmydMMMMMMMMddddyssssssss+
-   /ssssssssssshdmNNNNmyNMMMMhssssss/
-    .ossssssssssssssssssdMMMNysssso.
-      -+sssssssssssssssssyyyssss+-
-        `:+ssssssssssssssssss+:`
-            .-/+oossssoo+/-.
-
+    _   _ _                 _   _  __
+   | | | | |__  _   _ _ __ | |_(_)/ _|_   _
+   | |_| | '_ \| | | | '_ \| __| | |_| | | |
+   |  _  | |_) | |_| | | | | |_| |  _| |_| |
+   |_| |_|_.__/ \__,_|_| |_|\__|_|_|  \__, |
+                                      |___/
 EOF
-        echo "    ${subtitle}"
     fi
+    echo ""
+    echo "    ${subtitle}"
 }
 
 tui_box() {

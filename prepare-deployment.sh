@@ -784,7 +784,7 @@ select_mode() {
         printf '    > '
 
         local choice_num
-        read -r choice_num
+        read -r choice_num < /dev/tty
         case "$choice_num" in
             1) echo "deploy" ;;
             2) echo "manage" ;;

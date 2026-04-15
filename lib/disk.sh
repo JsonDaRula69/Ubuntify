@@ -152,39 +152,46 @@ create_esp_partition() {
     EXISTING_ESP=$(diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
     if [ -n "$EXISTING_ESP" ]; then
         log "Removing existing $ESP_NAME partition /dev/$EXISTING_ESP..."
-        retry_diskutil unmount "/dev/$EXISTING_ESP" 2>/dev/null || true
-        retry_diskutil eraseVolume free none "/dev/$EXISTING_ESP" 2>/dev/null || warn "Could not remove existing ESP"
+        dry_run_exec "Remove existing ESP partition /dev/$EXISTING_ESP" \
+            retry_diskutil unmount "/dev/$EXISTING_ESP" 2>/dev/null || true
+        dry_run_exec "Erase ESP partition /dev/$EXISTING_ESP to free space" \
+            retry_diskutil eraseVolume free none "/dev/$EXISTING_ESP" 2>/dev/null || warn "Could not remove existing ESP"
         sleep 1
     fi
 
     local BEFORE_PARTS AFTER_PARTS ESP_MOUNT
     BEFORE_PARTS=$(diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
-    dry_run_exec "Create ESP partition on $INTERNAL_DISK" \
-        retry_diskutil addPartition "$INTERNAL_DISK" %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% "$ESP_SIZE" || \
-        die "Failed to create ESP partition with EFI System Partition type"
-    eval "$_esp_created_name=1"
-    sleep 2
-    AFTER_PARTS=$(diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
-    local _esp_device_val
-    _esp_device_val=$(comm -13 <(echo "$BEFORE_PARTS") <(echo "$AFTER_PARTS") | head -1)
-    eval "$_esp_device_name=\"\$_esp_device_val\""
-    [ -n "$_esp_device_val" ] || die "Cannot identify newly created ESP partition"
-
-    log "ESP partition candidate: /dev/$_esp_device_val"
-
-    # Format as FAT32 with newfs_msdos
-    newfs_msdos -F 32 -v "$ESP_NAME" "/dev/$_esp_device_val" || die "Failed to format ESP as FAT32"
-    sleep 1
-
-    # Mount the freshly formatted ESP
-    retry_diskutil mount "/dev/$_esp_device_val" 2>/dev/null || true
-    ESP_MOUNT="/Volumes/$ESP_NAME"
-    if [ ! -d "$ESP_MOUNT" ]; then
-        ESP_MOUNT=$(diskutil info "/dev/$_esp_device_val" 2>/dev/null | grep "Mount Point" | awk '{$1=$2=""; print substr($0,3)}' | sed 's/^[[:space:]]*//' || true)
+    if [ "${DRY_RUN:-0}" -eq 1 ]; then
+        echo "[DRY-RUN] Would: addPartition → identify → newfs_msdos → mount ESP"
+        eval "$_esp_created_name=1"
+        eval "$_esp_device_name=\"disk0sN\""
+        echo "/Volumes/${ESP_NAME}"
+        return 0
     fi
-    [ -d "$ESP_MOUNT" ] || die "ESP not mounted after format"
-
-    echo "$ESP_MOUNT"
+    if retry_diskutil addPartition "$INTERNAL_DISK" %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% "$ESP_SIZE"; then
+        sleep 2
+        AFTER_PARTS=$(diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
+        _esp_device_val=$(comm -13 <(echo "$BEFORE_PARTS") <(echo "$AFTER_PARTS") | head -1)
+        if [ -z "$_esp_device_val" ]; then
+            die "Cannot identify newly created ESP partition"
+        fi
+        log "ESP partition candidate: /dev/$_esp_device_val"
+        newfs_msdos -F 32 -v "$ESP_NAME" "/dev/$_esp_device_val" || die "Failed to format ESP as FAT32"
+        sleep 1
+        retry_diskutil mount "/dev/$_esp_device_val" 2>/dev/null || true
+        eval "$_esp_created_name=1"
+        eval "$_esp_device_name=\"\$_esp_device_val\""
+        ESP_MOUNT="/Volumes/$ESP_NAME"
+        if [ ! -d "$ESP_MOUNT" ]; then
+            ESP_MOUNT=$(diskutil info "/dev/$_esp_device_val" 2>/dev/null | grep "Mount Point" | awk '{$1=$2=""; print substr($0,3)}' | sed 's/^[[:space:]]*//' || true)
+        fi
+        [ -d "$ESP_MOUNT" ] || die "ESP not mounted after format"
+        echo "$ESP_MOUNT"
+    else
+        eval "$_esp_created_name=0"
+        eval "$_esp_device_name=\"\""
+        die "Failed to create ESP partition with EFI System Partition type"
+    fi
 }
 
 extract_iso_to_esp() {
