@@ -139,33 +139,18 @@ tui_menu() {
         fi
     else
         trap - ERR
-        echo ""
-        echo "=== $title ==="
-        echo "$description"
-        echo ""
-        local idx=1
-        local tags=()
-        while [ $# -ge 2 ]; do
-            echo "  $idx) $1"
-            tags+=("$2")
-            shift 2
-            idx=$((idx + 1))
-        done
-        echo ""
-        local choice
+        echo "" >&2
+        echo "=== $title ===" >&2
+        echo -e "$message" >&2
+        echo "" >&2
+        local response
         while true; do
-            read -rp "Enter choice [1-$((idx - 1))]: " choice
-            case "$choice" in
-                ''|*[!0-9]*)
-                    echo "Invalid choice. Please enter a number."
-                    continue
-                    ;;
+            read -rp "Proceed? (yes/no): " response < /dev/tty
+            case "$response" in
+                yes|y|Y) return 0 ;;
+                no|n|N) return 1 ;;
             esac
-            if [ "$choice" -ge 1 ] && [ "$choice" -lt "$idx" ]; then
-                echo "${tags[$((choice - 1))]}"
-                return 0
-            fi
-            echo "Invalid choice."
+            echo "Please enter 'yes' or 'no'." >&2
         done
     fi
 }
@@ -204,18 +189,18 @@ tui_confirm() {
             return 1
         fi
     else
-        echo ""
-        echo "=== $title ==="
-        echo "$message"
-        echo ""
+        echo "" >&2
+        echo "=== $title ===" >&2
+        echo -e "$message" >&2
+        echo "" >&2
         local response
         while true; do
-            read -rp "Proceed? (yes/no): " response
+            read -rp "Proceed? (yes/no): " response < /dev/tty
             case "$response" in
                 yes|y|Y) return 0 ;;
                 no|n|N) return 1 ;;
             esac
-            echo "Please enter 'yes' or 'no'."
+            echo "Please enter 'yes' or 'no'." >&2
         done
     fi
 }
@@ -241,11 +226,11 @@ tui_msgbox() {
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
         whiptail --backtitle "$TUI_BACKTITLE" --title "$title" --msgbox "$message" "$height" "$width" 2>/dev/null || true
     else
-        echo ""
-        echo "=== $title ==="
-        echo "$message"
-        echo ""
-        read -rp "Press Enter to continue..."
+        echo "" >&2
+        echo "=== $title ===" >&2
+        echo -e "$message" >&2
+        echo "" >&2
+        read -rp "Press Enter to continue..." < /dev/tty
     fi
 }
 
@@ -300,10 +285,11 @@ tui_input() {
         fi
     else
         trap - ERR
-        echo ""
-        echo "=== $title ==="
+        echo "" >&2
+        echo "=== $title ===" >&2
+        printf '%s [%s]: ' "$label" "$default_value" >&2
         local result
-        read -rp "$label [$default_value]: " result
+        IFS= read -r result < /dev/tty
         [ -z "$result" ] && result="$default_value"
         echo "$result"
         return 0
@@ -360,10 +346,18 @@ tui_password() {
     else
         trap - ERR
         echo ""
-        echo "=== $title ==="
+        echo "=== $title ===" >&2
+        local tmpfile
+        local pass
+        tmpfile=$(_tui_mktemp)
+        printf '%s' "$label: " >&2
+        IFS= read -rs pass < /dev/tty
+        printf '\n' >&2
+        echo "$pass" > "$tmpfile"
         local result
-        read -rsp "$label: " result
-        echo "" >&2
+        result=$(cat "$tmpfile")
+        rm -f "$tmpfile"
+        trap - ERR
         echo "$result"
         return 0
     fi
@@ -427,7 +421,7 @@ tui_tailbox() {
     if [ "$TUI_BACKEND" = "dialog" ] && [ "$TUI_HAS_TAILBOX" -eq 1 ]; then
         dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --tailbox "$filepath" "$height" "$width" 2>/dev/null || true
     else
-        echo "=== $title === (refreshing every 1 second, press 'q' to exit)"
+        echo "=== $title === (refreshing every 1 second, press 'q' to exit)" >&2
         less +F "$filepath" 2>/dev/null || tail -f "$filepath"
     fi
 }
@@ -486,22 +480,22 @@ tui_checklist() {
         fi
     else
         trap - ERR
-        echo ""
-        echo "=== $title ==="
-        echo "$description"
-        echo ""
+        echo "" >&2
+        echo "=== $title ===" >&2
+        echo -e "$description" >&2
+        echo "" >&2
         local idx=1
         local tags=()
         local states=()
         while [ $# -ge 3 ]; do
-            echo "  $idx) [$3] $1"
+            echo "  $idx) [$3] $1" >&2
             tags+=("$2")
             states+=("$3")
             shift 3
             idx=$((idx + 1))
         done
-        echo ""
-        echo "Enter numbers to toggle (comma-separated), empty to finish:"
+        echo "" >&2
+        echo "Enter numbers to toggle (comma-separated), empty to finish:" >&2
         local choices
         read -rp "> " choices
         local result=""
@@ -511,6 +505,8 @@ tui_checklist() {
                 if [ "$choice" -ge 1 ] && [ "$choice" -lt "$idx" ] 2>/dev/null; then
                     [ -n "$result" ] && result="$result "
                     result="$result${tags[$((choice - 1))]}"
+                else
+                    echo "Invalid choice: $choice" >&2
                 fi
             done
         fi

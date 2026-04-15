@@ -50,9 +50,12 @@ export CONFIRM_YES
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
 OUTPUT_DIR_INITIAL="$OUTPUT_DIR"
 CONF_FILE="${OUTPUT_DIR}/deploy.conf"
+# Track whether config was loaded from user's deploy.conf or the example template
+_USING_EXAMPLE_CONF=0
 if [ ! -f "$CONF_FILE" ]; then
     warn "deploy.conf not found — using defaults from deploy.conf.example"
     CONF_FILE="${LIB_DIR}/deploy.conf.example"
+    _USING_EXAMPLE_CONF=1
 fi
 
 # Default values for config keys
@@ -109,6 +112,20 @@ parse_conf() {
     done < "$conf"
 }
 parse_conf "$CONF_FILE" || die "Failed to load $CONF_FILE"
+
+# When using the example template, strip __REPLACE__ placeholder values
+# so prompt_config() correctly sees them as empty and prompts the user
+if [ "$_USING_EXAMPLE_CONF" -eq 1 ]; then
+    for var in USERNAME REALNAME PASSWORD_HASH WIFI_SSID WIFI_PASSWORD; do
+        case "$(eval echo \"\$$var\")" in
+            __REPLACE__|'') eval "$var=\"\"" ;;
+        esac
+    done
+    # SSH_KEYS may contain __REPLACE__ (accumulated from SSH_KEY lines)
+    case "$SSH_KEYS" in
+        *__REPLACE__*) SSH_KEYS="" ;;
+    esac
+fi
 
 # Re-resolve CONF_FILE if OUTPUT_DIR was set in config (different from initial)
 if [ "$OUTPUT_DIR" != "${OUTPUT_DIR_INITIAL:-}" ] && [ -f "$OUTPUT_DIR/deploy.conf" ]; then
@@ -744,11 +761,7 @@ fi
 
 select_mode() {
     local choice
-    choice=$(tui_menu "Mac Pro 2013 Ubuntu Deployment" "Select operation mode:" \
-        "Deploy" "deploy" \
-        "Manage" "manage" \
-        "Revert Failed Deploy" "revert" \
-        "Exit" "exit") || exit 0
+    choice=$(tui_menu "Mac Pro 2013 Ubuntu Deployment" "Select operation mode:" "Deploy" "deploy" "Manage" "manage" "Revert Failed Deploy" "revert" "Exit" "exit") || exit 0
     echo "$choice"
 }
 
@@ -776,15 +789,18 @@ menu_build_iso() {
         return 1
     fi
 
+    echo "[....] Building Ubuntu ISO — this will take 5-10 minutes..." >&2
     log_info "Starting ISO build process..."
     local log_path
     log_path="$(log_get_file_path)"
-    "$LIB_DIR/build-iso.sh" 2>&1 | tee -a "$log_path"
+    "$LIB_DIR/build-iso.sh" 2>&1 | tee -a "$log_path" | tui_progress "Building Ubuntu ISO"
     local build_rc=${PIPESTATUS[0]:-$?}
 
     if [ "$build_rc" -ne 0 ]; then
+        echo "[FAIL] ISO build failed (exit $build_rc)" >&2
         tui_msgbox "Build Failed" "ISO build failed (exit $build_rc).\n\nCheck log: $log_path"
     else
+        echo "[ OK ] ISO build complete" >&2
         tui_msgbox "Build Complete" "ISO built successfully.\n\nOutput: ${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}/ubuntu-macpro.iso"
     fi
 }
@@ -1408,6 +1424,7 @@ run_agent_mode() {
 # ── Main Entry Point ──
 
 main() {
+    # Check for root/sudo — deployment operations require elevated privileges
     # Initialize logging
     log_init
 
@@ -1426,7 +1443,19 @@ main() {
     mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
     decrypt_config "$CONF_FILE"
 
-    if ! prompt_config; then
+    if [ "${AGENT_MODE:-0}" -ne 1 ]; then
+        if [ "$(id -u)" -ne 0 ]; then
+            die "This script must be run as root (use sudo)."
+        fi
+    fi
+
+    # Skip prompt_config for agent remote operations (--operation) - no local config needed.
+    # Required for agent deploy (--method) and all TTY mode operations.
+    local _needs_config=1
+    if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
+        _needs_config=0
+    fi
+    if [ "$_needs_config" -eq 1 ] && ! prompt_config; then
         die "Missing required configuration — check deploy.conf or provide values via CLI flags"
     fi
 

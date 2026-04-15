@@ -81,15 +81,25 @@ _phase_extract_iso() {
     if [ -n "${1:-}" ]; then
         ESP_MOUNT="$1"
     fi
-    retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$ESP_MOUNT" 2>/dev/null || die "Failed to extract ISO contents"
+    log_info "Extracting Ubuntu ISO to ESP... (this may take 2-5 minutes)"
+    log_info "  ISO: $ISO_PATH"
+    log_info "  Target: $ESP_MOUNT"
+    echo "[....] Extracting ISO contents..." >&2
+    if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$ESP_MOUNT" 2>/dev/null; then
+        echo "[FAIL] ISO extraction failed" >&2
+        die "Failed to extract ISO contents"
+    fi
+    echo "[ OK ] ISO extraction complete" >&2
     if ! verify_iso_extraction "$ESP_MOUNT"; then
         warn "ISO extraction verification failed, cleaning and retrying..."
+        echo "[....] Retrying ISO extraction..." >&2
         rm -rf "${ESP_MOUNT:?}"/* 2>/dev/null || true
-        retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$ESP_MOUNT" 2>/dev/null || die "Failed to extract ISO contents (retry)"
-        if ! verify_iso_extraction "$ESP_MOUNT"; then
+        if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$ESP_MOUNT" 2>/dev/null; then
+            echo "[FAIL] ISO extraction failed on retry" >&2
             error "ISO extraction verification failed after retry"
             return 1
         fi
+        echo "[ OK ] ISO extraction complete (retry)" >&2
     fi
 }
 
@@ -100,15 +110,19 @@ _phase_copy_pkgs() {
     fi
     local pkgs_copied=0
     if ! ls "$ESP_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
-        log "Copying driver packages to ESP..."
+        echo "[....] Copying driver packages to ESP..." >&2
         mkdir -p "$ESP_MOUNT/macpro-pkgs"
         cp "$SCRIPT_DIR/packages/"*.deb "$ESP_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
+        if [ "$pkgs_copied" -eq 1 ]; then
+            echo "[ OK ] Driver packages copied ($(ls "$ESP_MOUNT/macpro-pkgs/"*.deb 2>/dev/null | wc -l | tr -d ' ') files)" >&2
+        fi
     fi
     if [ -d "$SCRIPT_DIR/packages/dkms-patches" ] && [ ! -d "$ESP_MOUNT/macpro-pkgs/dkms-patches" ]; then
+        echo "[....] Copying DKMS patches..." >&2
         mkdir -p "$ESP_MOUNT/macpro-pkgs/dkms-patches"
         cp "$SCRIPT_DIR/packages/dkms-patches/"* "$ESP_MOUNT/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS patches — WiFi driver cannot compile without them"
+        echo "[ OK ] DKMS patches copied" >&2
     fi
-    # Verify files exist after copy
     if [ "$pkgs_copied" -eq 1 ] && ! ls "$ESP_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
         error "Package verification failed: no .deb files found after copy"
         return 1
@@ -491,15 +505,22 @@ _phase_extract_iso_usb() {
     if [ -n "${1:-}" ]; then
         USB_MOUNT="$1"
     fi
-    retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null || die "Failed to extract ISO contents"
+    echo "[....] Extracting Ubuntu ISO to USB... (this may take 2-5 minutes)" >&2
+    if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null; then
+        echo "[FAIL] ISO extraction failed" >&2
+        die "Failed to extract ISO contents"
+    fi
+    echo "[ OK ] ISO extraction complete" >&2
     if ! verify_iso_extraction "$USB_MOUNT"; then
         warn "ISO extraction verification failed, cleaning and retrying..."
+        echo "[....] Retrying ISO extraction..." >&2
         rm -rf "${USB_MOUNT:?}"/* 2>/dev/null || true
-        retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null || die "Failed to extract ISO contents (retry)"
-        if ! verify_iso_extraction "$USB_MOUNT"; then
+        if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null; then
+            echo "[FAIL] ISO extraction failed on retry" >&2
             error "ISO extraction verification failed after retry"
             return 1
         fi
+        echo "[ OK ] ISO extraction complete (retry)" >&2
     fi
 }
 
@@ -510,13 +531,18 @@ _phase_copy_pkgs_usb() {
     fi
     local pkgs_copied=0
     if ! ls "$USB_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
-        log "Copying driver packages to USB..."
+        echo "[....] Copying driver packages to USB..." >&2
         mkdir -p "$USB_MOUNT/macpro-pkgs"
         cp "$SCRIPT_DIR/packages/"*.deb "$USB_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
+        if [ "$pkgs_copied" -eq 1 ]; then
+            echo "[ OK ] Driver packages copied ($(ls "$USB_MOUNT/macpro-pkgs/"*.deb 2>/dev/null | wc -l | tr -d ' ') files)" >&2
+        fi
     fi
     if [ -d "$SCRIPT_DIR/packages/dkms-patches" ] && [ ! -d "$USB_MOUNT/macpro-pkgs/dkms-patches" ]; then
+        echo "[....] Copying DKMS patches..." >&2
         mkdir -p "$USB_MOUNT/macpro-pkgs/dkms-patches"
         cp "$SCRIPT_DIR/packages/dkms-patches/"* "$USB_MOUNT/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS patches — WiFi driver cannot compile without them"
+        echo "[ OK ] DKMS patches copied" >&2
     fi
     if [ "$pkgs_copied" -eq 1 ] && ! ls "$USB_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
         error "Package verification failed: no .deb files found after copy"

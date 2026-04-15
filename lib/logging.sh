@@ -118,14 +118,7 @@ log_init() {
             fi
         done
     elif [ "$(uname -s)" = "Darwin" ]; then
-        # macOS environment (testing)
-        for device in /dev/ttys000 /dev/ttys001 /dev/ttys002 /dev/ttys003; do
-            if [ -c "$device" ] && exec 98<>"$device" 2>/dev/null; then
-                LOG_SERIAL_DEVICE="$device"
-                LOG_SERIAL_FD=98
-                break
-            fi
-        done
+        : # Serial detection skipped on macOS (blocking open on USB-CDC devices)
     fi
 
     # Initialize webhook queue
