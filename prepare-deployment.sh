@@ -665,7 +665,7 @@ decrypt_config() {
 show_help() {
     echo "Usage: sudo ./prepare-deployment.sh [OPTIONS]"
     echo ""
-    echo "Mac Pro 2013 Ubuntu Server Deployment Tool v0.2.34"
+    echo "Mac Pro 2013 Ubuntu Server Deployment Tool v0.2.35"
     echo ""
     echo "Options:"
     echo "  --dry-run             Show what would be done without making changes"
@@ -1436,7 +1436,7 @@ main() {
     trap 'cleanup_on_error; exit 130' SIGINT
     trap 'cleanup_on_error; exit 143' SIGTERM
 
-    log_info "Mac Pro 2013 Ubuntu Deployment Tool v0.2.34 starting..."
+    log_info "Mac Pro 2013 Ubuntu Deployment Tool v0.2.35 starting..."
     log_info "Log file: $(log_get_file_path)"
     log_info "TUI backend: $TUI_BACKEND"
 
