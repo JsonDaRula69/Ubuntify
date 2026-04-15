@@ -759,7 +759,7 @@ Verify deploy.conf.example documents ALL keys that parse_conf() accepts
 Verify Exit code documentation in --help matches E_* constants in dryrun.sh
 Verify DKMS patch instructions in AGENTS.md match actual patches in packages/dkms-patches/
 Verify AGENTS.md Kernel Update and macOS Erasure sections cover all manage mode operations from lib/remote.sh
-Verify AGENTS.md agent operations table has NO phantom operations (driver_status, driver_rebuild, erase_macos, apt_enable, apt_disable — these functions DO NOT EXIST)
+Verify AGENTS.md agent operations table has NO phantom operations (driver_status, driver_rebuild, erase_macos, apt_enable, apt_disable — all functions verified to exist in lib/remote.sh at remote_driver_status, remote_driver_rebuild, remote_erase_macos, remote_apt_enable, remote_apt_disable)
 Verify AGENTS.md agent operations table includes health_check and rollback_status (these exist but may be missing)
 Verify documentation does NOT reference --build-iso flag (it does not exist; use `sudo ./lib/build-iso.sh` directly)
 Verify documentation does NOT reference How-to-Update.md or Post-Install.md (they have been deleted; content is in AGENTS.md and README.md)
