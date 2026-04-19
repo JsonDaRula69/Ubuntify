@@ -1605,14 +1605,21 @@ main() {
         tui_ascii_header "Mac Pro Conversion and Management Tool"
     fi
 
-    mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
-    decrypt_config "$CONF_FILE"
+     mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
+     decrypt_config "$CONF_FILE"
 
-    if [ "${AGENT_MODE:-0}" -ne 1 ]; then
-        if [ "$(id -u)" -ne 0 ]; then
-            die "This script must be run as root (use sudo)."
-        fi
-    fi
+     # If no config file exists, ask if we want to set up a new device (TTY mode only)
+     if [ "${AGENT_MODE:-0}" -ne 1 ] && [ ! -f "$CONF_FILE" ]; then
+         if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
+             exit 0
+         fi
+     fi
+
+     if [ "${AGENT_MODE:-0}" -ne 1 ]; then
+         if [ "$(id -u)" -ne 0 ]; then
+             die "This script must be run as root (use sudo)."
+         fi
+     fi
 
     # Skip prompt_config for agent remote operations (--operation) - no local config needed.
     # Required for agent deploy (--method) and all TTY mode operations.
