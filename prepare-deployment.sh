@@ -1583,7 +1583,6 @@ run_agent_mode() {
 }
 
 # ── Main Entry Point ──
-
 main() {
     # Check for root/sudo — deployment operations require elevated privileges
     # Initialize logging
@@ -1605,21 +1604,23 @@ main() {
         tui_ascii_header "Mac Pro Conversion and Management Tool"
     fi
 
-     mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
-     decrypt_config "$CONF_FILE"
+    mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
+    decrypt_config "$CONF_FILE"
 
-     # If no config file exists, ask if we want to set up a new device (TTY mode only)
-     if [ "${AGENT_MODE:-0}" -ne 1 ] && [ ! -f "$CONF_FILE" ]; then
-         if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
-             exit 0
-         fi
-     fi
+    # If no config file exists, ask if we want to set up a new device (TTY mode only)
+    local _first_run=0
+    if [ "${AGENT_MODE:-0}" -ne 1 ] && [ ! -f "$CONF_FILE" ]; then
+        if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
+            exit 0
+        fi
+        _first_run=1
+    fi
 
-     if [ "${AGENT_MODE:-0}" -ne 1 ]; then
-         if [ "$(id -u)" -ne 0 ]; then
-             die "This script must be run as root (use sudo)."
-         fi
-     fi
+    if [ "${AGENT_MODE:-0}" -ne 1 ]; then
+        if [ "$(id -u)" -ne 0 ]; then
+            die "This script must be run as root (use sudo)."
+        fi
+    fi
 
     # Skip prompt_config for agent remote operations (--operation) - no local config needed.
     # Required for agent deploy (--method) and all TTY mode operations.
@@ -1629,6 +1630,22 @@ main() {
     fi
     if [ "$_needs_config" -eq 1 ] && ! prompt_config; then
         die "Missing required configuration — check deploy.conf or provide values via CLI flags"
+    fi
+
+    # If we are configuring a new device for the first time (TTY mode), 
+    # gather deployment options and run deployment directly.
+    if [ "$_first_run" -eq 1 ]; then
+        if ! menu_deploy; then
+            exit 0
+        fi
+        local deploy_rc=0
+        case "$DEPLOY_METHOD" in
+            1) deploy_internal_partition || deploy_rc=$? ;;
+            2) deploy_usb || deploy_rc=$? ;;
+            3) deploy_manual || deploy_rc=$? ;;
+            4) deploy_vm_test || deploy_rc=$? ;;
+        esac
+        exit "$deploy_rc"
     fi
 
     if [ "${AGENT_MODE:-0}" -eq 1 ]; then

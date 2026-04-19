@@ -1,0 +1,35 @@
+<output>
+<compartments>
+<compartment start="416" end="531" title="Improved TUI with ASCII art and hang fix">
+U: ensure the border on the right side is aligned correctly with the end of the top border
+Updated tui_cool_header() to use bigmoney-ne font style with proper centering and aligned borders. Fixed TUI hang after WiFi password entry by changing tui_confirm() to use printf + read < /dev/tty instead of read -rp.
+U: GitHub User name has been updated, apply that change to local repos as well
+Updated GitHub remote from DuckYou696 to JsonDaRula69.
+U: refer to the github CLI
+U: remove the default user name and test hash. These don't need to be there
+Removed hardcoded teja username and TejaTestHashForVM123456 test hash from build-iso.sh VM defaults; now uses ubuntu with dynamically generated password hash.
+U: it hangs after the password was submitted
+Diagnosed and fixed TUI hang in configure_ssh_config() caused by tui_confirm reading from buffered stdin; switched to direct /dev/tty input.
+U: the the figlet font Big Money-ne
+U: here, I can just provide it for you: [ASCII art]
+Implemented Big Money-ne font style ASCII art header with proper centering and box-drawing borders.
+</compartment>
+<compartment start="532" end="549" title="Documented TUI Menu tree behavior">
+U: lets walk through the TUI Menu tree. When the application is first launched, it should first check to see if an existing config file exists. If it does not, it should ask if we are configuring a new device (yes/no). If yes, it should present the different config options (USB, Headless, etc) and then start asking the questions required for config details (User Name, etc)
+Added clarifying comment that config file absence check and new device prompt only applies in TTY mode (interactive user runs), not in agent mode where these prompts are skipped.
+</compartment>
+</compartments>
+<facts>
+<ENVIRONMENT>
+* GitHub repo: https://github.com/JsonDaRula69/Ubuntify
+</ENVIRONMENT>
+<WORKFLOW_RULES>
+* When fixing TUI stdin issues with heredoc-fed functions, read directly from /dev/tty in raw TUI mode to bypass heredoc stdin buffering.
+* In TTY mode with no existing config file, prompt for new device configuration; in agent mode, skip new device prompts.
+</WORKFLOW_RULES>
+</facts>
+<meta>
+<messages_processed>416-551</messages_processed>
+<unprocessed_from>552</unprocessed_from>
+</meta>
+</output>
