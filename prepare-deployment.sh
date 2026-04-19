@@ -1582,6 +1582,53 @@ run_agent_mode() {
     fi
 }
 
+# ── Environment Exploration ──
+explore_environment() {
+    # This function gathers and displays information about the current macOS environment
+    # to help the user make informed decisions about the deployment.
+    
+    local info="=== System Information ===\n"
+    
+    # macOS version
+    info+="macOS Version: $(sw_vers -productName) $(sw_vers -productVersion)\n"
+    info+="Build: $(sw_vers -buildVersion)\n\n"
+    
+    # SIP status
+    local sip_status
+    sip_status=$(csrutil status 2>/dev/null | grep -o 'enabled\|disabled' | head -1 || echo "unknown")
+    info+="SIP Status: ${sip_status^^}\n\n"
+    
+    # Bootloader information
+    info+="=== Bootloader Information ===\n"
+    # Check for rEFInd
+    if [ -d "/Volumes/EFI/EFI/refind" ] || [ -d "/EFI/refind" ]; then
+        info+="rEFInd: Detected\n"
+    else
+        info+="rEFInd: Not found\n"
+    fi
+    
+    # Current boot device via bless
+    local boot_device
+    boot_device=$(bless --info --getboot 2>/dev/null | head -1 || echo "Unable to determine")
+    info+="Current Boot Device (bless): $boot_device\n"
+    
+    # Current startup disk via systemsetup
+    local startup_disk
+    startup_disk=$(systemsetup -getstartupdisk 2>/dev/null | awk -F': ' '{print $2}' || echo "Unable to determine")
+    info+="Startup Disk (systemsetup): $startup_disk\n\n"
+    
+    # Disk space
+    info+="=== Disk Space ===\n"
+    info+="$(df -h /\n\n)"
+    
+    # Partition map
+    info+="=== Partition Map ===\n"
+    info+="$(diskutil list)\n"
+    
+    # Display the information in a message box
+    tui_msgbox "Environment Exploration Results" "$info"
+}
+
 # ── Main Entry Point ──
 main() {
     # Check for root/sudo — deployment operations require elevated privileges
@@ -1604,56 +1651,58 @@ main() {
         tui_ascii_header "Mac Pro Conversion and Management Tool"
     fi
 
-    mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
-    decrypt_config "$CONF_FILE"
+     mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
 
-    # If no config file exists, ask if we want to set up a new device (TTY mode only)
-    local _first_run=0
-    if [ "${AGENT_MODE:-0}" -ne 1 ] && [ ! -f "$CONF_FILE" ]; then
-        if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
-            exit 0
-        fi
-        _first_run=1
-    fi
+     # If no config file exists, ask if we want to set up a new device (TTY mode only)
+     if [ "${AGENT_MODE:-0}" -ne 1 ] && [ ! -f "$CONF_FILE" ]; then
+         if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
+             exit 0
+         fi
+         # Explore current environment to gather system information
+         explore_environment
+         # User confirmed they want to configure a new device - get deployment options first
+         if ! menu_deploy; then
+             exit 0
+         fi
+         # Now gather configuration details for the selected deployment
+         if ! prompt_config; then
+             die "Missing required configuration"
+         fi
+         # Run the selected deployment method
+         local deploy_rc=0
+         case "$DEPLOY_METHOD" in
+             1) deploy_internal_partition || deploy_rc=$? ;;
+             2) deploy_usb || deploy_rc=$? ;;
+             3) deploy_manual || deploy_rc=$? ;;
+             4) deploy_vm_test || deploy_rc=$? ;;
+         esac
+         exit "$deploy_rc"
+     fi
 
-    if [ "${AGENT_MODE:-0}" -ne 1 ]; then
-        if [ "$(id -u)" -ne 0 ]; then
-            die "This script must be run as root (use sudo)."
-        fi
-    fi
+     decrypt_config "$CONF_FILE"
 
-    # Skip prompt_config for agent remote operations (--operation) - no local config needed.
-    # Required for agent deploy (--method) and all TTY mode operations.
-    local _needs_config=1
-    if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
-        _needs_config=0
-    fi
-    if [ "$_needs_config" -eq 1 ] && ! prompt_config; then
-        die "Missing required configuration — check deploy.conf or provide values via CLI flags"
-    fi
+     if [ "${AGENT_MODE:-0}" -ne 1 ]; then
+         if [ "$(id -u)" -ne 0 ]; then
+             die "This script must be run as root (use sudo)."
+         fi
+     fi
 
-    # If we are configuring a new device for the first time (TTY mode), 
-    # gather deployment options and run deployment directly.
-    if [ "$_first_run" -eq 1 ]; then
-        if ! menu_deploy; then
-            exit 0
-        fi
-        local deploy_rc=0
-        case "$DEPLOY_METHOD" in
-            1) deploy_internal_partition || deploy_rc=$? ;;
-            2) deploy_usb || deploy_rc=$? ;;
-            3) deploy_manual || deploy_rc=$? ;;
-            4) deploy_vm_test || deploy_rc=$? ;;
-        esac
-        exit "$deploy_rc"
-    fi
+     # Skip prompt_config for agent remote operations (--operation) - no local config needed.
+     # Required for agent deploy (--method) and all TTY mode operations.
+     local _needs_config=1
+     if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
+         _needs_config=0
+     fi
+     if [ "$_needs_config" -eq 1 ] && ! prompt_config; then
+         die "Missing required configuration — check deploy.conf or provide values via CLI flags"
+     fi
 
-    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
-        run_agent_mode
-        local agent_rc=$?
-        log_shutdown
-        exit "$agent_rc"
-    fi
+     if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+         run_agent_mode
+         local agent_rc=$?
+         log_shutdown
+         exit "$agent_rc"
+     fi
 
     while true; do
         local mode
