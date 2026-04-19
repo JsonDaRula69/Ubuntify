@@ -205,12 +205,8 @@ preflight_checks() {
 
     log "Running on: $(sw_vers -productName) $(sw_vers -productVersion)"
 
-    # Check SIP status
-    local SIP_STATUS
-    SIP_STATUS=$(csrutil status 2>/dev/null | grep -o 'enabled\|disabled' | head -1 || echo "unknown")
-    if [ "$SIP_STATUS" = "enabled" ]; then
-        log_info "SIP is enabled — bless will be attempted but may fail"
-    fi
+     # SIP status check removed per project assumption: SIP always enabled.
+     # Bless failure handling provides generic guidance.
 
     # Check FileVault
     local FV_STATUS

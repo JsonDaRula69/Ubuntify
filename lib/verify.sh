@@ -321,16 +321,8 @@ verify_bless_result() {
     error "verify_bless_result: bless command failed (exit $bless_rc)"
     error "verify_bless_result: $bless_output"
 
-    # Check SIP status
-    local sip_status
-    sip_status=$(csrutil status 2>&1 | grep -i "System Integrity Protection" || echo "unknown")
-
-    if echo "$sip_status" | grep -q "enabled"; then
-        warn "verify_bless_result: SIP is enabled - this prevents bless from setting NVRAM boot variables"
-        warn "verify_bless_result: Workaround: Boot to Recovery Mode (Cmd+R), run 'csrutil enable --without nvram', then reboot and retry"
-    elif echo "$sip_status" | grep -q "disabled"; then
-        warn "verify_bless_result: SIP is disabled, but bless still failed"
-    fi
+    warn "verify_bless_result: Bless failed to set boot device"
+    warn "verify_bless_result: Workaround: Boot to Recovery Mode (Cmd+R), run 'csrutil enable --without nvram', then reboot and retry"
 
     return 1
 }

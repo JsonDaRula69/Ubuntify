@@ -88,8 +88,8 @@ attempt_bless() {
             bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>/dev/null; then
             BLESS_OK=1
         else
-            # SIP blocks NVRAM writes (0xe00002e2) — expected with SIP enabled
-            log "bless --nextonly failed (SIP may block NVRAM writes)"
+     # Bless may fail due to system restrictions
+     log "bless --nextonly failed — boot device must be selected manually"
         fi
     fi
 

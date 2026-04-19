@@ -19,7 +19,7 @@ Automated Ubuntu Server 24.04.4 deployment for Mac Pro 2013 (MacPro6,1) with Bro
 ### Operational Constraints
 - **Keyboard + monitor available** — for boot selection (hold Option at startup)
 - **macOS 12.7.6 running** — accessible via SSH
-- **SIP always enabled** — blocks bless NVRAM writes; boot device selected via keyboard Option key or System Preferences Startup Disk
+- **SIP is always enabled** — blocks bless NVRAM writes; boot device must be selected via keyboard Option key or System Preferences Startup Disk
 - **Dual-boot or full-disk** — dual-boot preserves macOS with `preserve: true`; full-disk wipes everything
 - **MacBook available on network** — can serve as monitoring/webhook endpoint
 
