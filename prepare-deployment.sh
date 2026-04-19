@@ -1587,7 +1587,17 @@ explore_environment() {
     # This function gathers and displays information about the current macOS environment
     # to help the user make informed decisions about the deployment.
     
+    # Get default IP address (try common interfaces)
+    local default_ip
+    default_ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || ipconfig getifaddr en2 2>/dev/null || echo "127.0.0.1")
+    
+    # Prompt for IP address
+    local ip_address
+    ip_address=$(tui_input "IP Address" "Enter the IP address of this Mac Pro:" "$default_ip")
+    [ -z "$ip_address" ] && ip_address="$default_ip"
+    
     local info="=== System Information ===\n"
+    info+="Mac Pro IP Address: $ip_address\n\n"
     
     # macOS version
     info+="macOS Version: $(sw_vers -productName) $(sw_vers -productVersion)\n"
@@ -1643,7 +1653,7 @@ main() {
     trap 'cleanup_on_error; exit 130' SIGINT
     trap 'cleanup_on_error; exit 143' SIGTERM
 
-    log_info "Ubuntify v0.2.55 starting..."
+    log_info "Ubuntify v0.2.56 starting..."
     log_info "Log file: $(log_get_file_path)"
     log_info "TUI backend: $TUI_BACKEND"
 
