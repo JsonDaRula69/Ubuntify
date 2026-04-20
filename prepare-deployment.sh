@@ -1663,8 +1663,8 @@ main() {
 
      mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
 
-     # If no config file exists, ask if we want to set up a new device (TTY mode only)
-     if [ "${AGENT_MODE:-0}" -ne 1 ] && [ ! -f "$CONF_FILE" ]; then
+     # _USING_EXAMPLE_CONF tracks whether user has a real config (CONF_FILE is redirected to example at source time)
+     if [ "${AGENT_MODE:-0}" -ne 1 ] && [ "${_USING_EXAMPLE_CONF:-0}" -eq 1 ]; then
          if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
              exit 0
          fi
