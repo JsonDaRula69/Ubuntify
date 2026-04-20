@@ -12,6 +12,11 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
 - [Phase 2: Functional Behavior Testing](#phase-2-functional-behavior-testing)
   - [2.8 TUI Interactive Prompt Testing](#28-tui-interactive-prompt-testing)
   - [2.9 Option Selection Flow Pathway Tracing](#29-option-selection-flow-pathway-tracing)
+  - [2.10 First-Run Flow Verification](#phase-210-first-run-flow-verification)
+  - [2.11 Sudo File Ownership Audit](#phase-211-sudo-file-ownership-audit)
+  - [2.12 Orphaned and Unused Code Detection](#phase-212-orphaned-and-unused-code-detection)
+  - [2.13 Bash 3.2 Compatibility Verification](#phase-213-bash-32-compatibility-verification)
+  - [2.14 Deployment Method Double-Execution Prevention](#phase-214-deployment-method-double-execution-prevention)
 - [Phase 3: Integration and System Testing](#phase-3-integration-and-system-testing)
 - [Phase 4: Best Practices and Patterns](#phase-4-best-practices-and-patterns)
 - [Phase 5: Execution and Validation](#phase-5-execution-and-validation)
@@ -1018,3 +1023,361 @@ Before completion, verify:
 - [ ] README.md --method values match actual code implementation
 - [ ] deploy.conf.example documents all parse_conf() keys
 - [ ] Documentation accuracy verified against actual code behavior
+- [ ] First-run flow: welcome prompt appears before config detail prompts
+- [ ] First-run flow: deployment method selected before config values collected
+- [ ] First-run flow: all paths exit cleanly (no fallthrough to returning-user code)
+- [ ] Returning-user flow: main menu appears directly (no first-run prompts)
+- [ ] Agent mode: bypasses first-run flow entirely
+- [ ] Flow paths are mutually exclusive — no path can execute another path's code
+- [ ] Sudo file ownership: all file writes under $HOME chowned to SUDO_USER
+- [ ] Sudo file ownership: find ~ -user root returns zero results in user home
+- [ ] Orphan audit: all functions have at least one call site (or documented reason)
+- [ ] Orphan audit: all exported variables are consumed by at least one module
+- [ ] Orphan audit: all config keys parsed are consumed, all consumed keys are parsed
+- [ ] Orphan audit: all lib/ modules have at least one external function call
+- [ ] Bash 3.2: no bash 4.0+ features (local -n, mapfile, declare -A, ${var,,}, etc.)
+- [ ] Platform boundaries: macOS commands not in remote.sh, Linux commands not in host scripts
+- [ ] Function scope: every function classified as collect-only, execute-only, or collect-and-execute
+- [ ] Single-execution: every destructive action runs exactly once per invocation per flow path
+- [ ] Single-execution: collect-and-execute functions don't have callers that also execute the same action
+
+---
+
+## PHASE 2.10: FIRST-RUN FLOW VERIFICATION
+
+This section verifies that the application correctly handles the first-run experience when no existing configuration is found, and that the existing-user flow is not disrupted. The general pattern: **conditional flows must be mutually exclusive** — a first-run user and a returning user must see completely different prompts, with no overlap or leakage.
+
+### 2.10.1 Config File Existence as Flow Switch
+
+Many applications use a "config exists?" check to branch between first-run and returning-user flows. This pattern is fragile because:
+
+- The config file path may be overridden (OUTPUT_DIR, CONF_FILE redirection)
+- The config file may exist but contain placeholder/template values rather than real data
+- Agent mode may need to bypass the first-run flow entirely
+- Multiple scripts in the project may independently check for the config file
+
+**Verify the config-detection pattern in this project:**
+- Is the config file check performed exactly ONCE at startup, with the result stored in a flag variable?
+- Is the flag variable checked consistently at every branch point? Or do some code paths re-check the file directly (creating inconsistency if the file is created mid-session)?
+- When the config file is absent and a template/substitute is used instead, are all "real vs template" differences handled? (e.g., placeholder values that would fail validation if treated as real data)
+- Does agent mode bypass the first-run flow? Verify every flow gate checks both "config absent" AND "not agent mode"
+- If OUTPUT_DIR is overridden, does the config file path re-resolve correctly? Check for circular references
+
+**General test methodology:**
+```bash
+# Test absence of config → first-run flow
+# Test presence of config → returning-user flow
+# Test agent mode + absent config → agent flow (NOT first-run)
+# Test agent mode + present config → agent flow
+# Test config with placeholder values → treated same as absent?
+```
+
+### 2.10.2 First-Run Prompt Ordering Invariants
+
+Any first-run flow must present prompts in a specific logical order. Verify these invariants:
+
+**Invariant 1: Welcome/confirmation before detail collection**
+- A user MUST be asked "Do you want to set up?" BEFORE being asked for username, password, or any technical details
+- Test: Remove config file, run script. The FIRST interactive prompt must be a yes/no confirmation, not a username input
+
+**Invariant 2: Environment context before deployment choices**
+- A user making deployment decisions benefits from seeing their environment info first
+- Test: After confirmation, environment information should be displayed/explorable before the deployment method menu
+
+**Invariant 3: Deployment method before config details**
+- The deployment method (ESP/USB/VM) determines WHICH config values are needed
+- Test: Deployment method selection must occur BEFORE username/password/WiFi prompts
+
+**Invariant 4: No prompt duplication across flow paths**
+- If a function collects user selections AND performs an action, and the caller also performs that same action, the action runs twice
+- Test: For every call from main() to a menu/function, verify the callee's scope (collect-only vs collect-and-execute) and ensure the caller doesn't redundantly execute
+
+**General test methodology — prompt sequence trace:**
+```
+For each entry condition (new user, returning user, agent mode):
+  1. Run the script (or dry-run)
+  2. Record the exact sequence of TUI functions called
+  3. Verify the sequence matches the expected ordering
+  4. Verify no prompt appears in the wrong flow path
+```
+
+### 2.10.3 Flow Path Mutual Exclusivity
+
+When a script has multiple flow paths (first-run, returning-user, agent, revert), they must be **mutually exclusive** — exactly one path runs per invocation.
+
+**Verify mutual exclusivity:**
+- Does every flow path end with `exit` or an explicit `return` that prevents fallthrough to another path?
+- After the FIRST flow path's code block ends, is subsequent code reachable? (It should NOT be if the first path was taken)
+- Trace each flow path from entry to exit — is there any path that "falls through" into a different flow's code?
+
+**General test methodology — exit point audit:**
+```bash
+# For every flow path, identify:
+# 1. Entry condition (the if/elif/case that gates the path)
+# 2. All exit points (exit N, return N, or die)
+# 3. Any code after the exit point in the same scope
+# 4. Whether the exit is unconditional (always taken) or conditional (could be skipped)
+```
+
+### 2.10.4 Environment Information Gathering
+
+Functions that gather and display system information must handle failures gracefully — many system commands may fail or return unexpected output depending on system configuration.
+
+**Verify for every system-info command:**
+- Command not found → graceful fallback (not crash)
+- Command returns non-zero → check stdout (some commands exit 0 on failure with error in stdout)
+- Command returns empty output → sensible default displayed
+- Command returns unexpected format → no crash, display raw or "Unable to determine"
+
+**Cross-check: are any platform-specific commands accidentally used in the wrong context?**
+- macOS-only commands (diskutil, bless, csrutil, sw_vers, systemsetup, ipconfig) should NEVER appear in lib/remote.sh (runs on Linux target)
+- Linux-only commands (dkms, apt, efibootmgr, systemctl) should NEVER appear in prepare-deployment.sh main flow (runs on macOS host)
+
+### 2.10.5 Returning-User Flow Preservation
+
+When adding a first-run flow, the returning-user flow must be preserved unchanged. Verify:
+
+**Regression checklist:**
+- With existing config, the main menu appears directly (no first-run prompts)
+- With existing config, all menu items (Deploy/Manage/Revert/Exit) still work
+- With existing config, missing values in config still trigger prompt_config for those values only
+- The decrypt_config call still runs for returning users
+- The root/permission check still runs in the correct position
+- The main while loop and select_mode() are still reachable
+
+---
+
+## PHASE 2.11: SUDO PRIVILEGE ESCALATION SIDE-EFFECTS AUDIT
+
+When a script runs as root (via sudo or otherwise), any file it creates inherits root ownership. This causes silent failures when user-space tools (SSH, git, shells) refuse to read root-owned files in user directories. This is a **class of bugs** — not a one-off issue.
+
+### 2.11.1 Root-Ownership Contamination Pattern
+
+**The pattern:** Script runs as root → writes files under `$HOME` → files owned by root → user-space tools silently ignore them.
+
+**Common victims:**
+- `~/.ssh/config` — SSH ignores configs owned by wrong user (silent, no error)
+- `~/.ssh/id_*` — SSH refuses to use keys with wrong ownership
+- `~/.gitconfig` — Git may refuse to read root-owned config
+- `~/.ssh/authorized_keys` — SSHd ignores root-owned authorized_keys in user dirs
+- Any dotfile in `$HOME` that tools check ownership on
+
+**Audit methodology for ALL scripts running as root:**
+1. Search for ALL file-write operations under `$HOME`:
+   ```bash
+   grep -n '>>.*\$HOME\|>.*\$HOME\|mkdir.*\$HOME\|cp.*\$HOME\|ssh-keygen.*\$HOME\|touch.*\$HOME' prepare-deployment.sh lib/*.sh
+   ```
+2. For each match, verify `chown "${SUDO_USER:-$USER}"` follows the write
+3. Also check: does `SUDO_USER` exist as a variable? It is set by sudo on most platforms, but verify it's available on the target macOS version
+4. Check for file-move operations (`mv`) that may move a root-owned temp file into a user directory
+
+### 2.11.2 Directory Ownership Chain
+
+When a script creates directories and then files within them:
+- The directory must be chowned BEFORE files are created (or after — but both must be chowned)
+- If the directory is created but the script exits before chown, the user gets a root-owned directory they can't write to
+- Verify: trap/cleanup handlers also chown any partially-created directories
+
+### 2.11.3 Config File and Output Directory Ownership
+
+- `save_config()` writes deploy.conf — verify ownership is set for the non-root user
+- `OUTPUT_DIR` (typically `~/.Ubuntu_Deployment/`) — verify directory and contents are chowned
+- Any generated files (autoinstall.yaml, ISO) written under OUTPUT_DIR — verify ownership
+- Log files written under OUTPUT_DIR — verify ownership
+
+**General test:** Run any script path as root, then `find ~ -user root` — should return zero results in user home directory.
+
+---
+
+## PHASE 2.12: ORPHANED AND UNUSED CODE DETECTION
+
+This section systematically identifies dead code, unreachable paths, and code that was implemented but never wired up. The goal is to find **structural integrity issues** — code that exists but serves no purpose, or code that should exist but was never connected.
+
+### 2.12.1 Function Definition-to-Call Site Audit
+
+**The pattern:** A function is defined but never called from any reachable code path. This indicates either:
+- Dead code from a removed feature → should be deleted
+- An implemented-but-unwired feature → needs wiring or removal
+- A callback target called dynamically → verify the dynamic dispatch actually reaches it
+
+**Audit methodology:**
+1. Extract ALL function definitions: `grep -n '^[a-z_]*()' prepare-deployment.sh lib/*.sh`
+2. For each function, search for call sites across all non-test files
+3. Report functions with ZERO call sites
+4. For dynamic dispatch (case/esac, variable indirection, eval), verify separately:
+   - Every `case` branch maps to a function that exists
+   - Every `--operation` flag maps to a function that exists
+   - Every menu item's action function exists
+
+**Classification of uncalled functions:**
+- **Dead code**: Was used previously but the caller was removed → delete
+- **Unwired implementation**: Implemented but never connected → wire up or delete
+- **Internal helper**: Only called by other orphaned functions → chain removal
+- **Template-embedded**: Defined in a template (e.g., autoinstall YAML) that runs in a different context → document, don't delete
+- **Dynamic dispatch target**: Called via case/esac or eval → verify the dispatch actually reaches it
+
+### 2.12.2 Variable Definition-to-Consumption Audit
+
+**The pattern:** A variable is exported or set but never read by any other module. Exports that aren't consumed are dead surface area — and variables consumed but never set are P1 bugs.
+
+**Audit methodology:**
+1. List all `export` and `readonly` declarations
+2. For each variable, search for read access (not just the declaration line)
+3. Report variables that are set but never read
+4. Report variables that are read but never set (P1 bug)
+5. For exported variables, verify the consuming subprocess actually uses them
+
+**Check for semantically inverted variables:**
+- Variables where the name implies the opposite of the value (e.g., `CRITICAL=false` meaning "is critical" vs "not critical")
+- Verify variable naming matches boolean interpretation at every use site
+
+### 2.12.3 Unreachable Code Path Detection
+
+**The pattern:** Code exists that can never execute in any possible runtime state.
+
+**Systematic checks:**
+- Code after unconditional `exit` or `die` in the same scope
+- Code in an `else` branch where the `if` condition is always true (e.g., after a guard pattern)
+- `case` patterns that are shadowed by earlier matching patterns
+- Functions that are only called from other unreachable functions
+- Guard-protected blocks where the guard is always true on second source (double-source guards)
+
+**Trace-based detection:**
+For each function that contains `exit`, `die`, or `return` with no fallthrough:
+1. Identify all exit points
+2. Check if any code follows an unconditional exit in the same scope
+3. For conditional exits, trace the condition — can it ever be false?
+
+### 2.12.4 Config Key Completeness Audit
+
+**The pattern:** A config key is parsed but never consumed, or a value is consumed but never parsed. Both indicate incomplete wiring.
+
+**Audit methodology:**
+1. List all keys accepted by `parse_conf()`
+2. For each key, trace where the value is consumed after parse_conf
+3. List all values consumed by downstream functions (autoinstall.sh, deploy.sh, etc.)
+4. Cross-reference: every parsed key must have a consumer, every consumed value must have a parser
+5. Check for keys that are used differently in different flow paths (first-run vs returning-user)
+
+### 2.12.5 Module Sourcing Audit
+
+**The pattern:** A module is sourced but none of its functions are ever called, OR a module's functions are called but the module is never sourced.
+
+**For each lib/*.sh module:**
+1. List all functions defined in the module
+2. List all functions called from outside the module
+3. Verify: Is the module sourced by every script that calls its functions?
+4. Verify: If no functions from a module are called externally, is the module dead weight?
+5. Check conditional sourcing: if a module is conditionally sourced, what happens when the condition is false but a function is still called?
+
+---
+
+## PHASE 2.13: BASH 3.2 COMPATIBILITY VERIFICATION
+
+macOS ships with bash 3.2. All scripts must be compatible with this version. This section verifies no bash 4.0+ features are used in the main execution path.
+
+### 2.13.1 Forbidden Feature Audit
+
+Verify NO usage of these bash 4.0+ features anywhere in the project:
+
+| Feature | Bash Version | Replacement |
+|---------|-------------|-------------|
+| `local -n` (namerefs) | 4.3+ | `eval` with validated variable names |
+| `mapfile` / `readarray` | 4.0+ | `while read` loop |
+| Associative arrays `declare -A` | 4.0+ | Case statements or flat files |
+| `${var,,}` / `${var^^}` | 4.0+ | `tr '[:lower:]' '[:upper:]'` |
+| `${var//pattern/replacement}` | — | `sed` or single `${var/pattern/replacement}` |
+| `|&` (pipe stderr) | 4.0+ | `2>&1 |` |
+| `read -N` (exact byte count) | 4.1+ | `dd` or `head -c` |
+| `coproc` | 4.0+ | Background subshells |
+| `|&` combined pipe+redirect | 4.0+ | `2>&1 |` |
+
+**Search patterns:**
+```bash
+grep -rn 'local -n\|mapfile\|readarray\|declare -A\|\${[a-zA-Z_]*,,}\|\${[a-zA-Z_]*^^}\|\${[a-zA-Z_]*//\| |&' prepare-deployment.sh lib/*.sh
+```
+
+### 2.13.2 Platform-Specific Command Boundary Audit
+
+Scripts in this project run on different platforms: macOS (host), Ubuntu installer (dash), Ubuntu target (bash). Commands and syntax must match their execution context.
+
+**Verify command platform boundaries:**
+- macOS-only commands (`diskutil`, `bless`, `csrutil`, `sw_vers`, `systemsetup`, `ipconfig`, `newfs_msdos`, `hdiutil`) MUST NOT appear in lib/remote.sh (runs on Linux)
+- Linux-only commands (`dkms`, `apt-get`, `efibootmgr`, `systemctl`) MUST NOT appear in prepare-deployment.sh main flow (runs on macOS)
+- Every external command must be checked: which platform runs it? Is it available there?
+
+### 2.13.3 Flag Syntax Platform Differences
+
+Some commands use different flag syntax across platforms:
+
+| Command | macOS syntax | Linux syntax | Where to check |
+|---------|-------------|-------------|----------------|
+| `stat` | `stat -f%z` | `stat -c%s` | detect.sh, build-iso.sh |
+| `dd bs=` | `bs=1m` (lowercase) | `bs=1M` (uppercase also works) | Any dd usage |
+| `sed -i` | `sed -i ''` (BSD) | `sed -i` (GNU) | autoinstall.sh |
+| `date` | BSD date | GNU date | Any date usage |
+
+**Audit:** For each command that differs across platforms, verify the script runs on the correct platform version.
+
+---
+
+## PHASE 2.14: ACTION SINGLE-EXECUTION GUARANTEE
+
+This section verifies that every destructive or significant action executes exactly ONCE per user invocation, regardless of which flow path is taken. This is a **class of bug** where a function both collects user choices AND performs the action, and the caller also performs the action — causing double execution.
+
+### 2.14.1 Function Scope Classification
+
+**Every function in the project must be classified into one of these categories:**
+
+| Category | Behavior | Return value |
+|----------|----------|-------------|
+| **Collect-only** | Gathers user input, sets variables | 0=success, 1=cancel; side effects: variable assignments |
+| **Execute-only** | Performs an action using previously-set variables | 0=success, non-zero=failure; side effects: system changes |
+| **Collect-and-execute** | Gathers input AND performs the action | 0=success, 1=cancel; side effects: variable assignments + system changes |
+
+**Audit methodology:**
+1. For every function that interacts with the user (calls tui_*), classify it
+2. For every function that performs system changes (calls diskutil, deploy, etc.), classify it
+3. If a function is "collect-and-execute", trace ALL its callers:
+   - Does the caller also execute the same action after the function returns?
+   - If yes → **double execution**
+   - Verify: the caller's post-call code is compatible with what the callee already did
+
+### 2.14.2 Cross-Path Execution Audit
+
+When multiple flow paths lead to the same action, verify that each path executes the action exactly once.
+
+**Audit methodology:**
+1. List all actions that have significant side effects (deployment, disk partitioning, APFS resize, kernel update, macOS erase)
+2. For each action, trace ALL code paths that lead to it
+3. For each path, count the number of times the action is invoked
+4. If any path invokes the action more than once → **double execution bug**
+
+**Trace template for each action:**
+```
+Action: deploy_internal_partition
+Paths that lead to this action:
+  - First-run flow: main() → ??? → deploy_internal_partition
+  - Main menu Deploy: select_mode() → menu_deploy() → ??? → deploy_internal_partition
+  - Agent mode: run_agent_mode() → ??? → deploy_internal_partition
+For each path: count invocations. Must be exactly 1.
+```
+
+### 2.14.3 Variable State After Function Return
+
+When a "collect-and-execute" function sets global variables AND performs an action, the caller may re-execute using those same variables. Verify:
+
+- After a function sets DEPLOY_METHOD/STORAGE_LAYOUT/NETWORK_TYPE and runs deployment, the caller does NOT re-run deployment using those variables
+- State variables (journal, _ESP_CREATED, _APFS_RESIZED) correctly reflect the already-executed action
+- If the caller checks these state variables before re-executing, the check prevents the double execution
+- If no such guard exists, this is a double-execution vulnerability
+
+### 2.14.4 Agent Mode Isolation
+
+Agent mode should have an independent execution path that does NOT overlap with interactive flows.
+
+**Verify:**
+- Agent mode does NOT call any "collect" functions (tui_menu, tui_confirm, etc.) — values come from CLI flags and deploy.conf
+- Agent mode does NOT trigger first-run flow
+- Agent mode calls execute-only functions directly, not through collect-and-execute wrappers
+- Running both `--agent --method 1` and interactive mode in separate invocations produces the same result (same deploy function called, same side effects)
