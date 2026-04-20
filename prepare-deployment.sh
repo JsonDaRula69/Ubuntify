@@ -224,6 +224,24 @@ prompt_config() {
             fi
             PASSWORD_HASH=$(generate_password_hash "$password") || die "Failed to generate password hash"
         fi
+    else
+        # Validate PASSWORD_HASH format (crypt(3): $id$salt$hash)
+        if ! echo "$PASSWORD_HASH" | grep -qE '^\$[0-9a-z]+\$[^$]+\$[^$]+$'; then
+            warn "PASSWORD_HASH does not appear to be a valid crypt(3) hash"
+            if [ "$AGENT_MODE" -eq 1 ]; then
+                agent_error "PASSWORD_HASH must be a valid crypt(3) hash (e.g., from 'openssl passwd -6')"
+                missing=1
+            else
+                warn "Regenerating password hash..."
+                local password password2
+                password=$(tui_password "Password" "PASSWORD_HASH invalid. Enter password for $USERNAME:")
+                password2=$(tui_password "Confirm Password" "Confirm password:")
+                if [ "$password" != "$password2" ]; then
+                    die "Passwords do not match"
+                fi
+                PASSWORD_HASH=$(generate_password_hash "$password") || die "Failed to generate password hash"
+            fi
+        fi
     fi
     if [ -z "$SSH_KEYS" ] && [ -z "$SSH_KEYS_FILE" ]; then
         if [ "$AGENT_MODE" -eq 1 ]; then

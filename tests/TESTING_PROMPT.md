@@ -23,6 +23,7 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
 - [Phase 3: Integration and System Testing](#phase-3-integration-and-system-testing)
 - [Phase 4: Best Practices and Patterns](#phase-4-best-practices-and-patterns)
 - [Phase 5: Execution and Validation](#phase-5-execution-and-validation)
+- [Phase 6: Refactoring and Simplification](#phase-6-refactoring-and-simplification)
 - [Iterative Fix and Test Cycle](#iterative-fix-and-test-cycle)
 - [Reporting Requirements](#reporting-requirements)
 - [Final Checklist](#final-checklist)
@@ -1166,6 +1167,127 @@ Verify multi-target logging writes to all configured targets:
 
 ---
 
+## PHASE 6: REFACTORING AND SIMPLIFICATION
+
+**This phase only executes once Phases 0–5 all pass with zero P0, P1, P2 findings.** Its purpose is to identify opportunities to simplify, consolidate, and improve code clarity — not to find new bugs, but to reduce maintenance burden and cognitive complexity.
+
+**Gate:** Do NOT start Phase 6 until ALL of the following are true:
+- Phase 0: Architecture model complete, no P0 issues
+- Phase 1: Zero P0, zero P1 findings
+- Phase 2: All deployment methods produce correct output, no P0/P1 findings
+- Phase 3: No P0/P1 findings, all safety boundaries verified
+- Phase 4: No P0/P1 security or accuracy findings
+- Phase 5: All SAFE-classified tests pass, VM test completes successfully
+
+If Phase 6 identifies changes, those changes are implemented, committed, and the ENTIRE cycle restarts from Phase 0 (because refactoring can introduce regressions).
+
+### 6.1 Function Consolidation
+
+**Identify functions that do nearly the same thing and could be unified:**
+
+- Find function pairs/groups where the body differs by only 1-2 parameters or conditionals
+- Find functions whose names differ but whose logic is identical except for the data they operate on
+- Find helper functions called from exactly one call site — can the logic be inlined for clarity?
+- Find functions that are thin wrappers around a single command — is the wrapper providing value (error handling, logging) or just indirection?
+
+**For each candidate, evaluate:**
+- Would merging reduce total lines of code without reducing readability?
+- Would merging eliminate a class of potential inconsistency (e.g., two functions that should stay in sync)?
+- Is the function providing meaningful abstraction (error handling, logging, retry) or just adding a call layer?
+- Would inlining make the caller easier to read or harder?
+
+**Rules:**
+- Do NOT merge functions that serve different purposes just because they look similar
+- Do NOT inline functions that are called from multiple call sites
+- Do NOT remove error handling, logging, or retry logic in the name of simplification
+- ALWAYS restart from Phase 0 after any consolidation change
+
+### 6.2 Variable and Configuration Simplification
+
+**Identify variables and configuration that could be simplified:**
+
+- Find variables that are set but never meaningfully varied (always the same value, or derived from one other variable with no branching)
+- Find configuration keys that are parsed but have identical behavior for all possible values
+- Find flags/switches that are checked in only one place — could the logic be simplified?
+- Find environment variables that are read but their default is always used in practice
+- Find duplicated default values defined in multiple places (e.g., same default in both the variable declaration and the config parser)
+
+**For each candidate, evaluate:**
+- Would removing the variable/flag/option reduce the number of code paths to test?
+- Is the option providing genuine user value or just configuration surface area?
+- Would removing it break backward compatibility? (If yes, consider deprecation path instead)
+
+### 6.3 Control Flow Simplification
+
+**Identify overly complex control flow that could be simplified:**
+
+- Find deeply nested if/elif/else chains (3+ levels) — can they be flattened with early returns or guard clauses?
+- Find case/esac blocks where multiple patterns do the same thing — can they be combined?
+- Find functions with multiple exit points that could be simplified to a single return
+- Find loops with complex condition logic — can they be simplified with a helper function?
+- Find `if [ "$VAR" = "1" ]; then ... elif [ "$VAR" = "2" ]; then ... elif [ "$VAR" = "3" ]` patterns that could use case/esac instead
+
+**For each candidate, evaluate:**
+- Does the simplification reduce cognitive complexity (measured by nesting depth, branch count)?
+- Does it preserve all existing behavior and error handling?
+- Is the simplified version equally readable by someone unfamiliar with the code?
+
+### 6.4 Module Boundaries and Responsibilities
+
+**Identify modules with unclear or overlapping responsibilities:**
+
+- Find functions in module A that are only called from module B — should they move to module B?
+- Find modules that source other modules they don't actually need — can the dependency be removed?
+- Find modules where the name doesn't match the contents — is a rename warranted?
+- Find circular dependency patterns (A sources B, B sources A) — can they be broken?
+- Find shared state between modules that could be replaced by function parameters — reduces coupling
+
+**For each candidate, evaluate:**
+- Would moving the function reduce the number of modules that need sourcing?
+- Would the move improve cohesion (functions in a module are related) or reduce it?
+- Is the current organization causing bugs or confusion? (If not, consider leaving it)
+
+### 6.5 Dead Code and Redundancy Elimination
+
+**This builds on Phase 2.12 (Orphan Detection) but goes further:**
+
+- Find functions that are called but whose return value is never used — can the return value be removed?
+- Find functions that compute the same value in multiple places — extract a shared helper
+- Find repeated code blocks (3+ lines identical) across different functions — extract a shared helper
+- Find comments that restate what the code does without adding value — remove or replace with "why" comments
+- Find commented-out code blocks — remove them (git history preserves them)
+- Find TODO/FIXME/HACK markers that were left from previous reviews — resolve or document in AGENTS.md constraints
+- Find redundant variable assignments (variable set, then immediately overwritten without being read)
+- Find redundant conditional checks (condition checked twice in the same flow, or always true/false)
+
+### 6.6 Readability and Naming Improvements
+
+**Identify naming that obscures intent:**
+
+- Find variable names that are too short to be self-documenting in context (`_f`, `$1` used without local naming)
+- Find function names that don't describe what the function does (`handle_stuff`, `_process`)
+- Find variable names that are misleading (`WIFI_CRITICAL` is true when WiFi is broken — inverted semantics)
+- Find inconsistent naming patterns (some functions use `remote_` prefix, some use `verify_`, some use bare names)
+- Find parameter names in function definitions that use positional references (`$1`, `$2`) instead of `local` named variables
+
+**For each candidate, evaluate:**
+- Would the rename make the code self-documenting?
+- Does the current name cause confusion? (Misleading names MUST be renamed — e.g., inverted booleans)
+- Is there a consistent naming convention already in the codebase that should be followed?
+
+### 6.7 Refactoring Execution Rules
+
+**These rules are MANDATORY for any change made during Phase 6:**
+
+1. **One refactoring per commit** — each commit should change one thing only (one function consolidated, one variable simplified, one flow simplified). This makes regression debugging precise.
+2. **Tag each commit** with the next v0.2.N version — refactoring commits get version tags like bug-fix commits.
+3. **Restart from Phase 0 after each commit** — refactoring can introduce regressions. A full cycle proves it didn't.
+4. **No functional changes in refactoring commits** — refactoring does NOT change behavior. If a refactoring would change observable behavior, it's a bug fix, not a refactoring — classify it properly.
+5. **Document each refactoring in CHANGELOG.md** — under the version tag, list what was simplified and why.
+6. **If a Phase 0–5 regression is found during refactoring** — STOP refactoring, fix the regression as a bug (Phases 0–5 cycle), then resume Phase 6 from the beginning after the fix cycle completes.
+
+---
+
 ## ITERATIVE FIX AND TEST CYCLE
 
 Process findings in severity order: P0 first, then P1, then P2, then P3.
@@ -1210,11 +1332,13 @@ For each bug:
    Push: `git push && git push --tags`
 
 ### Continue Until
-- ALL phases pass with zero P0, P1, P2 findings
+- ALL phases (0-5) pass with zero P0, P1, P2 findings
+- Phase 6 (Refactoring) can begin and produces zero regressions (Phases 0-5 re-pass after each refactoring)
 - P3 findings are documented (fix if trivial, document if not)
 - ShellCheck reports zero errors (warnings acceptable if covered by .shellcheckrc)
 - Scripts execute correctly in all tested environments within safety boundaries
 - Documentation reflects current reality
+- No simplification opportunities remain that would reduce code by 10+ lines or reduce nesting by 2+ levels
 
 ---
 
@@ -1238,6 +1362,7 @@ After each phase, provide:
 - **Phase 3 PASS:** No P0/P1 findings, all safety boundary classifications verified
 - **Phase 4 PASS:** No P0/P1 security findings, no P0/P1 accuracy findings
 - **Phase 5 PASS:** All SAFE-classified tests pass, VM test completes with DKMS success
+- **Phase 6 PASS:** No remaining simplifications that reduce code by 10+ lines or nesting by 2+ levels; all refactoring changes verified via Phases 0-5 re-run with zero regressions
 
 ---
 
@@ -1324,6 +1449,13 @@ Before completion, verify:
 - [ ] Error messages: die vs log_fatal vs agent_error used correctly in each context
 - [ ] Line-by-line: every shell script line verified against 12-point checklist
 - [ ] Line-by-line: every FINDING confirmed valid in full-file context before reporting
+- [ ] Refactoring: function consolidation candidates identified and evaluated (merge, inline, or keep)
+- [ ] Refactoring: variable/configuration simplification candidates identified
+- [ ] Refactoring: control flow simplification candidates identified (nesting reduction, case consolidation)
+- [ ] Refactoring: module boundary clarity verified (functions in correct module, no circular deps)
+- [ ] Refactoring: dead code, redundant conditionals, and redundant assignments removed
+- [ ] Refactoring: naming improvements applied where current names are misleading or unclear
+- [ ] Refactoring: each change is one commit, tagged, with full Phase 0-5 regression pass
 
 ---
 

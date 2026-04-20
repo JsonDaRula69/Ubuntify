@@ -27,7 +27,7 @@ check_recovery_health() {
     RECOVERY_VOLUME=""
     RECOVERY_UUID=""
 
-    RECOVERY_VOLUME=$(diskutil apfs list "$APFS_CONTAINER" 2>/dev/null | grep -B1 "Recovery" | grep "APFS Volume Disk" | grep -oE 'disk[0-9]+s[0-9]+' | head-1 || true)
+    RECOVERY_VOLUME=$(diskutil apfs list "$APFS_CONTAINER" 2>/dev/null | grep -B1 "Recovery" | grep "APFS Volume Disk" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
     if [ -z "$RECOVERY_VOLUME" ]; then
         warn "Recovery volume NOT found in APFS container — deployment cannot proceed safely"
         return 1

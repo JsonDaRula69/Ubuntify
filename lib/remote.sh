@@ -239,10 +239,18 @@ remote_toggle_apt_sources() {
 
     case "$action" in
         enable)
-            remote_apt_enable "$host"
+            log "Enabling apt sources on $host..."
+            dry_run_exec "Uncommenting deb lines in sources.list on $host" \
+                remote__exec "$host" "sudo sed -i '/^#deb/ s/^#//' /etc/apt/sources.list"
+            dry_run_exec "Uncommenting deb lines in sources.list.d on $host" \
+                remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^#deb/ s/^#//' \"\$list\"; done"
             ;;
         disable)
-            remote_apt_disable "$host"
+            log "Disabling apt sources on $host..."
+            dry_run_exec "Commenting out deb lines in sources.list on $host" \
+                remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
+            dry_run_exec "Commenting out deb lines in sources.list.d on $host" \
+                remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; done"
             ;;
         *)
             error "remote_toggle_apt_sources: unknown action '$action'. Use 'enable' or 'disable'."
@@ -427,11 +435,11 @@ remote_kernel_update() {
         _remote_kernel_update_rollback "$host" "5"
         return 1
     fi
+    dry_run_exec "Setting kernel update phase marker to 6 on $host" \
+        remote__exec "$host" "echo 'KUPDATE_PHASE=6' > /tmp/macpro-kernel-update.env"
     dry_run_exec "Setting GRUB reboot to new kernel on $host" \
         remote__exec "$host" "sudo grub-reboot 'Ubuntu, with Linux $new_kver'"
     remote_reboot "$host"
-    dry_run_exec "Setting kernel update phase marker to 6 on $host" \
-        remote__exec "$host" "echo 'KUPDATE_PHASE=6' > /tmp/macpro-kernel-update.env"
     log "Phase 6 complete: rebooted into new kernel"
 
     if ! tui_confirm "Kernel Update: Phase 7 of 7" "Re-lock the system (pin kernel, disable apt sources, re-enable holds)?"; then
