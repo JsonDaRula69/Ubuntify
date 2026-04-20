@@ -202,14 +202,18 @@ tui_menu() {
             items+=("$2" "$1" "")
             shift 2
         done
-        if dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --menu "\Z3$description\Zn" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
+        # Open /dev/tty for dialog keyboard input (needed inside $() subshells)
+        exec 3</dev/tty 2>/dev/null || exec 3<&0
+        if dialog --clear --colors --input-fd 3 --backtitle "$TUI_BACKTITLE" --title "$title" --menu "\Z3$description\Zn" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
+            exec 3<&- 2>/dev/null
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
+            exec 3<&- 2>/dev/null
             return 1
         fi
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
@@ -346,9 +350,12 @@ tui_confirm() {
     width=$(echo "$size" | cut -d' ' -f2)
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
-        if dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --yesno "\Z3$message\Zn" "$height" "$width" 2>/dev/null; then
+        exec 3</dev/tty 2>/dev/null || exec 3<&0
+        if dialog --clear --colors --input-fd 3 --backtitle "$TUI_BACKTITLE" --title "$title" --yesno "\Z3$message\Zn" "$height" "$width" 2>/dev/null; then
+            exec 3<&- 2>/dev/null
             return 0
         else
+            exec 3<&- 2>/dev/null
             return 1
         fi
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
@@ -445,7 +452,9 @@ tui_msgbox() {
     width=$(echo "$size" | cut -d' ' -f2)
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
-        dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --msgbox "\Z3$message\Zn" "$height" "$width" 2>/dev/null || true
+        exec 3</dev/tty 2>/dev/null || exec 3<&0
+        dialog --clear --colors --input-fd 3 --backtitle "$TUI_BACKTITLE" --title "$title" --msgbox "\Z3$message\Zn" "$height" "$width" 2>/dev/null || true
+        exec 3<&- 2>/dev/null
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
         whiptail --backtitle "$TUI_BACKTITLE" --title "$title" --msgbox "$message" "$height" "$width" 2>/dev/null || true
     else
@@ -485,14 +494,17 @@ tui_input() {
     tmpfile=$(_tui_mktemp)
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
-        if dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --inputbox "\Z3$label\Zn" "$height" "$width" "$default_value" 2>"$tmpfile"; then
+        exec 3</dev/tty 2>/dev/null || exec 3<&0
+        if dialog --clear --colors --input-fd 3 --backtitle "$TUI_BACKTITLE" --title "$title" --inputbox "\Z3$label\Zn" "$height" "$width" "$default_value" 2>"$tmpfile"; then
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
+            exec 3<&- 2>/dev/null
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
+            exec 3<&- 2>/dev/null
             return 1
         fi
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
@@ -551,14 +563,17 @@ tui_password() {
     tmpfile=$(_tui_mktemp)
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
-        if dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --passwordbox "\Z3$label\Zn" "$height" "$width" 2>"$tmpfile"; then
+        exec 3</dev/tty 2>/dev/null || exec 3<&0
+        if dialog --clear --colors --input-fd 3 --backtitle "$TUI_BACKTITLE" --title "$title" --passwordbox "\Z3$label\Zn" "$height" "$width" 2>"$tmpfile"; then
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
+            exec 3<&- 2>/dev/null
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
+            exec 3<&- 2>/dev/null
             return 1
         fi
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
@@ -613,14 +628,16 @@ tui_progress() {
     width=$(echo "$size" | cut -d' ' -f2)
 
     if [ "$TUI_BACKEND" = "dialog" ] && [ "$TUI_HAS_GAUGE" -eq 1 ]; then
+        exec 3</dev/tty 2>/dev/null || exec 3<&0
         local line
         while IFS= read -r line; do
             local percent
             percent=$(echo "$line" | cut -d' ' -f1)
             local message
             message=$(echo "$line" | cut -d' ' -f2-)
-            echo "$percent" | dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --gauge "\Z3$message\Zn" "$height" "$width" 2>/dev/null || break
+            echo "$percent" | dialog --clear --colors --input-fd 3 --backtitle "$TUI_BACKTITLE" --title "$title" --gauge "\Z3$message\Zn" "$height" "$width" 2>/dev/null || break
         done
+        exec 3<&- 2>/dev/null
     else
         local line
         while IFS= read -r line; do
@@ -650,7 +667,9 @@ tui_tailbox() {
     width=$(echo "$size" | cut -d' ' -f2)
 
     if [ "$TUI_BACKEND" = "dialog" ] && [ "$TUI_HAS_TAILBOX" -eq 1 ]; then
-        dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --tailbox "$filepath" "$height" "$width" 2>/dev/null || true
+        exec 3</dev/tty 2>/dev/null || exec 3<&0
+        dialog --clear --colors --input-fd 3 --backtitle "$TUI_BACKTITLE" --title "$title" --tailbox "$filepath" "$height" "$width" 2>/dev/null || true
+        exec 3<&- 2>/dev/null
     else
         local width=66
         printf '\n' >&2
@@ -683,14 +702,17 @@ tui_checklist() {
             items+=("$2" "$1" "$state")
             shift 3
         done
-        if dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --checklist "\Z3$description\Zn" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
+        exec 3</dev/tty 2>/dev/null || exec 3<&0
+        if dialog --clear --colors --input-fd 3 --backtitle "$TUI_BACKTITLE" --title "$title" --checklist "\Z3$description\Zn" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
+            exec 3<&- 2>/dev/null
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
+            exec 3<&- 2>/dev/null
             return 1
         fi
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
