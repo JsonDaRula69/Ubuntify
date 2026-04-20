@@ -433,6 +433,8 @@ prompt_generate_key() {
     mkdir -p "$HOME/.ssh"
     chmod 700 "$HOME/.ssh"
 
+    local actual_user="${SUDO_USER:-$USER}"
+
     log_info "Generating SSH key pair: $key_type_choice..."
     if [ "$key_type_choice" = "ed25519" ]; then
         ssh-keygen -t ed25519 -C "macpro-ubuntu-$(date +%Y%m%d)" -f "$key_file" -N "" 2>/dev/null || {
@@ -446,7 +448,9 @@ prompt_generate_key() {
         }
     fi
 
-    log_info "Key generated: $key_file"
+    chown "$actual_user" "$key_file" "$key_file.pub" 2>/dev/null || true
+    chown "$actual_user" "$HOME/.ssh" 2>/dev/null || true
+    log_info "Key generated: $key_file (owner: $actual_user)"
     if [ -f "$key_path" ]; then
         cat "$key_path"
     fi
@@ -456,6 +460,7 @@ configure_ssh_config() {
     local ssh_config="$HOME/.ssh/config"
     local macpro_ip=""
     local user="$USERNAME"
+    local actual_user="${SUDO_USER:-$USER}"
 
     if [ -z "$user" ]; then
         user="ubuntu"
@@ -524,7 +529,9 @@ configure_ssh_config() {
     } >> "$ssh_config"
 
     chmod 600 "$ssh_config"
-    log_info "SSH config updated: $ssh_config"
+    chown "$actual_user" "$ssh_config" 2>/dev/null || true
+    chown "$actual_user" "$HOME/.ssh" 2>/dev/null || true
+    log_info "SSH config updated: $ssh_config (owner: $actual_user)"
 }
 
 # ── Pre-execution Summary ──
