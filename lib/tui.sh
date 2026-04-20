@@ -16,19 +16,115 @@ readonly TUI_BACKTITLE="Ubuntify - Mac Pro Conversion Tool"
 
 ## Backend Detection
 
-if command -v dialog >/dev/null 2>&1; then
-    readonly TUI_BACKEND="dialog"
-    readonly TUI_HAS_GAUGE=1
-    readonly TUI_HAS_TAILBOX=1
-elif command -v whiptail >/dev/null 2>&1; then
-    readonly TUI_BACKEND="whiptail"
-    readonly TUI_HAS_GAUGE=0
-    readonly TUI_HAS_TAILBOX=0
-else
-    readonly TUI_BACKEND="raw"
-    readonly TUI_HAS_GAUGE=0
-    readonly TUI_HAS_TAILBOX=0
-fi
+# TUI_BACKEND is initially set at source time but NOT readonly —
+# check_tui_prerequisites() may install dialog and re-detect.
+# After prerequisites check, TUI_BACKEND_LOCKED=1 makes it effectively immutable.
+
+_tui_detect_backend() {
+    if command -v dialog >/dev/null 2>&1; then
+        TUI_BACKEND="dialog"
+        TUI_HAS_GAUGE=1
+        TUI_HAS_TAILBOX=1
+    elif command -v whiptail >/dev/null 2>&1; then
+        TUI_BACKEND="whiptail"
+        TUI_HAS_GAUGE=0
+        TUI_HAS_TAILBOX=0
+    else
+        TUI_BACKEND="raw"
+        TUI_HAS_GAUGE=0
+        TUI_HAS_TAILBOX=0
+    fi
+}
+
+TUI_BACKEND_LOCKED=0
+_tui_detect_backend
+
+## Prerequisites Check
+
+check_tui_prerequisites() {
+    if [ "$TUI_BACKEND_LOCKED" -eq 1 ]; then
+        return 0
+    fi
+
+    if [ "$TUI_BACKEND" = "dialog" ]; then
+        TUI_BACKEND_LOCKED=1
+        readonly TUI_BACKEND TUI_HAS_GAUGE TUI_HAS_TAILBOX TUI_BACKEND_LOCKED
+        return 0
+    fi
+
+    local _offer_install=1
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        if [ "$TUI_BACKEND" = "raw" ]; then
+            log_warn "No dialog or whiptail available — falling back to raw TUI (limited UX)"
+        else
+            log_info "TUI backend: whiptail (dialog not available)"
+        fi
+        TUI_BACKEND_LOCKED=1
+        readonly TUI_BACKEND TUI_HAS_GAUGE TUI_HAS_TAILBOX TUI_BACKEND_LOCKED
+        return 0
+    fi
+
+    if ! command -v brew >/dev/null 2>&1; then
+        _offer_install=0
+    fi
+
+    if [ "$TUI_BACKEND" != "whiptail" ]; then
+        echo "" >&2
+        echo "  ${YELLOW} Neither dialog nor whiptail is installed.${NC}" >&2
+        echo "  The raw text fallback provides a limited experience." >&2
+        echo "" >&2
+    else
+        echo "" >&2
+        echo "  ${YELLOW} whiptail is available but dialog provides a better TUI experience.${NC}" >&2
+        echo "" >&2
+    fi
+
+    if [ "$_offer_install" -eq 1 ]; then
+        if [ "$TUI_BACKEND" = "whiptail" ]; then
+            printf '  Install dialog via Homebrew for a better experience? (yes/no): ' >&2
+        else
+            printf '  Install dialog via Homebrew? (yes/no): ' >&2
+        fi
+        local response
+        IFS= read -r response < /dev/tty
+        case "$response" in
+            yes|y|Y)
+                if [ "${DRY_RUN:-0}" -eq 1 ]; then
+                    echo "  ${YELLOW}[DRY-RUN]${NC} Would run: brew install dialog" >&2
+                else
+                    echo "  Installing dialog via Homebrew..." >&2
+                    if brew install dialog 2>&1; then
+                        _tui_detect_backend
+                        if [ "$TUI_BACKEND" = "dialog" ]; then
+                            echo "  ${GREEN} dialog installed successfully — TUI upgraded.${NC}" >&2
+                        else
+                            echo "  ${YELLOW} dialog installed but detection failed — using $TUI_BACKEND.${NC}" >&2
+                        fi
+                    else
+                        echo "  ${YELLOW} brew install dialog failed — continuing with $TUI_BACKEND.${NC}" >&2
+                    fi
+                fi
+                ;;
+            *)
+                if [ "$TUI_BACKEND" = "raw" ]; then
+                    echo "  ${YELLOW} Continuing with raw text fallback (limited menus, no progress bars).${NC}" >&2
+                fi
+                ;;
+        esac
+    else
+        if [ "$TUI_BACKEND" = "raw" ]; then
+            echo "  ${YELLOW} Install Homebrew (brew) and dialog for a better TUI experience.${NC}" >&2
+            echo "  Continuing with raw text fallback (limited menus, no progress bars).${NC}" >&2
+        else
+            echo "  ${YELLOW} Install dialog via Homebrew for a better TUI experience: brew install dialog${NC}" >&2
+        fi
+    fi
+
+    TUI_BACKEND_LOCKED=1
+    readonly TUI_BACKEND TUI_HAS_GAUGE TUI_HAS_TAILBOX TUI_BACKEND_LOCKED
+    return 0
+}
 
 ## Helper Functions
 
@@ -139,46 +235,97 @@ tui_menu() {
         fi
     else
         trap - ERR
-        echo "" >&2
-        echo "=== $title ===" >&2
-        printf '%b\n' "$description" >&2
-        echo "" >&2
-        local labels=""
-        local tags=""
-        local opt_num=1
+        local labels=()
+        local tags=()
+        local count=0
         while [ $# -ge 2 ]; do
-            local label="$1"
-            local tag="$2"
-            labels="${labels}|${opt_num}:${label}"
-            tags="${tags}|${tag}"
-            echo "  $opt_num) $label" >&2
-            opt_num=$((opt_num + 1))
+            labels+=("$1")
+            tags+=("$2")
             shift 2
+            count=$((count + 1))
         done
-        local max_opt=$((opt_num - 1))
-        echo "" >&2
-        local response
+
+        # No TTY — numbered fallback
+        if ! [ -t 0 ] 2>/dev/null || ! [ -t 1 ] 2>/dev/null; then
+            printf '\n' >&2
+            printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 66))" >&2
+            printf '    ║  %b%s%b%*s║\n' "$BOLD_WHITE" "$title" "$NC" $((62 - ${#title})) '' >&2
+            printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 66))" >&2
+            [ -n "$description" ] && printf '    ║  %b%s%b%*s║\n' "$CYAN" "$description" "$NC" $((62 - ${#description})) '' >&2
+            [ -n "$description" ] && printf '    ╟%s╢\n' "$(printf '─%.0s' $(seq 1 66))" >&2
+            local n=1
+            while [ $n -le $count ]; do
+                printf '    ║  %d. %b%s%b%*s║\n' "$n" "$WHITE" "${labels[$((n-1))]}" "$NC" $((58 - ${#labels[$((n-1))]})) '' >&2
+                n=$((n + 1))
+            done
+            printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 66))" >&2
+            printf '\n' >&2
+            local response
+            while true; do
+                printf '    %bEnter choice [1-%d]:%b ' "$BRIGHT_CYAN" "$count" "$NC" >&2
+                IFS= read -r response < /dev/tty || return 1
+                case "$response" in
+                    ''|*[!0-9]*) ;;
+                    *)
+                        if [ "$response" -ge 1 ] && [ "$response" -le "$count" ]; then
+                            echo "${tags[$((response-1))]}"
+                            return 0
+                        fi
+                        ;;
+                esac
+            done
+            return 1
+        fi
+
+        # Arrow-key interactive menu
+        local selected=0
+        local width=66
         while true; do
-            read -rp "Enter choice [1-$max_opt]: " response < /dev/tty
-            case "$response" in
-                ''|*[!0-9]*) ;;
-                *)
-                    if [ "$response" -ge 1 ] && [ "$response" -le "$max_opt" ]; then
-                        local IFS='|'
-                        set -- $tags
-                        local n=1
-                        shift
-                        for item in "$@"; do
-                            if [ "$n" -eq "$response" ]; then
-                                echo "$item"
-                                return 0
-                            fi
-                            n=$((n + 1))
-                        done
+            clear 2>/dev/null || printf '\033[2J\033[H'
+            printf '\n'
+            printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))"
+            printf '    ║  %b%s%b%*s║\n' "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) ''
+            printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))"
+            [ -n "$description" ] && printf '    ║  %b%s%b%*s║\n' "$CYAN" "$description" "$NC" $((width - ${#description} - 4)) ''
+            [ -n "$description" ] && printf '    ╟%s╢\n' "$(printf '─%.0s' $(seq 1 "$width"))"
+            local i=0
+            while [ $i -lt $count ]; do
+                if [ $i -eq $selected ]; then
+                    printf '    ║  %b▸%b %b%s%b%*s║\n' "$BRIGHT_CYAN" "$NC" "$BRIGHT_CYAN" "${labels[$i]}" "$NC" $((width - ${#labels[$i]} - 6)) ''
+                else
+                    printf '    ║    %b%s%b%*s║\n' "$WHITE" "${labels[$i]}" "$NC" $((width - ${#labels[$i]} - 6)) ''
+                fi
+                i=$((i + 1))
+            done
+            printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 "$width"))"
+            printf '\n'
+            printf '    %b↑↓ Navigate  │  ENTER Select  │  Q Back%b\n' "$DIM" "$NC"
+
+            local key
+            IFS= read -rsn1 key < /dev/tty
+            case "$key" in
+                $'\e')
+                    IFS= read -rsn1 -t 0.1 key
+                    [ -n "$key" ] && IFS= read -rsn1 -t 0.1 key
+                    case "$key" in
+                        A) selected=$((selected > 0 ? selected - 1 : count - 1)) ;;
+                        B) selected=$((selected < count - 1 ? selected + 1 : 0)) ;;
+                    esac
+                    ;;
+                '')
+                    echo "${tags[$selected]}"
+                    return 0
+                    ;;
+                q|Q)
+                    return 1
+                    ;;
+                [1-9])
+                    local num=$((10#$key - 1))
+                    if [ $num -lt $count ]; then
+                        selected=$num
                     fi
                     ;;
             esac
-            echo "Please enter a number between 1 and $max_opt." >&2
         done
     fi
 }
@@ -217,23 +364,72 @@ tui_confirm() {
             return 1
         fi
     else
-        echo "" >&2
-        echo "=== $title ===" >&2
-        echo -e "$message" >&2
-        echo "" >&2
-        local response
-        while true; do
-            printf 'Proceed? (yes/no): ' >&2
-            if ! IFS= read -r response < /dev/tty; then
-                printf '\n' >&2
-                return 1
-            fi
+        # No TTY — simple yes/no
+        if ! [ -t 0 ] 2>/dev/null || ! [ -t 1 ] 2>/dev/null; then
             printf '\n' >&2
-            case "$response" in
-                yes|y|Y) return 0 ;;
-                no|n|N) return 1 ;;
+            printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 66))" >&2
+            printf '    ║  %b%s%b%*s║\n' "$BOLD_WHITE" "$title" "$NC" $((62 - ${#title})) '' >&2
+            printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 66))" >&2
+            printf '    ║  %b%s%b%*s║\n' "$CYAN" "$message" "$NC" $((62 - ${#message})) '' >&2
+            printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 66))" >&2
+            printf '\n' >&2
+            local response
+            while true; do
+                printf '    %bProceed? (yes/no):%b ' "$BRIGHT_CYAN" "$NC" >&2
+                if ! IFS= read -r response < /dev/tty; then
+                    printf '\n' >&2
+                    return 1
+                fi
+                printf '\n' >&2
+                case "$response" in
+                    yes|y|Y) return 0 ;;
+                    no|n|N) return 1 ;;
+                esac
+            done
+            return 1
+        fi
+
+        # Arrow-key confirm dialog
+        local selected=0
+        local width=66
+        while true; do
+            clear 2>/dev/null || printf '\033[2J\033[H'
+            printf '\n'
+            printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))"
+            printf '    ║  %b%s%b%*s║\n' "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) ''
+            printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))"
+            printf '    ║  %b%s%b%*s║\n' "$CYAN" "$message" "$NC" $((width - ${#message} - 4)) ''
+            printf '    ╟%s╢\n' "$(printf '─%.0s' $(seq 1 "$width"))"
+
+            if [ $selected -eq 0 ]; then
+                printf '    ║  %b▸%b %bYes%b%*s║\n' "$BRIGHT_CYAN" "$NC" "$BRIGHT_CYAN" "$NC" $((width - 9)) ''
+                printf '    ║    %bNo%b%*s║\n' "$WHITE" "$NC" $((width - 8)) ''
+            else
+                printf '    ║    %bYes%b%*s║\n' "$WHITE" "$NC" $((width - 9)) ''
+                printf '    ║  %b▸%b %bNo%b%*s║\n' "$BRIGHT_CYAN" "$NC" "$BRIGHT_CYAN" "$NC" $((width - 8)) ''
+            fi
+
+            printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 "$width"))"
+            printf '\n'
+            printf '    %b↑↓ Select  │  ENTER Confirm  │  Y/N Shortcut%b\n' "$DIM" "$NC"
+
+            local key
+            IFS= read -rsn1 key < /dev/tty
+            case "$key" in
+                $'\e')
+                    IFS= read -rsn1 -t 0.1 key
+                    [ -n "$key" ] && IFS= read -rsn1 -t 0.1 key
+                    case "$key" in
+                        A|D) selected=$((1 - selected)) ;;
+                        B|C) selected=$((1 - selected)) ;;
+                    esac
+                    ;;
+                '')
+                    [ $selected -eq 0 ] && return 0 || return 1
+                    ;;
+                y|Y) return 0 ;;
+                n|N) return 1 ;;
             esac
-            echo "Please enter 'yes' or 'no'." >&2
         done
     fi
 }
@@ -259,11 +455,16 @@ tui_msgbox() {
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
         whiptail --backtitle "$TUI_BACKTITLE" --title "$title" --msgbox "$message" "$height" "$width" 2>/dev/null || true
     else
-        echo "" >&2
-        echo "=== $title ===" >&2
-        echo -e "$message" >&2
-        echo "" >&2
-        read -rp "Press Enter to continue..." < /dev/tty
+        local width=66
+        printf '\n' >&2
+        printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))" >&2
+        printf '    ║  %b%s%b%*s║\n' "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) '' >&2
+        printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))" >&2
+        printf '    ║  %b%s%b%*s║\n' "$CYAN" "$message" "$NC" $((width - ${#message} - 4)) '' >&2
+        printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 "$width"))" >&2
+        printf '\n' >&2
+        printf '    %bPress ENTER to continue...%b' "$DIM" "$NC" >&2
+        IFS= read -r < /dev/tty
     fi
 }
 
@@ -318,9 +519,17 @@ tui_input() {
         fi
     else
         trap - ERR
-        echo "" >&2
-        echo "=== $title ===" >&2
-        printf '%s [%s]: ' "$label" "$default_value" >&2
+        local width=66
+        local display_default="${default_value:-}"
+        [ -n "$display_default" ] && display_default=" [$display_default]"
+        printf '\n' >&2
+        printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))" >&2
+        printf '    ║  %b%s%b%*s║\n' "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) '' >&2
+        printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))" >&2
+        printf '    ║  %b%s%b%s%*s║\n' "$CYAN" "$label" "$NC" "$display_default" $((width - ${#label} - ${#display_default} - 4)) '' >&2
+        printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 "$width"))" >&2
+        printf '\n' >&2
+        printf '    %b▸%b ' "$BRIGHT_CYAN" "$NC" >&2
         local result
         if [ -t 0 ]; then
             IFS= read -r result
@@ -382,24 +591,23 @@ tui_password() {
         fi
     else
         trap - ERR
-        echo "" >&2
-        echo "=== $title ===" >&2
-        local tmpfile
+        local width=66
+        printf '\n' >&2
+        printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))" >&2
+        printf '    ║  %b%s%b%*s║\n' "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) '' >&2
+        printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))" >&2
+        printf '    ║  %b%s%b%*s║\n' "$CYAN" "$label" "$NC" $((width - ${#label} - 4)) '' >&2
+        printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 "$width"))" >&2
+        printf '\n' >&2
+        printf '    %b▸%b ' "$BRIGHT_CYAN" "$NC" >&2
         local pass
-        tmpfile=$(_tui_mktemp)
-        printf '%s: ' "$label" >&2
         if [ -t 0 ]; then
             IFS= read -rs pass
         else
             IFS= read -rs pass < /dev/tty
         fi
         printf '\n' >&2
-        echo "$pass" > "$tmpfile"
-        local result
-        result=$(cat "$tmpfile")
-        rm -f "$tmpfile"
-        trap - ERR
-        echo "$result"
+        echo "$pass"
         return 0
     fi
 }
@@ -438,7 +646,7 @@ tui_progress() {
             percent=$(echo "$line" | cut -d' ' -f1)
             local message
             message=$(echo "$line" | cut -d' ' -f2-)
-            echo "[$percent%] $message"
+            printf '    %b[%3s%%]%b %b%s%b\n' "$BRIGHT_PHOSPHOR" "$percent" "$NC" "$WHITE" "$message" "$NC"
         done
     fi
 }
@@ -462,7 +670,12 @@ tui_tailbox() {
     if [ "$TUI_BACKEND" = "dialog" ] && [ "$TUI_HAS_TAILBOX" -eq 1 ]; then
         dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --tailbox "$filepath" "$height" "$width" 2>/dev/null || true
     else
-        echo "=== $title === (refreshing every 1 second, press 'q' to exit)" >&2
+        local width=66
+        printf '\n' >&2
+        printf '    %b╔%s╗%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 "$width"))" "$NC" >&2
+        printf '    %b║%b  %b%s%b%*s%b║%b\n' "$PHOSPHOR" "$NC" "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) '' "$PHOSPHOR" "$NC" >&2
+        printf '    %b╚%s╝%b\n' "$PHOSPHOR" "$(printf '─%.0s' $(seq 1 "$width"))" "$NC" >&2
+        printf '    %b(refreshing, press q to exit)%b\n' "$DIM" "$NC" >&2
         less +F "$filepath" 2>/dev/null || tail -f "$filepath"
     fi
 }
@@ -521,38 +734,144 @@ tui_checklist() {
         fi
     else
         trap - ERR
-        echo "" >&2
-        echo "=== $title ===" >&2
-        echo -e "$description" >&2
-        echo "" >&2
-        local idx=1
+        local labels=()
         local tags=()
         local states=()
         while [ $# -ge 3 ]; do
-            echo "  $idx) [$3] $1" >&2
+            labels+=("$1")
             tags+=("$2")
             states+=("$3")
             shift 3
-            idx=$((idx + 1))
         done
-        echo "" >&2
-        echo "Enter numbers to toggle (comma-separated), empty to finish:" >&2
-        local choices
-        read -rp "> " choices < /dev/tty
-        local result=""
-        if [ -n "$choices" ]; then
-            local choice
-            for choice in $(echo "$choices" | tr ',' ' '); do
-                if [ "$choice" -ge 1 ] && [ "$choice" -lt "$idx" ] 2>/dev/null; then
+        local count=${#labels[@]}
+        local selected=0
+        local choices=()
+        local i
+        for i in $(seq 0 $((count - 1))); do
+            if [ "${states[$i]}" = "ON" ]; then
+                choices+=(1)
+            else
+                choices+=(0)
+            fi
+        done
+
+        # No TTY — numbered fallback
+        if ! [ -t 0 ] 2>/dev/null || ! [ -t 1 ] 2>/dev/null; then
+            printf '\n' >&2
+            printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 66))" >&2
+            printf '    ║  %b%s%b%*s║\n' "$BOLD_WHITE" "$title" "$NC" $((62 - ${#title})) '' >&2
+            printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 66))" >&2
+            [ -n "$description" ] && printf '    ║  %b%s%b%*s║\n' "$CYAN" "$description" "$NC" $((62 - ${#description})) '' >&2
+            [ -n "$description" ] && printf '    ╟%s╢\n' "$(printf '─%.0s' $(seq 1 66))" >&2
+            local idx=1
+            while [ $idx -le $count ]; do
+                local mark=" "
+                [ "${choices[$((idx-1))]}" -eq 1 ] && mark="*"
+                printf '    ║  [%s] %d. %b%s%b%*s║\n' "$mark" "$idx" "$WHITE" "${labels[$((idx-1))]}" "$NC" $((54 - ${#labels[$((idx-1))]})) '' >&2
+                idx=$((idx + 1))
+            done
+            printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 66))" >&2
+            printf '\n' >&2
+            printf '    %bEnter numbers to toggle (comma-separated), empty to finish:%b ' "$BRIGHT_CYAN" "$NC" >&2
+            local choices_input
+            IFS= read -r choices_input < /dev/tty || return 1
+            local result=""
+            if [ -n "$choices_input" ]; then
+                local choice
+                for choice in $(echo "$choices_input" | tr ',' ' '); do
+                    if [ "$choice" -ge 1 ] && [ "$choice" -le "$count" ] 2>/dev/null; then
+                        choices[$((choice - 1))]=$((1 - ${choices[$((choice - 1))]}))
+                    fi
+                done
+            fi
+            for i in $(seq 0 $((count - 1))); do
+                if [ "${choices[$i]}" -eq 1 ]; then
                     [ -n "$result" ] && result="$result "
-                    result="$result${tags[$((choice - 1))]}"
-                else
-                    echo "Invalid choice: $choice" >&2
+                    result="$result${tags[$i]}"
                 fi
             done
+            echo "$result"
+            return 0
         fi
-        echo "$result"
-        return 0
+
+        # Arrow-key interactive checklist
+        local width=66
+        while true; do
+            clear 2>/dev/null || printf '\033[2J\033[H'
+            printf '\n'
+            printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))"
+            printf '    ║  %b%s%b%*s║\n' "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) ''
+            printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))"
+            [ -n "$description" ] && printf '    ║  %b%s%b%*s║\n' "$CYAN" "$description" "$NC" $((width - ${#description} - 4)) ''
+            [ -n "$description" ] && printf '    ╟%s╢\n' "$(printf '─%.0s' $(seq 1 "$width"))"
+            i=0
+            while [ $i -lt $count ]; do
+                local marker="  "
+                local checkbox="[ ]"
+                if [ $i -eq $selected ]; then
+                    marker=" $BRIGHT_CYAN▸$NC"
+                fi
+                if [ "${choices[$i]}" -eq 1 ]; then
+                    checkbox="[$BRIGHT_PHOSPHOR█$NC]"
+                fi
+                if [ $i -eq $selected ]; then
+                    printf '    ║%s %b%s%b  %b%s%b%*s║\n' "$marker" "$BOLD" "$checkbox" "$NC" "$BRIGHT_CYAN" "${labels[$i]}" "$NC" $((width - ${#labels[$i]} - 12)) ''
+                else
+                    printf '    ║%s %s  %b%s%b%*s║\n' "$marker" "$checkbox" "$WHITE" "${labels[$i]}" "$NC" $((width - ${#labels[$i]} - 12)) ''
+                fi
+                i=$((i + 1))
+            done
+            printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 "$width"))"
+
+            local selected_tags=""
+            local sel_count=0
+            i=0
+            while [ $i -lt $count ]; do
+                if [ "${choices[$i]}" -eq 1 ]; then
+                    [ -n "$selected_tags" ] && selected_tags="$selected_tags "
+                    selected_tags="$selected_tags${tags[$i]}"
+                    sel_count=$((sel_count + 1))
+                fi
+                i=$((i + 1))
+            done
+            printf '\n'
+            if [ $sel_count -gt 0 ]; then
+                printf '    %b▸ Selected: %d item(s)%b\n' "$BRIGHT_PHOSPHOR" "$sel_count" "$NC"
+            else
+                printf '    %b▸ No items selected%b\n' "$DIM" "$NC"
+            fi
+            printf '\n'
+            printf '    %b↑↓ Navigate  │  SPACE Toggle  │  ENTER Done  │  Q Cancel%b\n' "$DIM" "$NC"
+
+            local key
+            IFS= read -rsn1 key < /dev/tty
+            case "$key" in
+                $'\e')
+                    IFS= read -rsn1 -t 0.1 key
+                    [ -n "$key" ] && IFS= read -rsn1 -t 0.1 key
+                    case "$key" in
+                        A) selected=$((selected > 0 ? selected - 1 : count - 1)) ;;
+                        B) selected=$((selected < count - 1 ? selected + 1 : 0)) ;;
+                    esac
+                    ;;
+                ' ')
+                    choices[$selected]=$((1 - ${choices[$selected]}))
+                    ;;
+                '')
+                    echo "$selected_tags"
+                    return 0
+                    ;;
+                q|Q)
+                    return 1
+                    ;;
+                [1-9])
+                    local num=$((10#$key - 1))
+                    if [ $num -lt $count ]; then
+                        selected=$num
+                    fi
+                    ;;
+            esac
+        done
     fi
 }
 
@@ -579,12 +898,12 @@ tui_cool_header() {
     [ "$sub_len" -gt "$max_width" ] && max_width=$sub_len
     local bar=$(printf '%*s' $max_width '' | tr ' ' '─')
     echo ""
-    echo -e "  \033[0;32m┌─${bar}─┐\033[0m"
+    printf '  %b┌─%s─┐%b\n' "$PHOSPHOR" "$bar" "$NC"
     while IFS= read -r line; do
-        printf "  \033[0;32m│\033[0m \033[1;32m%s\033[0m\033[0;32m%*s│\033[0m\n" "$line" $((max_width - ${#line})) ''
+        printf "  %b│%b %b%s%b%b%*s│%b\n" "$PHOSPHOR" "$NC" "$BRIGHT_PHOSPHOR" "$line" "$NC" "$PHOSPHOR" $((max_width - ${#line})) '' "$NC"
     done <<< "$art"
-    printf "  \033[0;32m│\033[0m \033[1;32m%s\033[0m\033[0;32m%*s│\033[0m\n" "$subtitle" $((max_width - sub_len)) ''
-    echo -e "  \033[0;32m└─${bar}─┘\033[0m"
+    printf "  %b│%b %b%s%b%b%*s│%b\n" "$PHOSPHOR" "$NC" "$BRIGHT_PHOSPHOR" "$subtitle" "$NC" "$PHOSPHOR" $((max_width - sub_len)) '' "$NC"
+    printf '  %b└─%s─┘%b\n' "$PHOSPHOR" "$bar" "$NC"
     echo ""
 }
 
@@ -597,22 +916,22 @@ tui_box() {
     local content="$2"
     local width="${3:-76}"
     printf '\n'
-    printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-    printf '    ║ %s%*s ║\n' "$title" $((width - ${#title} - 1)) ''
-    printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))"
+    printf '    %b╗%s╗%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 "$width"))" "$NC"
+    printf '    %b║%b %b%s%b%*s %b║%b\n' "$PHOSPHOR" "$NC" "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 1)) '' "$PHOSPHOR" "$NC"
+    printf '    %b╠%s╣%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 "$width"))" "$NC"
     printf '%s' "$content" | while IFS= read -r line; do
-        printf '    ║ %s%*s ║\n' "$line" $((width - ${#line} - 1)) ''
+        printf '    %b║%b %s%*s %b║%b\n' "$PHOSPHOR" "$NC" "$line" $((width - ${#line} - 1)) '' "$PHOSPHOR" "$NC"
     done
-    printf '    ╚%s╝\n' "$(printf '═%.0s' $(seq 1 "$width"))"
+    printf '    %b╚%s╝%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 "$width"))" "$NC"
 }
 
 tui_section() {
     local title="$1"
     local width="${2:-76}"
     printf '\n'
-    printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-    printf '    ║  %s %*s║\n' "$title" $((width - ${#title} - 3)) ''
-    printf '    ╚%s╝\n' "$(printf '═%.0s' $(seq 1 "$width"))"
+    printf '    %b╔%s╗%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 "$width"))" "$NC"
+    printf '    %b║%b  %b%s%b %*s%b║%b\n' "$PHOSPHOR" "$NC" "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 3)) '' "$PHOSPHOR" "$NC"
+    printf '    %b╚%s╝%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 "$width"))" "$NC"
 }
 
 tui_checklist_box() {
@@ -634,24 +953,24 @@ tui_checklist_box() {
     local states=()
     local labels=()
     printf '\n'
-    printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 $((width - 4))))"
-    printf '    ║  \033[1m%s\033[0m%*s║\n' "$title" $((width - ${#title} - 5)) ''
-    printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 $((width - 4))))"
-    [ -n "$description" ] && printf '    ║  \033[2m%s\033[0m%*s║\n' "$description" $((width - ${#description} - 5)) ''
-    [ -n "$description" ] && printf '    ╟%s╢\n' "$(printf '─%.0s' $(seq 1 $((width - 4))))"
+    printf '    %b╔%s╗%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 $((width - 4))))" "$NC"
+    printf '    %b║%b  %b%s%b%*s%b║%b\n' "$PHOSPHOR" "$NC" "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 5)) '' "$PHOSPHOR" "$NC"
+    printf '    %b╠%s╣%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 $((width - 4))))" "$NC"
+    [ -n "$description" ] && printf '    %b║%b  %b%s%b%*s%b║%b\n' "$PHOSPHOR" "$NC" "$DIM" "$description" "$NC" $((width - ${#description} - 5)) '' "$PHOSPHOR" "$NC"
+    [ -n "$description" ] && printf '    %b╟%s╢%b\n' "$PHOSPHOR" "$(printf '─%.0s' $(seq 1 $((width - 4))))" "$NC"
     while [ $# -ge 2 ]; do
         local label="$1"
         local tag="$2"
         labels+=("$label")
         tags+=("$tag")
         local state="[ ]"
-        printf '    ║    %s  %d. %s%*s║\n' "$state" "$idx" "$label" $((width - ${#label} - 13)) ''
+        printf '    %b║%b    %s  %d. %b%s%b%*s%b║%b\n' "$PHOSPHOR" "$NC" "$state" "$idx" "$WHITE" "$label" "$NC" $((width - ${#label} - 13)) '' "$PHOSPHOR" "$NC"
         shift 2
         idx=$((idx + 1))
     done
-    printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 $((width - 4))))"
+    printf '    %b╚%s╝%b\n' "$PHOSPHOR" "$(printf '─%.0s' $(seq 1 $((width - 4))))" "$NC"
     printf '\n'
-    printf '    \033[2mKeys: ↑↓ Navigate  │  SPACE Toggle  │  ENTER Confirm  │  Q Quit\033[0m\n'
+    printf '    %b↑↓ Navigate  │  SPACE Toggle  │  ENTER Confirm  │  Q Quit%b\n' "$DIM" "$NC"
     printf '\n'
     printf '    > '
     return 0
@@ -681,29 +1000,29 @@ tui_checkbox() {
     while true; do
         clear 2>/dev/null || printf '\033[2J\033[H'
         printf '\n'
-        printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 $((width))))"
-        printf '    ║  \033[1m%s\033[0m%*s║\n' "$title" $((width - ${#title} - 4)) ''
-        printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-        [ -n "$description" ] && printf '    ║  \033[2m%s\033[0m\n' "$description"
-        [ -n "$description" ] && printf '    ╟%s╢\n' "$(printf '─%.0s' $(seq 1 "$width"))"
+        printf '    %b╔%s╗%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 $((width))))" "$NC"
+        printf '    %b║%b  %b%s%b%*s%b║%b\n' "$PHOSPHOR" "$NC" "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) '' "$PHOSPHOR" "$NC"
+        printf '    %b╠%s╣%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 "$width"))" "$NC"
+        [ -n "$description" ] && printf '    %b║%b  %b%s%b\n' "$PHOSPHOR" "$NC" "$DIM" "$description" "$NC"
+        [ -n "$description" ] && printf '    %b╟%s╢%b\n' "$PHOSPHOR" "$(printf '─%.0s' $(seq 1 "$width"))" "$NC"
         local i=0
         for option in "${options[@]}"; do
             local marker="  "
             local checkbox="[ ]"
             if [ $i -eq $selected ]; then
-                marker=" \033[36m▸\033[0m"
+                marker=" $BRIGHT_CYAN▸$NC"
             fi
             if [ "${choices[$i]}" -eq 1 ]; then
-                checkbox="[\033[32m█\033[0m]"
+                checkbox="[$BRIGHT_PHOSPHOR█$NC]"
             fi
             if [ $i -eq $selected ]; then
-                printf '    ║%s \033[1m%s\033[0m %s %s%*s║\n' "$marker" "$checkbox" "$((i + 1))." "$option" $((width - ${#option} - ${#checkbox} - ${#i} - 8)) ''
+                printf '    %b║%b%s %b%s%b %s %s%*s%b║%b\n' "$PHOSPHOR" "$NC" "$marker" "$BOLD" "$checkbox" "$NC" "$((i + 1))." "$option" $((width - ${#option} - ${#checkbox} - ${#i} - 8)) '' "$PHOSPHOR" "$NC"
             else
-                printf '    ║%s %s %s %s%*s║\n' "$marker" "$checkbox" "$((i + 1))." "$option" $((width - ${#option} - ${#checkbox} - ${#i} - 8)) ''
+                printf '    %b║%b%s %s %s %s%*s%b║%b\n' "$PHOSPHOR" "$NC" "$marker" "$checkbox" "$((i + 1))." "$option" $((width - ${#option} - ${#checkbox} - ${#i} - 8)) '' "$PHOSPHOR" "$NC"
             fi
             i=$((i + 1))
         done
-        printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 "$width"))"
+        printf '    %b╚%s╝%b\n' "$PHOSPHOR" "$(printf '─%.0s' $(seq 1 "$width"))" "$NC"
         printf '\n'
         local selected_tags=""
         local sel_count=0
@@ -717,12 +1036,12 @@ tui_checkbox() {
             i=$((i + 1))
         done
         if [ $sel_count -gt 0 ]; then
-            printf '    \033[32m▸ Selected: %d item(s)\033[0m\n' "$sel_count"
+            printf '    %b▸ Selected: %d item(s)%b\n' "$BRIGHT_PHOSPHOR" "$sel_count" "$NC"
         else
-            printf '    \033[2m▸ No items selected\033[0m\n'
+            printf '    %b▸ No items selected%b\n' "$DIM" "$NC"
         fi
         printf '\n'
-        printf '    \033[2m↑↓ Navigate  │  SPACE Toggle  │  ENTER Done  │  Q Cancel\033[0m\n'
+        printf '    %b↑↓ Navigate  │  SPACE Toggle  │  ENTER Done  │  Q Cancel%b\n' "$DIM" "$NC"
 
         local key
         IFS= read -rsn1 key < /dev/tty
@@ -767,9 +1086,9 @@ tui_grid_checklist() {
     fi
 
     printf '\n'
-    printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 $((total_width - 4))))"
-    printf '    ║  \033[1m%s\033[0m%*s║\n' "$title" $((total_width - ${#title} - 5)) ''
-    printf '    ╟%s╢\n' "$(printf '─%.0s' $(seq 1 $((total_width - 4))))"
+    printf '    %b╔%s╗%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 $((total_width - 4))))" "$NC"
+    printf '    %b║%b  %b%s%b%*s%b║%b\n' "$PHOSPHOR" "$NC" "$BOLD_WHITE" "$title" "$NC" $((total_width - ${#title} - 5)) '' "$PHOSPHOR" "$NC"
+    printf '    %b╟%s╢%b\n' "$PHOSPHOR" "$(printf '─%.0s' $(seq 1 $((total_width - 4))))" "$NC"
 
     local idx=1
     while [ $# -ge 2 ]; do
@@ -784,20 +1103,20 @@ tui_grid_checklist() {
             shift 2
         fi
 
-        printf '    ║  [%s] %d. %s' ' ' "$idx" "$left_label"
+        printf '    %b║%b  [ ] %d. %s' "$PHOSPHOR" "$NC" "$idx" "$left_label"
         local pad=$((col1_width - ${#left_label} - ${#idx}))
         [ $pad -gt 0 ] && printf '%*s' "$pad" ''
         printf '      '
         if [ -n "$right_label" ]; then
             idx=$((idx + 1))
-            printf '[%s] %d. %s' ' ' "$idx" "$right_label"
+            printf '[ ] %d. %s' "$idx" "$right_label"
             pad=$((col2_width - ${#right_label} - ${#idx}))
             [ $pad -gt 0 ] && printf '%*s' "$pad" ''
         fi
-        printf '  ║\n'
+        printf '  %b║%b\n' "$PHOSPHOR" "$NC"
     done
 
-    printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 $((total_width - 4))))"
+    printf '    %b╚%s╝%b\n' "$PHOSPHOR" "$(printf '─%.0s' $(seq 1 $((total_width - 4))))" "$NC"
     printf '\n'
-    printf '    \033[2mKeys: SPACE Toggle  │  ENTER Execute\033[0m\n'
+    printf '    %bSPACE Toggle  │  ENTER Execute%b\n' "$DIM" "$NC"
 }
