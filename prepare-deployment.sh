@@ -1584,58 +1584,52 @@ run_agent_mode() {
 
 # ── Environment Exploration ──
 explore_environment() {
-    # This function gathers and displays information about the current macOS environment
-    # to help the user make informed decisions about the deployment.
-    
-    # Get default IP address (try common interfaces)
     local default_ip
     default_ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || ipconfig getifaddr en2 2>/dev/null || echo "127.0.0.1")
     
-    # Prompt for IP address
     local ip_address
     ip_address=$(tui_input "IP Address" "Enter the IP address of this Mac Pro:" "$default_ip")
     [ -z "$ip_address" ] && ip_address="$default_ip"
     
-    local info="=== System Information ===\n"
-    info+="Mac Pro IP Address: $ip_address\n\n"
-    
-    # macOS version
-    info+="macOS Version: $(sw_vers -productName) $(sw_vers -productVersion)\n"
-    info+="Build: $(sw_vers -buildVersion)\n\n"
-    
-    # SIP status
     local sip_status
     sip_status=$(csrutil status 2>/dev/null | grep -o 'enabled\|disabled' | head -1 || echo "unknown")
-    info+="SIP Status: ${sip_status^^}\n\n"
+    sip_status=$(echo "$sip_status" | tr '[:lower:]' '[:upper:]')
     
-    # Bootloader information
-    info+="=== Bootloader Information ===\n"
-    # Check for rEFInd
-    if [ -d "/Volumes/EFI/EFI/refind" ] || [ -d "/EFI/refind" ]; then
-        info+="rEFInd: Detected\n"
-    else
-        info+="rEFInd: Not found\n"
-    fi
-    
-    # Current boot device via bless
     local boot_device
     boot_device=$(bless --info --getboot 2>/dev/null | head -1 || echo "Unable to determine")
-    info+="Current Boot Device (bless): $boot_device\n"
     
-    # Current startup disk via systemsetup
     local startup_disk
     startup_disk=$(systemsetup -getstartupdisk 2>/dev/null | awk -F': ' '{print $2}' || echo "Unable to determine")
-    info+="Startup Disk (systemsetup): $startup_disk\n\n"
     
-    # Disk space
-    info+="=== Disk Space ===\n"
-    info+="$(df -h /\n\n)"
+    local disk_info
+    disk_info=$(df -h /)
     
-    # Partition map
-    info+="=== Partition Map ===\n"
-    info+="$(diskutil list)\n"
+    local part_info
+    part_info=$(diskutil list 2>/dev/null || echo "Unable to read partition map")
     
-    # Display the information in a message box
+    local refind_status="Not found"
+    [ -d "/Volumes/EFI/EFI/refind" ] || [ -d "/EFI/refind" ] && refind_status="Detected"
+    
+    local info
+    info="=== System Information ===
+Mac Pro IP Address: $ip_address
+
+macOS Version: $(sw_vers -productName) $(sw_vers -productVersion)
+Build: $(sw_vers -buildVersion)
+
+SIP Status: $sip_status
+
+=== Bootloader Information ===
+rEFInd: $refind_status
+Current Boot Device (bless): $boot_device
+Startup Disk (systemsetup): $startup_disk
+
+=== Disk Space ===
+$disk_info
+
+=== Partition Map ===
+$part_info"
+    
     tui_msgbox "Environment Exploration Results" "$info"
 }
 
