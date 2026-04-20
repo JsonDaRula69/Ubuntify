@@ -203,7 +203,7 @@ tui_menu() {
     if [ "$TUI_BACKEND" = "dialog" ]; then
         local items=()
         while [ $# -ge 2 ]; do
-            items+=("$2" "$1" "")
+            items+=("$2" "$1")
             shift 2
         done
         if dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --menu "$description" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
