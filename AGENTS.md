@@ -483,6 +483,28 @@ When an AI agent performs a kernel update on this machine, it MUST follow these 
 7. **ALWAYS use `grub-reboot` for the first boot into a new kernel** — never set it as the GRUB default until verified working.
 8. **If DKMS build fails, ALWAYS enter ABORT AND ROLLBACK immediately** — never attempt to reboot into a kernel without a working `wl.ko`.
 
+### Headless Readiness Verification
+
+The Mac Pro operates without monitor or keyboard (headless). Before and after deployment, verify headless readiness with `verify_headless_readiness` (local) or `remote_headless_verify` (remote via `--operation headless_verify`).
+
+Checks performed (critical = blocks deployment, warning = logged but continues):
+
+| Check | Critical? | Fix |
+|-------|-----------|-----|
+| SIP disabled | Yes | Boot to Recovery (Option+R) → `csrutil disable` |
+| SSH (Remote Login) enabled | Yes | `sudo systemsetup -setremotelogin on` |
+| Passwordless sudo | Yes | Add `user ALL=(ALL) NOPASSWD: ALL` to `/etc/sudoers.d/` |
+| Screen sharing (ARD) running | Yes | `sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -privs -all -users macpro` |
+| Sleep disabled | Warning | `sudo pmset -a sleep 0 displaysleep 0 disksleep 0` |
+| Wake on LAN (WOMP) enabled | Warning | `sudo pmset -a womp 1` |
+| Auto-restart on power loss | Warning | `sudo pmset -a autorestart 1` |
+| Firewall enabled | Warning | `sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on` |
+| Recovery partition present | Yes | Reinstall macOS or use Internet Recovery |
+| No third-party bootloader (rEFInd) | Warning | Mount EFI, remove `EFI/refind/` and `EFI/BOOT/BOOTX64.EFI`, then `bless --mount / --setBoot` |
+| SSH authorized_keys present | Warning | `ssh-copy-id` from control machine |
+
+Note: On Mac Pro 2013, boot to Recovery with **Option+R** (not Command+R) — this is a keyboard layout requirement.
+
 ### Update Frequency Recommendations
 
 | Update Type | Frequency | Risk |
@@ -647,6 +669,7 @@ The following operations are available in agent mode via `--operation OP`:
 | `erase_macos` | `remote_erase_macos()` | Delete macOS partitions, expand Ubuntu to full disk | Yes |
 | `apt_enable` | `remote_apt_enable()` | Enable APT package sources (use kernel_unpin instead) | Yes |
 | `apt_disable` | `remote_apt_disable()` | Disable APT package sources (use kernel_pin instead) | Yes |
+| `headless_verify` | `remote_headless_verify()` | Verify macOS headless readiness (SSH, SIP, sleep, Recovery, etc.) | No |
 
 **Note**: The `driver_status`, `driver_rebuild`, `erase_macos`, `apt_enable`, and `apt_disable` operations exist as implemented functions but have recommended alternatives:
 - `driver_status` — `sysinfo` or `health_check` includes DKMS status
@@ -691,6 +714,7 @@ The `remote_toggle_apt_sources(host, action)` function (line 234 in lib/remote.s
 - **Serial console output** — GRUB `console=ttyS0,115200` param enables serial output for headless debugging; VirtualBox UART1 maps to `/tmp/vmtest-serial.log`
 - **Blacklist loop redirect** — for-loop writing to blacklist file must use `>>` (append), not `>` (overwrite); `>` truncates on each iteration, only keeping the last driver entry
 - **macOS erasure is irreversible** — once macOS partitions are deleted, they cannot be recovered; the GPT backup only restores partition table entries, not data
+- **macOS Recovery MUST be preserved** — `check_recovery_health()` runs before deployment (in `analyze_disk_layout`), after APFS resize (in `shrink_apfs_if_needed`), and after bless (in `_phase_verify_bless`). If Recovery is missing/unhealthy, deployment is blocked. `generate_dualboot_storage` verifies the APFS container partition (GUID `7c3457ef-0000-11aa-aa11-00306543ecac`) is in the preserve list — without it, the installer destroys Recovery. `diskutil apfs resizeContainer` can corrupt APFS volume metadata that the firmware uses to discover Recovery — the post-resize check catches this.
 
 ## Runtime Output Directory
 

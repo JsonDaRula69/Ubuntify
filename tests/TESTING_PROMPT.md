@@ -9,6 +9,7 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
 - [Phase 0: Codebase Architecture Model](#phase-0-codebase-architecture-model)
 - [Phase 1: Static Code Analysis](#phase-1-static-code-analysis)
   - [1.1.1 TUI Module Raw Fallback Audit](#111-tui-module-raw-fallback-audit)
+  - [1.7 Systematic Execution Path Walkthrough](#17-systematic-execution-path-walkthrough)
 - [Phase 2: Functional Behavior Testing](#phase-2-functional-behavior-testing)
   - [2.8 TUI Interactive Prompt Testing](#28-tui-interactive-prompt-testing)
   - [2.9 Option Selection Flow Pathway Tracing](#29-option-selection-flow-pathway-tracing)
@@ -16,7 +17,9 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
   - [2.11 Sudo File Ownership Audit](#phase-211-sudo-file-ownership-audit)
   - [2.12 Orphaned and Unused Code Detection](#phase-212-orphaned-and-unused-code-detection)
   - [2.13 Bash 3.2 Compatibility Verification](#phase-213-bash-32-compatibility-verification)
-  - [2.14 Deployment Method Double-Execution Prevention](#phase-214-deployment-method-double-execution-prevention)
+  - [2.14 Action Single-Execution Guarantee](#phase-214-action-single-execution-guarantee)
+  - [2.15 Data Flow Tracing](#215-data-flow-tracing)
+  - [2.16 Error Message Quality Audit](#216-error-message-quality-audit)
 - [Phase 3: Integration and System Testing](#phase-3-integration-and-system-testing)
 - [Phase 4: Best Practices and Patterns](#phase-4-best-practices-and-patterns)
 - [Phase 5: Execution and Validation](#phase-5-execution-and-validation)
@@ -199,18 +202,35 @@ Specific checks:
 
 ### 1.5 Line-by-Line Code Review
 Review EVERY line of EVERY shell script for correctness. Do not skip sections assuming they work.
-For each line, verify:
+
+**Structured methodology — for each file, process ALL lines:**
+
+1. **Read the file completely** before marking any finding. Context matters — a line that looks wrong in isolation may be correct in context.
+2. **For each line, verify the checklist below.** Mark each line as: PASS, FINDING, or UNCERTAIN (needs deeper analysis).
+3. **For FINDINGs**, classify severity and document: line number, what's wrong, what it should be, impact.
+4. **For UNCERTAIN lines**, trace the execution context to resolve uncertainty before proceeding.
+5. **After completing a file**, re-read every FINDING to confirm it's still valid in the full-file context.
+
+**Per-line verification checklist:**
+
 - Is the logic correct for the platform it runs on? (macOS vs. Ubuntu/Subiquity installer vs. Ubuntu target)
 - Are all variable expansions properly quoted? (Every `"$VAR"` must be quoted, every unquoted `$VAR` is a finding)
 - Are all conditional expressions correct? (`[[ ]]` for bash, `[ ]` only for POSIX contexts like autoinstall YAML `- |` blocks)
 - Are exit codes properly checked? (No silent failures in `set -e` context)
 - Are pipe failures caught? (`set -o pipefail` is set — verify pipe chains propagate failures)
+- Is the line reachable? (not after unconditional exit/return/die)
+- Does the line have side effects? If yes, are they expected and cleaned up on failure?
+- Does the line depend on a variable set in a different scope? If yes, is that variable guaranteed to be set?
+- Does the line correctly handle empty/missing values? (especially under `set -u`)
+- If the line is in a conditional block, does it handle the NEGATED condition correctly? (errors in else/unexpected branches)
+- If the line uses `eval`, `source`, or dynamic invocation, is every possible input safe?
+- If the line calls an external command, does the command exist on the target platform?
 
 Platform-specific line-by-line checks:
-- **macOS (host) scripts** (prepare-deployment.sh, build-iso.sh, lib/disk.sh, lib/bless.sh, lib/detect.sh, lib/revert.sh): Use BSD工具语义。`stat -f%z`, `diskutil`, `bless`, `newfs_msdos`, `hdiutil`
-- **autoinstall YAML `- |` blocks** (lib/autoinstall.sh embedded content, 生成されたautoinstall.yaml): Run via `sh -c` in Subiquity installer — POSIX ONLY, no `[[ ]]`, no arrays, no `<<<`。变量不会在不同的`- |`块之间共享
-- **远程管理脚本** (lib/remote.sh): SSH命令在目标Ubuntu系统上执行。`apt`、`dkms`、`systemctl`、`efibootmgr`命令
-- **Node.js** (macpro-monitor/server.js): Node.js语义，Promises, HTTP server
+- **macOS (host) scripts** (prepare-deployment.sh, build-iso.sh, lib/disk.sh, lib/bless.sh, lib/detect.sh, lib/revert.sh): Use BSD tool semantics. `stat -f%z`, `diskutil`, `bless`, `newfs_msdos`, `hdiutil`
+- **autoinstall YAML `- |` blocks** (lib/autoinstall.sh embedded content, generated autoinstall.yaml): Run via `sh -c` in Subiquity installer — POSIX ONLY, no `[[ ]]`, no arrays, no `<<<`. Variables are NOT shared between different `- |` blocks
+- **Remote management scripts** (lib/remote.sh): SSH commands execute on the target Ubuntu system. `apt`, `dkms`, `systemctl`, `efibootmgr` commands
+- **Node.js** (macpro-monitor/server.js): Node.js semantics, Promises, HTTP server
 
 ### 1.6 Generated Artifact Validation
 Validate every `autoinstall.yaml` and `autoinstall-vm.yaml` variant (method × storage × network combinations) parses as valid YAML:
@@ -226,6 +246,131 @@ Validate every `autoinstall.yaml` and `autoinstall-vm.yaml` variant (method × s
   - `early-commands` and `late-commands` run via `sh -c` — verify POSIX-only syntax
   - `storage:` section with `preserve: true` must have lowercase GUID type codes
   - `reporting:` section must use `{progress, stage, status, message}` fields, NOT `{name, event_type, origin}` (those trigger built-in Subiquity handler)
+
+### 1.7 Systematic Execution Path Walkthrough
+
+This section requires tracing EVERY possible execution path through each script, from entry point to exit. The goal is to discover logic errors, missing error handling, unreachable code, and incorrect branching — not just verify known patterns.
+
+**Every script must have ALL its execution paths walked. This is not optional.**
+
+#### 1.7.1 Path Enumeration Methodology
+
+For each script, enumerate ALL possible execution paths:
+
+1. **Identify all entry points**: main(), flag-parsing, --agent mode, --revert, --operation
+2. **Identify all branch points**: if/elif/else, case/esac, loop conditions, short-circuit operators (&&, ||), function return values, error exits
+3. **For each branch point, enumerate all outcomes**: true/false for if, each case pattern, loop-iteration vs loop-skip, success vs failure for function calls
+4. **Trace each complete path from entry to exit**: document the sequence of function calls, variable assignments, and side effects
+5. **Count total paths**: if impractical (combinatorial explosion), prioritize paths that involve destructive operations or user input
+
+**Path trace template:**
+```
+Script: [filename]
+Path ID: [P1, P2, ...]
+Entry: [how this path is entered]
+Branch decisions: [each branch point and which direction]
+Function call sequence: [ordered list of functions called]
+Side effects: [disk changes, file writes, network calls]
+Exit: [exit code and cleanup performed]
+Potential issues: [anything that looks wrong]
+```
+
+#### 1.7.2 prepare-deployment.sh Path Walkthrough
+
+Trace ALL execution paths through prepare-deployment.sh:
+
+**First-run paths (no existing deploy.conf):**
+- Path: No config → "Configure new device?" → Yes → explore_environment → menu_deploy_select → prompt_config → _run_deploy_method → exit
+- Path: No config → "Configure new device?" → No → exit
+- Path: No config → "Configure new device?" → Cancel at any sub-prompt → exit without partial execution
+
+**Returning-user paths (existing deploy.conf):**
+- Path: Config exists → main menu → Deploy → menu_deploy → [method selection + execution] → return to menu
+- Path: Config exists → main menu → Manage → run_manage_mode → [submenu loop] → return to main menu
+- Path: Config exists → main menu → Revert → handle_revert_flag → exit
+- Path: Config exists → main menu → Exit → break
+
+**Agent mode paths:**
+- Path: --agent --method N --storage N --network N → skip flow prompts → _run_deploy_method → exit
+- Path: --agent --operation X → skip deploy entirely → run agent operation → exit
+- Path: --agent --build-iso → run ISO build → exit
+- Path: --agent --revert → handle_revert_flag → exit
+
+**Error paths:**
+- Path: Missing required dependency → die at startup
+- Path: Invalid --method value → agent_error E_AGENT_PARAM → exit
+- Path: --operation with missing --host → agent_error → exit
+
+**For each path, verify:**
+- The path terminates (no infinite loops except intentional menu loops)
+- The exit code is correct for the outcome
+- No destructive operation executes without user confirmation (except in --yes mode)
+- No partial state is left behind on failure (trap/cleanup runs)
+- The path does NOT accidentally execute code from a different path (fallthrough, missing break/return/exit)
+
+#### 1.7.3 lib/deploy.sh Path Walkthrough
+
+Trace all deployment method paths:
+
+**Method 1 (Internal ESP):**
+- Path: analyze_disk_layout → shrink_apfs_if_needed → create_esp_partition → extract_iso_to_esp → copy_packages_to_esp → generate_config_on_esp → verify_bless → done
+- For each sub-path: trace what happens on failure (journal rollback, cleanup, error reporting)
+
+**Method 2 (USB):**
+- Path: detect_usb → partition_usb → extract_iso_usb → copy_packages_usb → generate_config_usb → verify_usb → done
+
+**Method 3 (Manual):**
+- Path: detect_iso → detect_usb → create_standard_usb → done
+
+**Method 4 (VM):**
+- Path: check_vbox → find_iso → build_iso → create_vm → start_monitor → done
+
+**For EACH method, trace the journal phase progression and verify:**
+- Phase markers are written at the correct time (BEFORE the phase starts, not after)
+- Phase completion is recorded AFTER the phase succeeds
+- On failure, the correct rollback function is called for the current phase
+- After rollback, the system is in a recoverable state
+
+#### 1.7.4 lib/remote.sh Path Walkthrough
+
+Trace all manage mode operation paths:
+
+- sysinfo → remote_get_info → format and display
+- kernel_status → remote_kernel_status → display
+- kernel_pin → tui_confirm → remote_kernel_repin → verify
+- kernel_unpin → tui_confirm → remote_kernel_unpin → verify
+- kernel_update → 7-phase interactive flow with rollback at each phase
+- security_update → remote_non_kernel_update → verify
+- health_check → remote_health_check → display
+- driver_status → remote_driver_status → display
+- driver_rebuild → tui_confirm → remote_driver_rebuild → verify
+- erase_macos → tui_confirm → remote_erase_macos → verify
+- reboot → tui_confirm → remote_reboot → wait + verify
+- boot_macos → tui_confirm → remote_boot_macos → verify
+
+**For kernel_update specifically:**
+- Trace all 7 phases in order
+- For each phase, trace: success path → next phase, failure path → rollback
+- Phase 6 (reboot): trace what happens if SSH never comes back (timeout handling)
+- Phase 7 (re-lock): trace what happens if re-lock fails partially
+
+#### 1.7.5 build-iso.sh Path Walkthrough
+
+- Path: Check prerequisites → extract ISO → overlay custom files → rebuild ISO → cleanup staging
+- For each step: trace failure handling (trap cleanup, staging directory removal)
+- Verify: successful build removes staging directory (not just on failure)
+
+#### 1.7.6 Cross-Script Path Analysis
+
+**prepare-deployment.sh → lib/build-iso.sh subprocess:**
+- How is build-iso.sh invoked? (subprocess vs sourced)
+- What environment variables are passed?
+- What exit codes are expected and how are they handled?
+
+**prepare-deployment.sh → lib/remote.sh via SSH:**
+- Each remote function runs in a separate SSH session
+- Verify: SSH connection timeout is handled at every call site
+- Verify: SSH failure mid-operation leaves the target in a recoverable state
 
 ---
 
@@ -383,71 +528,73 @@ Every menu choice, checklist selection, confirmation, and input value flows thro
 
 **Trace methodology**: For each TUI call site in prepare-deployment.sh, document: (1) which TUI function is called, (2) what the expected return type is, (3) how the return value is used, (4) what the final resolved behavior is.
 
-**Deploy mode menu** (tui_menu, tag → case dispatch):
+**Deploy mode menu** (tui_menu → case dispatch):
 ```
-Line 764: choice=$(tui_menu "Mac Pro 2013 Ubuntu Deployment" "Select operation mode:" ...)
-  → returns tag: "deploy", "manage", "revert", "exit"
-  → Line 766: case "$choice" in deploy|...) menu_deploy ;;
-  → Line 775: case "$choice" in esp|usb|manual|vm) menu_deploy "$choice" ;;
-  → ...
-  Verify: user selects "1" → gets "Deploy" → gets deployment method submenu
+Function: select_mode()
+  → tui_menu returns tag: "deploy", "manage", "revert", "exit"
+  → case "$choice" dispatches to: run_deploy_mode, run_manage_mode, handle_revert_flag, break
+  Verify: user selects "Deploy" → enters deployment method submenu
   Verify: each tag maps to the correct function with correct arguments
+  Verify: no tag value can cause fallthrough to an unintended branch
+```
+
+**Deployment method submenu** (tui_menu → collect + execute):
+```
+Function: menu_deploy() or menu_deploy_select() (depending on flow path)
+  → tui_menu returns tag mapping to DEPLOY_METHOD (1-4)
+  → sets STORAGE_LAYOUT, NETWORK_TYPE via further tui_menu calls
+  → show_pre_execution_summary → tui_confirm (final confirmation)
+  Verify: collect-only function does NOT execute deployment
+  Verify: execute step runs exactly once after all collection is complete
+  Verify: cancellation at any point returns without partial execution
 ```
 
 **SSH key configuration flow** (tui_menu → conditional):
 ```
-Line 411: choice=$(tui_menu "SSH Key Configuration" ...)
-  → returns tag: "existing", "generate", "skip"
-  → Line 415: case "$choice" in
-      existing) prompt_existing_key ;;
-      generate) prompt_generate_key ;;
-      skip) ... ;; esac
+Function: configure_ssh_config() or prompt flow in prompt_config()
+  → tui_menu returns tag: "existing", "generate", "skip"
+  → case dispatches to: prompt_existing_key, prompt_generate_key, or skip warning
   Verify: "existing" → scans ~/.ssh/*.pub → if none found → warns user
   Verify: "generate" → prompts key type → runs ssh-keygen → saves to ~/.ssh/macpro_ubuntu_*
   Verify: "skip" → skips SSH setup → warns about console access
+  Verify: all file writes under ~/.ssh/ are chowned to SUDO_USER
 ```
 
 **Kernel management submenu** (tui_menu, tag → multi-step confirm):
 ```
-Line 1064: choice=$(tui_menu "Kernel Management" ...)
-  → returns tag: "status", "pin", "unpin", "update", "security", "back"
-  → Line 1072: case "$choice" in
-      pin) if tui_confirm "Pin Kernel" ...; then remote_kernel_repin ...; fi ;;
-      unpin) if tui_confirm "Unpin Kernel" ...; then remote_kernel_unpin ...; fi ;;
-      ...
-  Verify: "pin" → shows tui_confirm dialog → on yes → calls remote_kernel_repin
-  Verify: "unpin" → shows tui_confirm dialog → on yes → calls remote_kernel_unpin
-  Verify: each destructive operation (pin/unpin/update/security) requires tui_confirm "yes"
+Function: run_kernel_submenu() or equivalent in run_manage_mode()
+  → tui_menu returns tag: "status", "pin", "unpin", "update", "security", "back"
+  → case dispatches with confirm gates for destructive operations
+  Verify: "pin" → shows tui_confirm → on yes → calls remote_kernel_repin
+  Verify: "unpin" → shows tui_confirm → on yes → calls remote_kernel_unpin
+  Verify: each destructive operation requires tui_confirm "yes"
   Verify: read-only operations (status) do NOT require confirmation
 ```
 
 **WiFi/Driver submenu** (tui_menu, destructive with confirm):
 ```
-Line 1126: choice=$(tui_menu "WiFi/Driver" ...)
-  → Line 1131: case "$choice" in
-      status) remote_driver_status ;;  # no confirm
-      rebuild) if tui_confirm "Rebuild Driver" ...; then remote_driver_rebuild ...; fi ;;
-      back) return ;;
+Function: run_wifi_submenu() or equivalent in run_manage_mode()
+  → tui_menu returns tag: "status", "rebuild", "back"
+  → case dispatches: status (no confirm), rebuild (confirm required), back (return)
   Verify: "rebuild" requires explicit confirm before calling remote function
 ```
 
 **Storage submenu** (tui_menu, ERASE is destructive):
 ```
-Line 1156: choice=$(tui_menu "Storage" ...)
-  → Line 1161: case "$choice" in
-      disk) remote_get_info ... ;;  # read-only, no confirm
-      erase) if tui_confirm "ERASE macOS" "WARNING: This will DELETE..."; then remote_erase_macos ...; fi ;;
-  Verify: "erase" shows explicit warning in tui_confirm, user must type "yes" to proceed
+Function: run_storage_submenu() or equivalent in run_manage_mode()
+  → tui_menu returns tag: "disk", "erase", "back"
+  → case dispatches: disk (read-only, no confirm), erase (confirm with WARNING), back (return)
+  Verify: "erase" shows explicit warning in tui_confirm, user must confirm to proceed
 ```
 
 **Password input flow** (tui_password → validation):
 ```
-prompt_config: tui_password "Password" "Enter password for $USERNAME:"
-  → returns: password string (raw, may be empty)
-  → prompt_config: if [ -z "$PASS" ]; then tui_password "Confirm Password" ...; fi
-  → if [ "$PASS" != "$CONFIRM" ]; then echo "[FATAL] Passwords do not match" ...; fi
+Function: prompt_config()
+  → tui_password captures password string
+  → if empty: prompts confirmation password
+  → if mismatch: FATAL error, does not continue
   Verify: password mismatch → FATAL, does not continue
-  Verify: password match → proceeds to next step (SSH config)
+  Verify: password match → proceeds to next step (usually encryption mode or SSH config)
 ```
 
 **Tracing requirements** — for each flow pathway:
@@ -457,13 +604,14 @@ prompt_config: tui_password "Password" "Enter password for $USERNAME:"
 4. For each branch, document the final resolved behavior (what actually happens)
 5. Flag any pathway where: the return type doesn't match the caller's expectation, or the branch logic seems wrong
 
-**Automated trace** (grep + sed):
+**Automated trace** (use grep to extract all TUI call sites, then trace each one manually):
 ```bash
-# Extract all tui_* calls and their immediate context
-grep -n 'tui_menu\|tui_confirm\|tui_input\|tui_password\|tui_checklist\|tui_msgbox' prepare-deployment.sh | \
-  grep -A3 '$(tui_menu\||| tui_confirm\|if.*tui_confirm\|tui_input\|tui_password\|tui_checklist'
+# Extract all tui_* calls and their surrounding context
+grep -n 'tui_menu\|tui_confirm\|tui_input\|tui_password\|tui_checklist\|tui_msgbox' prepare-deployment.sh
 
-# For each tui_menu call, verify the returned tag is used in a case statement with matching values
+# For each tui_menu call found, locate the corresponding case/esac that consumes the result
+# For each tui_confirm call, verify the if/then branch leads to correct action
+# This grep is a starting point — full tracing requires reading the code context
 ```
 
 **Key invariants to verify for every flow**:
@@ -473,6 +621,127 @@ grep -n 'tui_menu\|tui_confirm\|tui_input\|tui_password\|tui_checklist\|tui_msgb
 - All tui_confirm callers use it as `if tui_confirm ...` or `||` — NOT capturing output
 - tui_input and tui_password results are checked for emptiness before use
 - Back/exit choices always return from the function or exit the script, never fall through
+
+### 2.15 Data Flow Tracing
+
+Trace how user-supplied values flow through the entire codebase. This catches: values that are collected but never used, values that are overwritten before use, values that are transformed incorrectly, and values that reach execution context without proper sanitization.
+
+#### 2.15.1 User Input to Execution Trace
+
+For each user-facing input field, trace its full lifecycle:
+
+```
+Input: [field name] (e.g., WIFI_SSID)
+Source: [tui_input, --flag, deploy.conf, autoinstall.yaml placeholder]
+Storage: [variable name, conf file key]
+Transformations: [sed replacement, escaping, validation]
+Consumers: [which functions/commands receive this value]
+Execution context: [local shell, SSH remote, sh -c in autoinstall, YAML value]
+Sanitization: [quoting, escaping, validation applied before execution]
+```
+
+**Inputs to trace:**
+
+| Input | Source | Flows To | Risk |
+|-------|--------|----------|------|
+| USERNAME | deploy.conf / --username | autoinstall.yaml, target /etc | Shell metacharacters in username |
+| PASSWORD / HASH | deploy.conf / tui_password | autoinstall.yaml, chpasswd | Plaintext exposure, YAML injection |
+| WIFI_SSID | deploy.conf / --wifi-ssid | autoinstall.yaml sed replacement, netplan YAML | `#`, `/`, `&` in SSID break sed |
+| WIFI_PASSWORD | deploy.conf / --wifi-password | autoinstall.yaml, netplan YAML | YAML injection, sed delimiter clash |
+| SSH_KEY | deploy.conf / tui_menu | autoinstall.yaml, /target/.ssh/authorized_keys | Newline handling, key format |
+| HOSTNAME | deploy.conf / --hostname | autoinstall.yaml, target /etc/hostname | RFC 952 violations |
+| DEPLOY_METHOD | --method / tui_menu | case dispatch to deploy_* functions | Invalid value handling |
+| USB_DEVICE | tui_menu / auto-detect | diskutil, sgdisk, dd commands | Partition path injection |
+| WEBHOOK_URL | deploy.conf / --webhook-* | logging.sh curl commands | URL injection |
+| ENCRYPTION | --encryption / tui_menu | encrypt_config, decrypt_config | Invalid mode handling |
+
+**For each input, verify:**
+- Value is quoted at EVERY point it reaches a command (not just the first use)
+- Value survives all transformations intact (collect → store → retrieve → use)
+- No transformation step silently produces empty output from non-empty input
+- Invalid values are caught BEFORE they reach destructive commands
+
+#### 2.15.2 Config Value Round-Trip Integrity
+
+**End-to-end trace for every deploy.conf value:**
+1. User enters value via TUI or CLI flag
+2. Value is stored in deploy.conf by save_config()
+3. Value is retrieved by parse_conf() on next run
+4. Value is passed to autoinstall.sh generate_autoinstall()
+5. Value is string-replaced into autoinstall.yaml template
+6. Value is embedded in YAML that runs via sh -c in the installer
+7. Value reaches its final destination (netplan, chpasswd, hostname, etc.)
+
+**Verify at each step:**
+- The value is identical to what the user entered (no truncation, escaping loss, encoding change)
+- Special characters survive the full trip: spaces, `#`, `/`, `$`, backticks, quotes
+- Values containing newlines don't break the sed replacement or YAML structure
+
+#### 2.15.3 Variable Overwrite Detection
+
+Trace every variable from assignment to last use. Detect:
+- Variables assigned but overwritten before first use
+- Variables assigned in one code path but consumed in a different code path that may not have executed
+- Variables consumed before assignment (especially across `- |` blocks in autoinstall YAML)
+- Global variables that should be local (side effects leak to callers)
+- Local variables that should be global (values lost when function returns)
+
+### 2.16 Error Message Quality Audit
+
+Every error path must produce a message that is: (1) accurate, (2) actionable, and (3) free of assumptions. This section audits error messages for quality, not just presence.
+
+#### 2.16.1 Accuracy Verification
+
+**For every die(), log_fatal(), agent_error(), and echo "[FATAL]" call:**
+- Is the message factually correct for ALL conditions that trigger it?
+- Does the message describe what actually went wrong (not a symptom or unrelated condition)?
+- Does the message avoid referencing assumptions that may not hold? (e.g., "SIP is blocking bless" — SIP may not be the cause; the message should say "bless failed" and list possible causes)
+
+**Common accuracy problems:**
+- Messages that assume a specific cause when multiple causes are possible
+- Messages that reference implementation details that may change (function names, variable names, file paths that depend on OUTPUT_DIR)
+- Messages that include stale version numbers or hardcoded paths
+- Messages that say "cannot find X" when the actual issue is "X exists but is invalid"
+
+#### 2.16.2 Actionability Verification
+
+**For every error message, answer: "What should the user DO next?"**
+- If the message only says what went wrong but not how to fix it → needs improvement
+- If the message suggests a fix that may not work → needs verification
+- If the message says "see documentation" without specifying which section → needs specificity
+- If the message suggests running a command → verify that command actually exists and works
+
+**Actionable message template:**
+```
+[FATAL] What went wrong
+  Cause: Most likely cause (or list of possible causes)
+  Fix: Specific action the user should take
+  Reference: Where to find more information (specific doc section)
+```
+
+#### 2.16.3 Error Context Completeness
+
+**When an operation fails, does the error output include:**
+- What was being attempted (operation name, phase)
+- What specifically failed (command, file, network endpoint)
+- The exit code of the failed command
+- The stderr output from the failed command
+- The state at failure point (journal phase, partial completion status)
+- What the user can do to recover (revert, retry, manual fix)
+- Whether the system is in a safe state or needs intervention
+
+#### 2.16.4 log_fatal vs die Consistency
+
+Two functions serve similar purposes but with different side effects:
+- `die()` (from logging.sh): logs FATAL + calls log_shutdown + exits
+- `log_fatal()`: logs FATAL + exits (may not call log_shutdown)
+- `agent_error()`: emits NDJSON + exits (no logging.sh integration)
+
+**Verify:**
+- Every FATAL exit goes through one of these functions (never bare `exit 1`)
+- The correct function is used for the correct context (TUI vs agent mode)
+- log_shutdown is called in trap handlers (not from die — calling it from both trap and die causes double-call)
+- agent_error produces valid JSON with all required fields
 
 ---
 
@@ -1040,6 +1309,21 @@ Before completion, verify:
 - [ ] Function scope: every function classified as collect-only, execute-only, or collect-and-execute
 - [ ] Single-execution: every destructive action runs exactly once per invocation per flow path
 - [ ] Single-execution: collect-and-execute functions don't have callers that also execute the same action
+- [ ] Execution path walkthrough: all paths through main() traced from entry to exit
+- [ ] Execution path walkthrough: all deployment method paths traced through journal phases
+- [ ] Execution path walkthrough: all remote.sh operation paths traced including rollback branches
+- [ ] Execution path walkthrough: build-iso.sh path traced including failure cleanup
+- [ ] Execution path walkthrough: cross-script paths (subprocess, SSH) traced
+- [ ] Data flow: every user input traced from collection to final execution context
+- [ ] Data flow: config values survive full round-trip (TUI → save → parse → autoinstall → target)
+- [ ] Data flow: variable overwrite detection — no value collected then overwritten before use
+- [ ] Data flow: variables consumed before assignment detected and fixed
+- [ ] Error messages: every die/fatal/agent_error message is accurate for ALL trigger conditions
+- [ ] Error messages: every error message tells the user what to DO (not just what went wrong)
+- [ ] Error messages: error context includes operation, command, exit code, and recovery options
+- [ ] Error messages: die vs log_fatal vs agent_error used correctly in each context
+- [ ] Line-by-line: every shell script line verified against 12-point checklist
+- [ ] Line-by-line: every FINDING confirmed valid in full-file context before reporting
 
 ---
 
@@ -1323,7 +1607,7 @@ Some commands use different flag syntax across platforms:
 
 ## PHASE 2.14: ACTION SINGLE-EXECUTION GUARANTEE
 
-This section verifies that every destructive or significant action executes exactly ONCE per user invocation, regardless of which flow path is taken. This is a **class of bug** where a function both collects user choices AND performs the action, and the caller also performs the action — causing double execution.
+This section verifies that every destructive or significant action executes exactly ONCE per user invocation, regardless of which flow path is taken. This covers any pattern where an action could execute multiple times: a function that both collects and executes being called from a context that also executes, a function being called from both the callee and the caller, or overlapping flow paths that reach the same action through different code branches.
 
 ### 2.14.1 Function Scope Classification
 
@@ -1353,14 +1637,16 @@ When multiple flow paths lead to the same action, verify that each path executes
 3. For each path, count the number of times the action is invoked
 4. If any path invokes the action more than once → **double execution bug**
 
-**Trace template for each action:**
+**Trace template for each destructive action:**
 ```
-Action: deploy_internal_partition
+Action: [function_name]
+Side effects: [disk changes, system modifications, network changes]
 Paths that lead to this action:
-  - First-run flow: main() → ??? → deploy_internal_partition
-  - Main menu Deploy: select_mode() → menu_deploy() → ??? → deploy_internal_partition
-  - Agent mode: run_agent_mode() → ??? → deploy_internal_partition
-For each path: count invocations. Must be exactly 1.
+  - [Path name]: [entry point] → [intermediate calls] → [action function]
+  - [Path name]: [entry point] → [intermediate calls] → [action function]
+  - [Path name]: [entry point] → [intermediate calls] → [action function]
+For each path: count invocations of the action function. Must be exactly 1.
+For each path: verify no caller re-invokes the action after the callee returns.
 ```
 
 ### 2.14.3 Variable State After Function Return

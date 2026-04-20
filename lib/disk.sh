@@ -19,6 +19,48 @@ source "${LIB_DIR:-./lib}/dryrun.sh"
 : "${ESP_SIZE:=5g}"
 STORAGE_LAYOUT="${STORAGE_LAYOUT:-1}"
 
+# Returns 0 if Recovery is present and healthy, 1 otherwise.
+# Populates RECOVERY_VOLUME and RECOVERY_UUID globals.
+check_recovery_health() {
+    local APFS_CONTAINER="$1"
+
+    RECOVERY_VOLUME=""
+    RECOVERY_UUID=""
+
+    RECOVERY_VOLUME=$(diskutil apfs list "$APFS_CONTAINER" 2>/dev/null | grep -B1 "Recovery" | grep "APFS Volume Disk" | grep -oE 'disk[0-9]+s[0-9]+' | head-1 || true)
+    if [ -z "$RECOVERY_VOLUME" ]; then
+        warn "Recovery volume NOT found in APFS container — deployment cannot proceed safely"
+        return 1
+    fi
+
+    log "Recovery volume found: /dev/$RECOVERY_VOLUME"
+
+    RECOVERY_UUID=$(diskutil info "/dev/$RECOVERY_VOLUME" 2>/dev/null | grep -i "volume UUID" | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' | head-1 || true)
+    if [ -n "$RECOVERY_UUID" ]; then
+        log "Recovery UUID: $RECOVERY_UUID"
+    fi
+
+    local RECOVERY_MOUNT_OK=0
+    if diskutil mount "$RECOVERY_VOLUME" 2>/dev/null; then
+        local RECOVERY_MOUNT="/Volumes/Recovery"
+        if [ -d "$RECOVERY_MOUNT" ] && ls "$RECOVERY_MOUNT/"*/BaseSystem.dmg 1>/dev/null 2>&1; then
+            log "Recovery BaseSystem.dmg present — Recovery appears healthy"
+            RECOVERY_MOUNT_OK=1
+        else
+            warn "Recovery volume mounted but BaseSystem.dmg is MISSING"
+        fi
+        diskutil unmount "$RECOVERY_VOLUME" 2>/dev/null || true
+    else
+        warn "Could not mount Recovery volume for health check"
+    fi
+
+    if [ "$RECOVERY_MOUNT_OK" -eq 0 ]; then
+        warn "Recovery partition exists but appears unhealthy (missing BaseSystem.dmg)"
+    fi
+
+    return 0
+}
+
 analyze_disk_layout() {
     local _internal_disk_name="$1"
     local _apfs_container_name="$2"
@@ -30,25 +72,29 @@ analyze_disk_layout() {
     local _internal_disk_val
     local _apfs_container_val
 
-    _internal_disk_val=$(diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
+    _internal_disk_val=$(diskutil list | grep -E 'internal.*physical' | head-1 | grep -oE '/dev/disk[0-9]+' || true)
     [ -n "$_internal_disk_val" ] || die "Cannot identify internal disk"
 
     log "Internal disk: $_internal_disk_val"
     diskutil list "$_internal_disk_val"
     echo ""
 
-    APFS_PARTITION=$(diskutil list "$_internal_disk_val" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+    APFS_PARTITION=$(diskutil list "$_internal_disk_val" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head-1 || true)
     if [ -n "$APFS_PARTITION" ]; then
-        _apfs_container_val=$(diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head -1 || true)
+        _apfs_container_val=$(diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head-1 || true)
     fi
     if [ -z "$_apfs_container_val" ]; then
-        _apfs_container_val=$(diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head -1 || true)
+        _apfs_container_val=$(diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head-1 || true)
     fi
     if [ -n "$_apfs_container_val" ]; then
-        FREE_SPACE=$(diskutil apfs list 2>/dev/null | grep -A5 "Capacity" | grep "Available" | grep -oE '[0-9]+.*B' | head -1 || true)
+        FREE_SPACE=$(diskutil apfs list 2>/dev/null | grep -A5 "Capacity" | grep "Available" | grep -oE '[0-9]+.*B' | head-1 || true)
         log "APFS partition: /dev/${APFS_PARTITION:-unknown}"
         log "APFS container: /dev/$_apfs_container_val"
         log "Free space: ${FREE_SPACE:-unknown}"
+
+        if ! check_recovery_health "$_apfs_container_val"; then
+            die "macOS Recovery partition is missing or damaged. Deploying without Recovery risks bricking the machine if installation fails. Repair Recovery first: boot to Internet Recovery (Cmd+Option+R) and reinstall macOS."
+        fi
     fi
     echo ""
 
@@ -138,6 +184,10 @@ shrink_apfs_if_needed() {
         diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || die "APFS resize failed"
     eval "$_apfs_resized_name=1"
     log "APFS container resized to ${TARGET_MACOS_GB}GB"
+
+    if ! check_recovery_health "$APFS_CONTAINER"; then
+        die "Recovery partition became unhealthy after APFS resize — cannot safely continue deployment. Restore via Internet Recovery (Cmd+Option+R)."
+    fi
 }
 
 create_esp_partition() {

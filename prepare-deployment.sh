@@ -1162,6 +1162,7 @@ manage_menu() {
             "WiFi/Driver" "wifi" \
             "Storage" "storage" \
             "APT Sources" "apt" \
+            "Headless Verify" "headless" \
             "Reboot" "reboot" \
             "Back to Main Menu" "back") || return 1
         echo "$choice"
@@ -1444,6 +1445,7 @@ run_manage_mode() {
             wifi)      menu_wifi ;;
             storage)   menu_storage ;;
             apt)       menu_apt ;;
+            headless)  remote_headless_verify ;;
             reboot)    menu_reboot_remote ;;
             back|"")   break ;;
         esac
@@ -1456,7 +1458,7 @@ run_manage_mode() {
 _AGENT_OPERATIONS="sysinfo kernel_status kernel_pin kernel_unpin kernel_update "
 _AGENT_OPERATIONS="${_AGENT_OPERATIONS}security_update health_check rollback_status "
 _AGENT_OPERATIONS="${_AGENT_OPERATIONS}driver_status driver_rebuild disk_usage erase_macos "
-_AGENT_OPERATIONS="${_AGENT_OPERATIONS}apt_enable apt_disable reboot boot_macos"
+_AGENT_OPERATIONS="${_AGENT_OPERATIONS}apt_enable apt_disable reboot boot_macos headless_verify"
 
 _validate_agent_deploy() {
     [ -z "${DEPLOY_METHOD:-}" ] && agent_error "Missing --method (1=ESP, 2=USB, 3=manual, 4=VM)" "$E_AGENT_PARAM"
@@ -1531,6 +1533,7 @@ _agent_manage() {
         apt_disable)     remote_apt_disable "$host" ;;
         reboot)          remote_reboot "$host" ;;
         boot_macos)      remote_boot_macos "$host" ;;
+        headless_verify) remote_headless_verify "$host" ;;
         *) agent_error "Unknown operation: $op. Available: $_AGENT_OPERATIONS" "$E_USAGE" ;;
     esac
 }

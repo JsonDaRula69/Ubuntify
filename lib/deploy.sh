@@ -184,14 +184,23 @@ _phase_verify_bless() {
         log "Recovery Mode workaround: boot to Recovery (Cmd+R), run 'csrutil enable --without nvram', then retry"
         return 1
     fi
-    # attempt_bless tries systemsetup/bless methods; result is verified independently
     attempt_bless "$ESP_MOUNT" "$_ESP_DEVICE" >/dev/null
-    # verify_bless_result re-checks via bless --info --getboot (independent verification)
     if ! verify_bless_result "$ESP_MOUNT"; then
         warn "Bless verification failed — manual boot selection required"
         log "Recovery Mode workaround: boot to Recovery (Cmd+R), run 'csrutil enable --without nvram', then retry"
         return 1
     fi
+
+    if [ -n "${APFS_CONTAINER:-}" ]; then
+        if ! check_recovery_health "$APFS_CONTAINER"; then
+            warn "CRITICAL: macOS Recovery partition is no longer healthy after deployment!"
+            warn "Recovery may not appear in the boot picker. To repair: boot to Internet Recovery (Cmd+Option+R)."
+            warn "Deployment succeeded but system recovery options are degraded."
+        else
+            log "Recovery partition verified healthy after deployment"
+        fi
+    fi
+
     return 0
 }
 
@@ -205,15 +214,13 @@ preflight_checks() {
 
     log "Running on: $(sw_vers -productName) $(sw_vers -productVersion)"
 
-     # SIP status check removed per project assumption: SIP always enabled.
-     # Bless failure handling provides generic guidance.
-
-    # Check FileVault
     local FV_STATUS
     FV_STATUS=$(fdesetup status 2>/dev/null | grep -o 'On\|Off' | head -1 || echo "unknown")
     if [ "$FV_STATUS" = "On" ]; then
         warn "FileVault is ON — may interfere with APFS resize"
     fi
+
+    verify_headless_readiness || warn "Headless readiness issues detected — deployment may require manual intervention"
 }
 
 deploy_internal_partition() {

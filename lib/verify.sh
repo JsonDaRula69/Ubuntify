@@ -357,6 +357,150 @@ verify_disk_space() {
     return 0
 }
 
+# verify_headless_readiness [host]
+# Checks macOS system readiness for headless (no monitor/keyboard) operation.
+# When run locally (no host), checks the current machine.
+# When run with a host, checks via SSH.
+# Returns 0 if all critical checks pass, 1 if any critical check fails.
+# Warnings are logged for non-critical issues.
+verify_headless_readiness() {
+    local host="${1:-}"
+    local rc=0
+    local errors=0
+
+    if [ -n "$host" ]; then
+        local ssh_prefix="ssh -o ConnectTimeout=10 -o BatchMode=yes $host"
+    else
+        local ssh_prefix=""
+    fi
+
+    log "Verifying headless readiness${host:+ on $host}..."
+
+    if [ -n "$host" ]; then
+        if ! $ssh_prefix 'echo ok' >/dev/null 2>&1; then
+            error "verify_headless_readiness: SSH connection to $host failed"
+            return 1
+        fi
+        log "  SSH connection: OK"
+    fi
+
+    local run_cmd
+    if [ -n "$host" ]; then
+        run_cmd() { $ssh_prefix "$@" 2>/dev/null; }
+    else
+        run_cmd() { "$@" 2>/dev/null; }
+    fi
+
+    local sip_status
+    sip_status=$(run_cmd csrutil status 2>&1 | grep -o 'enabled\|disabled' | head -1)
+    if [ "$sip_status" = "enabled" ]; then
+        warn "verify_headless_readiness: SIP is ENABLED — bless and Recovery repairs will fail"
+        warn "  Disable SIP: boot to Recovery (Option+R) → csrutil disable"
+        errors=$((errors + 1))
+    elif [ "$sip_status" = "disabled" ]; then
+        log "  SIP status: disabled (OK)"
+    else
+        warn "verify_headless_readiness: Could not determine SIP status"
+    fi
+
+    local remote_login
+    remote_login=$(run_cmd systemsetup -getremotelogin 2>&1 | grep -o 'On\|Off' | head -1)
+    if [ "$remote_login" = "Off" ] || [ "$remote_login" = "off" ]; then
+        error "verify_headless_readiness: Remote Login (SSH) is OFF"
+        errors=$((errors + 1))
+    elif [ "$remote_login" = "On" ] || [ "$remote_login" = "on" ]; then
+        log "  Remote Login (SSH): On"
+    else
+        warn "verify_headless_readiness: Could not determine Remote Login status (may need sudo)"
+    fi
+
+    local sudo_check
+    sudo_check=$(run_cmd sudo -n whoami 2>&1)
+    if [ "$sudo_check" = "root" ]; then
+        log "  Passwordless sudo: OK"
+    else
+        warn "verify_headless_readiness: Passwordless sudo not configured — SSH remote commands may fail"
+        errors=$((errors + 1))
+    fi
+
+    local ard_running
+    ard_running=$(run_cmd ps aux 2>&1 | grep -c '[A]RDAgent' || true)
+    if [ "$ard_running" -ge 1 ]; then
+        log "  Screen sharing (ARD): Running"
+    else
+        warn "verify_headless_readiness: Screen sharing (ARD) not running — no GUI remote access"
+        errors=$((errors + 1))
+    fi
+
+    local sleep_val displaysleep_val
+    sleep_val=$(run_cmd pmset -g 2>&1 | grep '^\s*sleep' | awk '{print $2}')
+    displaysleep_val=$(run_cmd pmset -g 2>&1 | grep '^\s*displaysleep' | awk '{print $2}')
+    if [ "${sleep_val:-0}" = "0" ] && [ "${displaysleep_val:-0}" = "0" ]; then
+        log "  Sleep disabled: OK"
+    else
+        warn "verify_headless_readiness: Sleep is NOT disabled (sleep=${sleep_val:-?}, displaysleep=${displaysleep_val:-?})"
+        warn "  Fix: sudo pmset -a sleep 0 displaysleep 0 disksleep 0"
+    fi
+
+    local womp_val
+    womp_val=$(run_cmd pmset -g 2>&1 | grep '^\s*womp' | awk '{print $2}')
+    if [ "${womp_val:-0}" = "1" ]; then
+        log "  Wake on LAN (WOMP): Enabled"
+    else
+        warn "verify_headless_readiness: Wake on LAN (WOMP) not enabled"
+    fi
+
+    local autorestart_val
+    autorestart_val=$(run_cmd pmset -g 2>&1 | grep '^\s*autorestart' | awk '{print $2}')
+    if [ "${autorestart_val:-0}" = "1" ]; then
+        log "  Auto-restart: Enabled"
+    else
+        warn "verify_headless_readiness: Auto-restart on power loss not enabled"
+    fi
+
+    local firewall_state
+    firewall_state=$(run_cmd /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>&1 | grep -o 'enabled\|disabled' | head -1)
+    if [ "$firewall_state" = "enabled" ]; then
+        log "  Firewall: Enabled"
+    elif [ "$firewall_state" = "disabled" ]; then
+        warn "verify_headless_readiness: Firewall is disabled"
+    else
+        warn "verify_headless_readiness: Could not determine firewall state"
+    fi
+
+    local recovery_found
+    recovery_found=$(run_cmd diskutil apfs list 2>&1 | grep -c '(Recovery)' || true)
+    if [ "$recovery_found" -ge 1 ]; then
+        log "  Recovery partition: Present"
+    else
+        error "verify_headless_readiness: No Recovery partition found — OS reinstallation impossible if boot fails"
+        errors=$((errors + 1))
+    fi
+
+    local efi_foreign
+    efi_foreign=$(run_cmd bash -c "'diskutil mount disk0s1 2>/dev/null; find /Volumes/EFI/EFI/ -maxdepth 2 -name \"refind.conf\" 2>/dev/null; diskutil unmount disk0s1 2>/dev/null'" 2>&1 || true)
+    if [ -n "$efi_foreign" ]; then
+        warn "verify_headless_readiness: Third-party bootloader (rEFInd) detected on EFI — may interfere with boot"
+        warn "  Remove: mount EFI, delete EFI/refind/ and EFI/BOOT/BOOTX64.EFI, then bless macOS"
+    fi
+
+    local ssh_keys
+    ssh_keys=$(run_cmd bash -c 'cat ~/.ssh/authorized_keys 2>/dev/null | wc -l' || true)
+    if [ "${ssh_keys:-0}" -ge 1 ]; then
+        log "  SSH authorized_keys: ${ssh_keys} key(s) present"
+    else
+        warn "verify_headless_readiness: No SSH authorized_keys found — SSH access may fail after deploy"
+    fi
+
+    if [ "$errors" -gt 0 ]; then
+        error "verify_headless_readiness: $errors critical issue(s) found"
+        return 1
+    fi
+
+    log "verify_headless_readiness: All critical checks passed"
+    return 0
+}
+
 # collect_error_context phase step error_msg exit_code
 # Gathers system state for error reports, writes to STATE_DIR/error-context.txt or stdout
 collect_error_context() {

@@ -382,6 +382,15 @@ if not preserved_yaml:
         f.write(content)
     sys.exit(0)
 
+APPLE_APFS_GUID = "7c3457ef-0000-11aa-aa11-00306543ecac"
+APPLE_EFI_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+has_apfs_container = any(APPLE_APFS_GUID in line for line in preserved_yaml.lower().split('\n'))
+if not has_apfs_container:
+    print(f"ERROR: APFS container partition (GUID {APPLE_APFS_GUID}) not found in preserved partitions!", file=sys.stderr)
+    print("The macOS Recovery partition lives inside the APFS container. Without preserving it,", file=sys.stderr)
+    print("the installer will DESTROY all macOS data including Recovery. Aborting.", file=sys.stderr)
+    sys.exit(1)
+
 next_num = max_part_num + 1
 
 # Build the new storage section

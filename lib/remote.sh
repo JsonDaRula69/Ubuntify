@@ -874,3 +874,13 @@ remote_boot_macos() {
     dry_run_exec "Rebooting $host into macOS" \
         remote__exec "$host" "sudo reboot" || true
 }
+
+## macOS Headless Readiness
+
+remote_headless_verify() {
+    local host
+    host=$(remote__get_host "${1:-}")
+
+    log "Running headless readiness verification on macOS host $host..."
+    verify_headless_readiness "$host"
+}
