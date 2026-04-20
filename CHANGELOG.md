@@ -4,6 +4,22 @@ All notable changes to the Mac Pro 2013 Ubuntu Autoinstall project are documente
 
 ## v0.2.x — TUI Architecture, Agent Mode, and Config System
 
+### v0.2.66 — Remote deployment mode (DEPLOY_MODE=remote)
+- feat: add DEPLOY_MODE config key (local/remote) to deploy.conf, parse_conf, and CLI flags (--deploy-mode, --target-host, --remote-password)
+- feat: add lib/remote_mac.sh — remote execution wrapper that routes commands to local or SSH based on DEPLOY_MODE
+- feat: remote mode: all macOS-specific commands (diskutil, sgdisk, bless, xorriso, newfs_msdos, sw_vers) run via SSH on TARGET_HOST
+- feat: remote mode: ISO transfer via SCP, remote xorriso extraction, remote ESP creation
+- feat: remote mode: configuration generated locally, validated, then SCP'd to target
+- feat: remote mode: preflight checks run on target host (SSH connectivity, required tools, sudo access)
+- feat: remote mode: root check skipped on local machine (no local sudo needed)
+- feat: remote mode: revert also operates remotely
+- feat: first-run TUI prompts for deployment mode selection
+- feat: remote_mac_preflight() verifies SSH, checks for required tools on target, tests sudo access
+- fix: revert --revert now skips root check in remote mode
+- fix: DKGS_DST typo in deploy.sh _phase_copy_pkgs (was DKGS_DST, now DKMS_DST)
+- docs: AGENTS.md updated with Deployment Modes section, new CLI flags, new config keys
+- docs: deploy.conf.example updated with DEPLOY_MODE, TARGET_HOST, REMOTE_SUDO_PASSWORD
+
 ### v0.2.39 — Enhance TESTING_PROMPT.md with TUI audit and flow tracing
 - docs: add 1.1.1 TUI raw fallback audit (contamination, variable scope, /dev/tty, return types)
 - docs: add 2.8 TUI interactive prompt testing section

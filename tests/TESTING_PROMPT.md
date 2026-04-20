@@ -1,6 +1,8 @@
 # COMPREHENSIVE AUTOMATED CODE REVIEW AND TESTING PROTOCOL
 
 > **Purpose:** This document is a prompt for LLM agents performing systematic code review and testing of the Mac Pro 2013 Ubuntu Autoinstall project. It provides exhaustive checklists for every phase, with project-specific checks grounded in how Subiquity, Ubuntu, and macOS actually work. Every script and flow path must be checked line by line.
+>
+> **Critical principle:** The checklists in this document define the MINIMUM scope of review — they are a starting point, not an exhaustive list of everything that could be wrong. The reviewer MUST go beyond the specific items listed here and perform thorough, original analysis on every line of code and every execution path. Do not limit your review to checking items off a list; actively seek bugs, logic errors, and structural problems that are NOT anticipated by the checklists. The goal is to discover ALL issues, not just confirm that listed checks pass.
 
 Execute a systematic, multi-phase review and testing cycle. Do not stop at static analysis. Each phase must be completed before moving to the next. Found bugs must be fixed, then ALL tests re-run from the beginning.
 
@@ -34,6 +36,8 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
 
 Perform this phase FIRST. Its findings feed into and expand the scope of all subsequent phases.
 
+**Phase 0 is not just about checking the items listed below.** It is about building a complete mental model of the codebase — understanding every module's role, every variable's lifecycle, every function's callers and callees. If you identify a dependency, variable collision, or architecture issue that is NOT listed in the sections below, document it and classify it. The sections below define MINIMUM coverage.
+
 **Phase 0 Gate:** Before proceeding to Phase 1, all Phase 0 findings must be documented and classified. Any P0 finding from Phase 0 (e.g., readonly variable collision preventing script launch) must be fixed before continuing, because it blocks all subsequent testing.
 
 ### 0.1 Sourcing Tree and Initialization Order
@@ -46,7 +50,7 @@ Verify: do any lib/*.sh files re-assign SCRIPT_DIR when it's already readonly fr
 Verify: does lib/detect.sh, lib/deploy.sh, and lib/autoinstall.sh all have the `SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"` pattern?
 Verify: what happens when this defaults to the lib/ directory instead of the project root?
 Check: does build-iso.sh also set `readonly SCRIPT_DIR` and source from `$LIB_DIR`?
-Map: prepare-deployment.sh → colors.sh → logging.sh → tui.sh → dryrun.sh → retry.sh → verify.sh → rollback.sh → detect.sh → disk.sh → autoinstall.sh → bless.sh → deploy.sh → revert.sh (conditionally: remote.sh)
+Map: prepare-deployment.sh → colors.sh → logging.sh → tui.sh → dryrun.sh → retry.sh → verify.sh → rollback.sh → detect.sh → disk.sh → autoinstall.sh → bless.sh → deploy.sh → remote_mac.sh → revert.sh (conditionally: remote.sh)
 Identify: which modules are conditionally sourced (remote.sh is `if [ -f ]`) and what breaks if they're absent
 
 ### 0.2 Variable Namespace Collision Map
@@ -149,22 +153,33 @@ lib/tui.sh contains multi-backend TUI functions (dialog, whiptail, raw). The raw
 
 **set -u compatibility check** — source lib/tui.sh with `set -u` active, call each function with test args. Any "unbound variable" error indicates a missing local declaration or wrong parameter name in a fallback branch.
 
+**Non-interactive context audit (systematic):**
+Search for ALL commands that may prompt for interactive input outside of TUI functions: `grep -rn 'read.*-p\|openssl.*enc\|ssh-keygen\|sudo.*-S\|passwd\|chpasswd' prepare-deployment.sh lib/*.sh`
+For EACH hit:
+1. Can this command be reached in agent mode (--agent) where stdin is not a TTY?
+2. If yes, does it have a non-interactive fallback (e.g., `--pass` flag, `-N ""` flag, stdin pipe)?
+3. Will it hang indefinitely waiting for input that never comes?
+This is a COMPLETE audit — a command that hangs in agent mode is a P0 bug.
+
 ### 1.2 Variable and Scope Analysis
+**This section builds on Phase 0.2 (Variable Namespace Collision Map).** If Phase 0.2 found no collisions, this section focuses on the remaining checks: usage safety, input handling, and scope correctness. Do not re-audit collision findings from Phase 0.2.
+
 Audit ALL variable declarations (local, readonly, declare, export)
-Identify duplicate declarations or reassignments of the same variable name
+Phase 0.2 already mapped collisions and readonly/export conflicts — skip those here
 Trace variable scope throughout the codebase — especially across source boundaries
-Check for variable naming conflicts between scripts/libraries (using Phase 0.2 map)
-Verify all required environment variables are documented
-Identify any variable used before it is set (with `set -u` active)
 Check for variables that should be local but aren't
 Specific checks:
-- VERIFY: In prepare-deployment.sh, `readonly SCRIPT_DIR` is set BEFORE sourcing lib/*.sh — do any of those libs also set SCRIPT_DIR?
-- VERIFY: `readonly ESP_NAME="CIDATA"` — but disk.sh has `ESP_NAME="${ESP_NAME:-CIDATA}"` — is this a collision?
-- VERIFY: `readonly ESP_SIZE="5g"` — but disk.sh has `ESP_SIZE="${ESP_SIZE:-5g}"` — same pattern
-- VERIFY: `readonly LIB_DIR="${LIB_DIR:-$SCRIPT_DIR/lib}"` — can LIB_DIR be overridden? What happens to subsequent `source "$LIB_DIR/..."` calls?
-- CHECK: All `eval "$varname=..."` patterns in disk.sh, deploy.sh — are they safe with `set -u`?
+- CHECK: All `eval "$varname=..."` patterns in disk.sh, deploy.sh — are they safe with `set -u`? (Phase 0.2 already identified which eval calls exist; this check verifies they validate their input)
 - CHECK: `parse_conf()` reads deploy.conf line-by-line — what happens with empty values or values containing `=`?
 - CHECK: `save_config()` writes deploy.conf — does it properly quote values containing spaces or special chars?
+
+**eval and dynamic dispatch audit (systematic):**
+Search for ALL `eval` calls across the entire codebase: `grep -rn 'eval ' prepare-deployment.sh lib/*.sh`
+For EACH eval call found:
+1. What values can reach the eval string?
+2. Is every possible value validated or sanitized?
+3. Could user input reach this eval without validation?
+This is a COMPLETE audit — do not stop at known eval sites.
 
 ### 1.3 Dependency Graph Mapping
 Map all function calls and their dependencies
@@ -191,7 +206,10 @@ Verify all conditionals cover their intended cases
 Check loop termination conditions
 Trace what happens when `set -e` encounters a failing command in a pipeline, subshell, or conditional
 Identify any `|| true` or `|| :` that might be swallowing real errors
-Specific checks:
+
+**Pattern-based checks (specific):**
+These checks identify error-handling patterns that are common sources of bugs. For exhaustive path tracing, see Phase 1.7 which covers ALL execution paths from entry to exit. This section focuses on control flow PATTERNS; Phase 1.7 focuses on path COVERAGE.
+
 - TRACE: What happens when deploy_internal_partition fails at phase _phase_generate_config? Does cleanup_on_error get called? Does the journal get destroyed?
 - TRACE: What happens when build-iso.sh fails at step [4/5]? Does the staging directory get cleaned up? Does the trap fire?
 - CHECK: The `run_phased` function in rollback.sh — when `is_dry_run` is true, it skips the phase function entirely. Does this mean journal phases are never recorded in dry-run mode? Is this correct?
@@ -203,6 +221,8 @@ Specific checks:
 
 ### 1.5 Line-by-Line Code Review
 Review EVERY line of EVERY shell script for correctness. Do not skip sections assuming they work.
+
+**This is the most critical phase for discovering UNKNOWN bugs.** The checklists in other sections identify common patterns and known failure modes, but ONLY line-by-line reading catches subtle logic errors, missing error handling, off-by-one errors, and incorrect assumptions. The reviewer MUST read every line with fresh eyes, asking "what if this fails?" and "what if the input is unexpected?" for EVERY line — not just the lines that seem suspicious.
 
 **Structured methodology — for each file, process ALL lines:**
 
@@ -231,18 +251,30 @@ Platform-specific line-by-line checks:
 - **macOS (host) scripts** (prepare-deployment.sh, build-iso.sh, lib/disk.sh, lib/bless.sh, lib/detect.sh, lib/revert.sh): Use BSD tool semantics. `stat -f%z`, `diskutil`, `bless`, `newfs_msdos`, `hdiutil`
 - **autoinstall YAML `- |` blocks** (lib/autoinstall.sh embedded content, generated autoinstall.yaml): Run via `sh -c` in Subiquity installer — POSIX ONLY, no `[[ ]]`, no arrays, no `<<<`. Variables are NOT shared between different `- |` blocks
 - **Remote management scripts** (lib/remote.sh): SSH commands execute on the target Ubuntu system. `apt`, `dkms`, `systemctl`, `efibootmgr` commands
+- **Remote deployment scripts** (lib/remote_mac.sh): Shell commands execute on macOS target via SSH when DEPLOY_MODE=remote, or locally when DEPLOY_MODE=local. All macOS-specific commands MUST be routed through `remote_mac_exec` or `remote_mac_sudo`
 - **Node.js** (macpro-monitor/server.js): Node.js semantics, Promises, HTTP server
+
+**FRESH EYES PRINCIPLE:** After completing the per-line checklist for a file, re-read the entire file WITHOUT the checklist and ask: "What would break this? What assumptions does this code make? What happens if those assumptions are violated?" The checklist catches known patterns. Fresh-eyes reading catches unknown bugs that no checklist can anticipate. Do not limit your review to confirming checklist items pass.
 
 ### 1.6 Generated Artifact Validation
 Validate every `autoinstall.yaml` and `autoinstall-vm.yaml` variant (method × storage × network combinations) parses as valid YAML:
 - `python3 -c "import yaml; yaml.safe_load(open('autoinstall.yaml'))"`
 - Validate against `lib/autoinstall-schema.json` using a JSON Schema validator
 - Verify all `__PLACEHOLDER__` tokens are replaced (no stray `__` in output)
-- Validate the Python heredoc in `generate_dualboot_storage` is syntactically correct Python
+- Validate the Python heredoc in `generate_dualboard_storage` is syntactically correct Python
 - Verify partition type GUID values are lowercase hex (curtin normalizes to lowercase; uppercase causes `preserve: true` verification mismatches)
 - Verify each `- |` block redefines KVER, ABI_VER, LOG, WHURL (POSIX constraint: variables not shared between blocks)
 - Verify `netplan generate --root-dir /tmp/test-root` succeeds against generated netplan YAML (mock chroot)
-- Verify autoinstall YAML complies with Subiquity's actual schema — check against https://ubuntu.com/server/docs/install/autoinstall-reference:
+
+**YAML structure boundary validation (systematic):**
+For each variant of autoinstall.yaml (method × storage × network), verify YAML structure boundaries are correct:
+- Regex/string replacements produce properly delimited YAML sections — adjacent keys are on separate lines, not merged onto the same line
+- Conditional sections (ethernet vs wifi, dual-boot vs full-disk storage) produce valid YAML when included AND when excluded
+- Template placeholders that expand to multi-line content (early-commands, late-commands) preserve proper indentation and YAML block scalar syntax
+- After all replacements, the YAML has no lines containing two YAML keys (e.g., `path: / late-commands:`)
+- After all replacements, the YAML has no missing newlines between sections
+
+Verify autoinstall YAML complies with Subiquity's actual schema — check against https://ubuntu.com/server/docs/install/autoinstall-reference:
   - `network:` section CANNOT contain `wifis:` (networkd renderer does not support `match:` for wifis; Ubuntu Bug #2073155)
   - `early-commands` and `late-commands` run via `sh -c` — verify POSIX-only syntax
   - `storage:` section with `preserve: true` must have lowercase GUID type codes
@@ -252,7 +284,9 @@ Validate every `autoinstall.yaml` and `autoinstall-vm.yaml` variant (method × s
 
 This section requires tracing EVERY possible execution path through each script, from entry point to exit. The goal is to discover logic errors, missing error handling, unreachable code, and incorrect branching — not just verify known patterns.
 
-**Every script must have ALL its execution paths walked. This is not optional.**
+**Every script must have ALL its execution paths walked. This is not optional.** The walkthrough must be EXHAUSTIVE — trace every branch of every conditional, every case pattern, every loop iteraton count (0, 1, many), and every error exit. Do not skip paths that seem "obvious" or "unlikely" — bugs hide in edge cases.
+
+**Beyond the specific paths listed below, the reviewer must identify and trace ANY execution path that is not explicitly listed.** If a function has 5 branches but only 3 are traced below, the reviewer must still trace the remaining 2. The specific paths listed are MINIMUM coverage, not maximum.
 
 #### 1.7.1 Path Enumeration Methodology
 
@@ -263,6 +297,8 @@ For each script, enumerate ALL possible execution paths:
 3. **For each branch point, enumerate all outcomes**: true/false for if, each case pattern, loop-iteration vs loop-skip, success vs failure for function calls
 4. **Trace each complete path from entry to exit**: document the sequence of function calls, variable assignments, and side effects
 5. **Count total paths**: if impractical (combinatorial explosion), prioritize paths that involve destructive operations or user input
+
+**EXHAUSTIVENESS REQUIREMENT:** The paths listed in sections 1.7.2–1.7.6 are a STARTING POINT. The reviewer MUST also trace any paths NOT listed below — for example, new functions added since the last review, paths through error handling that branch unexpectedly, or combinations of flags that create novel execution orders. If a function has N branches that are not all traced below, trace the missing ones.
 
 **Path trace template:**
 ```
@@ -355,6 +391,28 @@ Trace all manage mode operation paths:
 - Phase 6 (reboot): trace what happens if SSH never comes back (timeout handling)
 - Phase 7 (re-lock): trace what happens if re-lock fails partially
 
+#### 1.7.4b lib/remote_mac.sh Path Walkthrough
+
+Trace all deployment mode routing paths:
+
+- DEPLOY_MODE=local: remote_mac_exec → direct local execution (pass-through)
+- DEPLOY_MODE=local: remote_mac_sudo → direct local execution (assumes already root)
+- DEPLOY_MODE=remote: remote_mac_exec → ssh $TARGET_HOST "$*"
+- DEPLOY_MODE=remote: remote_mac_sudo → ssh $TARGET_HOST "sudo -S -p '' $*" (with REMOTE_SUDO_PASSWORD via stdin)
+- DEPLOY_MODE=remote: remote_mac_cp → scp $SSH_OPTS $src $host:$dst
+- DEPLOY_MODE=remote: remote_mac_cp_dir → scp -r $SSH_OPTS $src $host:$dst
+- DEPLOY_MODE=remote: remote_mac_file_exists → ssh $TARGET_HOST "test -f '$path'"
+- DEPLOY_MODE=remote: remote_mac_dir_exists → ssh $TARGET_HOST "test -d '$path'"
+- DEPLOY_MODE=remote: remote_mac_mkdir → ssh $TARGET_HOST "mkdir -p '$path'"
+- DEPLOY_MODE=remote: remote_mac_rm → ssh $TARGET_HOST "rm -f '$path'"
+- remote_mac_preflight: SSH test → command availability check → sudo access check
+
+**Verify:**
+- All macOS-specific commands (diskutil, sgdisk, bless, xorriso, newfs_msdos, sw_vers, systemsetup, ipconfig) are wrapped with remote_mac_exec or remote_mac_sudo in deployment modules (disk.sh, bless.sh, detect.sh, deploy.sh, revert.sh)
+- File operations (copying packages, configs, ISO) use remote_mac_cp/remote_mac_cp_dir in remote mode
+- Path existence checks use remote_mac_file_exists/remote_mac_dir_exists in remote mode
+- remote_mac_preflight is called before any remote deployment operation
+
 #### 1.7.5 build-iso.sh Path Walkthrough
 
 - Path: Check prerequisites → extract ISO → overlay custom files → rebuild ISO → cleanup staging
@@ -373,14 +431,27 @@ Trace all manage mode operation paths:
 - Verify: SSH connection timeout is handled at every call site
 - Verify: SSH failure mid-operation leaves the target in a recoverable state
 
+**prepare-deployment.sh → lib/remote_mac.sh routing:**
+- In DEPLOY_MODE=local: all commands run locally (pass-through)
+- In DEPLOY_MODE=remote: all macOS commands run via SSH on TARGET_HOST
+- Verify: every `diskutil`, `sgdisk`, `bless`, `xorriso`, `newfs_msdos`, `sw_vers`, `systemsetup`, `bless --info` call is wrapped with `remote_mac_exec` or `remote_mac_sudo`
+- Verify: file operations use `remote_mac_cp`, `remote_mac_cp_dir`, `remote_mac_file_exists`, `remote_mac_dir_exists`, `remote_mac_mkdir`, `remote_mac_rm`
+- Verify: `remote_mac_preflight` is called before any remote deployment
+- Verify: root/sudo check skipped when DEPLOY_MODE=remote (no local sudo needed)
+- Verify: ISO transfer to target uses SCP (`remote_mac_cp`) then remote xorriso extraction
+- Verify: configuration generated locally, validated locally, then SCP'd to target
+
 ---
 
 ## PHASE 2: FUNCTIONAL BEHAVIOR TESTING
+
+**Beyond the listed tests:** The test cases in sections 2.1–2.16 cover specific scenarios, but the reviewer MUST also think about what is NOT listed. For each module, consider: "What happens with empty input? What happens with maximum-length input? What happens when a prerequisite fails silently? What happens when two modules interact in an unexpected way?" Design ADDITIONAL test cases beyond those listed for any scenario that seems risky.
 
 ### 2.1 Mode and Flag Testing
 Test EVERY command-line flag in prepare-deployment.sh:
 - --dry-run, --verbose, --agent, --yes, --json
 - --method (1|2|3|4), --storage (1|2), --network (1|2)
+- --deploy-mode (local|remote), --target-host, --remote-password
 - --host, --operation, --wifi-ssid, --wifi-password
 - --webhook-host, --webhook-port
 - --username, --hostname, --vm, --revert, --help
@@ -433,13 +504,25 @@ Test save_config and encrypt_config round-trip
 Test with missing required arguments (--method without value)
 Test with invalid input types (--method foo, --storage bar)
 Test with missing/invalid file paths (nonexistent ISO, missing prereqs/ directory)
-Test with insufficient permissions (running without sudo)
+Test with insufficient permissions (running without sudo when DEPLOY_MODE=local)
+Test remote mode without SSH connectivity (DEPLOY_MODE=remote with unreachable TARGET_HOST)
+Test remote mode with missing prerequisites on target (xorriso, sgdisk, etc. not installed on Mac Pro)
+Test remote mode with incorrect sudo password (REMOTE_SUDO_PASSWORD wrong)
 Test resource exhaustion scenarios (disk full simulation, large ISO)
 Test network failures and timeouts (unreachable webhook host)
 Test dependency failures:
 - Missing xorriso, sgdisk, python3, comm, diskutil
 - Wrong versions of dependencies
 - Missing dialog and whiptail (TUI_BACKEND="raw")
+
+Remote mode error paths:
+- What happens when remote_mac_preflight can't SSH to target?
+- What happens when remote_mac_sudo password fails mid-deployment?
+- What happens when SCP transfer fails (disk full on target, permission denied)?
+- What happens when target macOS tools are missing (no xorriso on Mac Pro)?
+- What happens when remote_mac_exec returns non-zero mid-phase?
+- What happens when DEPLOY_MODE=remote but TARGET_HOST is empty?
+- What happens when DEPLOY_MODE=remote but no SSH key configured?
 
 Verify error messages are clear and actionable
 Verify exit codes match documented values (E_SUCCESS=0 through E_AGENT_DENIED=13)
@@ -652,6 +735,9 @@ Sanitization: [quoting, escaping, validation applied before execution]
 | SSH_KEY | deploy.conf / tui_menu | autoinstall.yaml, /target/.ssh/authorized_keys | Newline handling, key format |
 | HOSTNAME | deploy.conf / --hostname | autoinstall.yaml, target /etc/hostname | RFC 952 violations |
 | DEPLOY_METHOD | --method / tui_menu | case dispatch to deploy_* functions | Invalid value handling |
+| DEPLOY_MODE | deploy.conf / --deploy-mode | remote_mac_exec routing, sudo check bypass | Invalid mode handling |
+| TARGET_HOST | deploy.conf / --target-host | ssh $TARGET_HOST commands | SSH injection, unreachable host |
+| REMOTE_SUDO_PASSWORD | deploy.conf / --remote-password | ssh sudo -S -p '' via stdin | Password in process args |
 | USB_DEVICE | tui_menu / auto-detect | diskutil, sgdisk, dd commands | Partition path injection |
 | WEBHOOK_URL | deploy.conf / --webhook-* | logging.sh curl commands | URL injection |
 | ENCRYPTION | --encryption / tui_menu | encrypt_config, decrypt_config | Invalid mode handling |
@@ -797,6 +883,8 @@ Verify proper handling of large files (ISO extraction ~3.4GB, ESP with limited s
 
 ## PHASE 4: BEST PRACTICES AND PATTERNS
 
+**Beyond the listed checks:** The items in sections 4.1–4.4 are common vulnerability patterns, but they are NOT exhaustive. The reviewer MUST think about categories that are not listed — for example, information disclosure through timing attacks, denial-of-service vectors, dependency confusion, or any other security concern relevant to a deployment tool that runs as root. Add findings beyond the checklist.
+
 ### 4.1 Error Handling Audit
 Verify `set -Eeuo pipefail` usage (or equivalent) in ALL scripts:
 - prepare-deployment.sh: set -e, set -o pipefail, set -u
@@ -892,6 +980,7 @@ Verify: no autoinstall command exposes a network service unnecessarily
 Check: does the webhook listener (macpro-monitor) accept connections from any interface? (HOST = '0.0.0.0')
 Check: is the webhook URL (containing potential secrets) logged or stored insecurely?
 Verify: SSH connections in remote.sh properly validate host keys (NOT StrictHostKeyChecking=no)
+Note: remote_mac.sh uses `-o StrictHostKeyChecking=no -o BatchMode=yes` for deployment convenience — this is a known trade-off for headless local network deployment. Verify: REMOTE_SUDO_PASSWORD is not logged or stored in plaintext beyond deploy.conf
 
 #### 4.2.7 TOCTOU and Race Conditions
 Identify all check-then-act sequences (e.g., check disk exists → modify disk)
@@ -902,6 +991,8 @@ Document: which race conditions are acceptably unlikely vs which need mitigation
 Check: are lock files or other serialization mechanisms used for shared resources?
 
 #### 4.2.8 Filesystem and Permission Security
+**This section expands on Phase 2.11 (Sudo File Ownership Audit)** with broader filesystem security concerns. Phase 2.11 provides the detailed root-ownership audit methodology for files under `$HOME`; this section covers additional permission and filesystem concerns.
+
 Verify: temporary files created with mktemp (not predictable paths in /tmp)
 Verify: temporary directories created with safe permissions (not world-readable)
 Verify: ESP mount point permissions (note: FAT32 has no Unix permissions)
@@ -1290,6 +1381,8 @@ If Phase 6 identifies changes, those changes are implemented, committed, and the
 
 ## ITERATIVE FIX AND TEST CYCLE
 
+**Discovery vs. verification:** Each phase has two purposes: (1) verify the SPECIFIC items listed in that phase's checklists pass, and (2) DISCOVER new issues NOT listed in any checklist. The checklists define MINIMUM coverage, not maximum. If a reviewer finds themselves only checking items off a list and not finding any new issues, they are not reviewing thoroughly enough. Every phase should produce findings beyond the checklist items.
+
 Process findings in severity order: P0 first, then P1, then P2, then P3.
 Within each severity level, fix bugs one at a time, **except when a single root cause affects multiple files** — in that case, fix all affected files in one commit with a clear commit message listing all files changed. Then re-run all phases. Do not fix one file, test, fix the next file, test — this wastes regression cycles on what is logically one change.
 
@@ -1394,7 +1487,8 @@ Before completion, verify:
 - [ ] deploy.conf permissions are 600 (not world-readable)
 - [ ] YAML injection tested — SSID/password cannot break autoinstall structure
 - [ ] Command injection tested — no user input reaches shell execution unquoted
-- [ ] SSH connections validate host keys (no StrictHostKeyChecking=no in production)
+- [ ] SSH connections validate host keys (note: remote_mac.sh uses StrictHostKeyChecking=no for headless deployment — documented trade-off)
+- [ ] REMOTE_SUDO_PASSWORD not leaked to logs, process args, or unencrypted files beyond deploy.conf
 - [ ] Autoinstall early/late-commands reviewed — no backdoors or unsafe downloads
 - [ ] Webhook server does not expose sensitive data without authentication
 - [ ] Supply chain: .deb integrity verification mechanism documented or implemented
@@ -1430,15 +1524,20 @@ Before completion, verify:
 - [ ] Orphan audit: all config keys parsed are consumed, all consumed keys are parsed
 - [ ] Orphan audit: all lib/ modules have at least one external function call
 - [ ] Bash 3.2: no bash 4.0+ features (local -n, mapfile, declare -A, ${var,,}, etc.)
-- [ ] Platform boundaries: macOS commands not in remote.sh, Linux commands not in host scripts
+- [ ] Platform boundaries: macOS commands wrapped with remote_mac_* for remote mode, not in remote.sh
+- [ ] Remote mode: DEPLOY_MODE=remote routes all macOS commands via SSH (remote_mac_exec/remote_mac_sudo)
+- [ ] Remote mode: preflight checks run on target host (remote_mac_preflight)
+- [ ] Remote mode: root check skipped on local machine (no local sudo needed)
+- [ ] Remote mode: ISO transfer, config generation, and verification all handle remote path correctly
 - [ ] Function scope: every function classified as collect-only, execute-only, or collect-and-execute
 - [ ] Single-execution: every destructive action runs exactly once per invocation per flow path
 - [ ] Single-execution: collect-and-execute functions don't have callers that also execute the same action
 - [ ] Execution path walkthrough: all paths through main() traced from entry to exit
 - [ ] Execution path walkthrough: all deployment method paths traced through journal phases
 - [ ] Execution path walkthrough: all remote.sh operation paths traced including rollback branches
+- [ ] Execution path walkthrough: all remote_mac.sh routing paths traced for both local and remote modes
 - [ ] Execution path walkthrough: build-iso.sh path traced including failure cleanup
-- [ ] Execution path walkthrough: cross-script paths (subprocess, SSH) traced
+- [ ] Execution path walkthrough: cross-script paths (subprocess, SSH, SCP) traced
 - [ ] Data flow: every user input traced from collection to final execution context
 - [ ] Data flow: config values survive full round-trip (TUI → save → parse → autoinstall → target)
 - [ ] Data flow: variable overwrite detection — no value collected then overwritten before use
@@ -1715,12 +1814,16 @@ grep -rn 'local -n\|mapfile\|readarray\|declare -A\|\${[a-zA-Z_]*,,}\|\${[a-zA-Z
 
 ### 2.13.2 Platform-Specific Command Boundary Audit
 
+**This section provides a systematic audit of command platform boundaries**, complementing the per-line checks in Phase 1.5 (platform-specific line-by-line checks). Phase 1.5 catches individual instances during line-by-line review; this section ensures complete coverage by auditing every external command's platform context.
+
 Scripts in this project run on different platforms: macOS (host), Ubuntu installer (dash), Ubuntu target (bash). Commands and syntax must match their execution context.
 
 **Verify command platform boundaries:**
 - macOS-only commands (`diskutil`, `bless`, `csrutil`, `sw_vers`, `systemsetup`, `ipconfig`, `newfs_msdos`, `hdiutil`) MUST NOT appear in lib/remote.sh (runs on Linux)
+- macOS-only commands in lib/disk.sh, lib/bless.sh, lib/detect.sh, lib/deploy.sh MUST be wrapped with `remote_mac_exec` or `remote_mac_sudo` (so they route via SSH in remote mode)
 - Linux-only commands (`dkms`, `apt-get`, `efibootmgr`, `systemctl`) MUST NOT appear in prepare-deployment.sh main flow (runs on macOS)
 - Every external command must be checked: which platform runs it? Is it available there?
+- In DEPLOY_MODE=remote, macOS commands run on TARGET_HOST via SSH — verify all deployment phases (disk, bless, detect, deploy, revert) correctly route commands
 
 ### 2.13.3 Flag Syntax Platform Differences
 

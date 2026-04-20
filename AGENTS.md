@@ -7,7 +7,7 @@
 
 ## Project Overview
 
-Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPro6,1) with Broadcom BCM4360 WiFi. Two modes: **Deploy** (local: build ISO, deploy to ESP/USB/VM, monitor installation) and **Manage** (remote: SSH into installed instance for kernel management, driver rebuilds, macOS erasure, system updates). TUI interface using dialog/whiptail with raw bash fallback. Multi-target logging (serial + file + webhook). Published on GitHub for other Mac Pro owners.
+Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPro6,1) with Broadcom BCM4360 WiFi. Two deployment modes: **Local** (run directly on Mac Pro with sudo) and **Remote** (control Mac Pro via SSH from another machine). Two functional modes: **Deploy** (build ISO, deploy to ESP/USB/VM, monitor installation) and **Manage** (remote: SSH into installed instance for kernel management, driver rebuilds, macOS erasure, system updates). TUI interface using dialog/whiptail with raw bash fallback. Multi-target logging (serial + file + webhook). Published on GitHub for other Mac Pro owners.
 
 ## Hardware Specifications
 
@@ -44,6 +44,7 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 │   ├── disk.sh                      # analyze_disk_layout, shrink_apfs_if_needed, create_esp_partition
 │   ├── bless.sh                     # verify_esp_contents, attempt_bless
 │   ├── deploy.sh                    # 7-phase checkpointed deployment with journal state
+│   ├── remote_mac.sh                # Remote execution wrapper (SSH/local routing based on DEPLOY_MODE)
 │   └── revert.sh                    # revert_changes, handle_revert_flag, journal-aware rollback
 ├── packages/                        # .deb files for driver compilation (34 debs)
 │   ├── broadcom-sta-dkms_*.deb      # Broadcom WiFi driver source
@@ -159,6 +160,49 @@ And two network configurations:
 
 Method 4 (VM test) uses fixed Ethernet and single disk — no storage or network selection needed.
 
+## Deployment Modes
+
+The script operates in two deployment modes, controlled by `DEPLOY_MODE` in `deploy.conf` or `--deploy-mode` CLI flag:
+
+| Mode | Description | Requires sudo? | Runs commands |
+|------|-------------|----------------|----------------|
+| `local` (default) | Run directly on the Mac Pro | Yes (local sudo) | Locally on this machine |
+| `remote` | Control the Mac Pro via SSH from another machine | No (remote sudo) | Via SSH on TARGET_HOST |
+
+### Remote Mode Architecture
+
+In remote mode, all macOS-specific operations (diskutil, sgdisk, bless, xorriso) execute on the target Mac Pro via SSH. The local machine only generates configuration files and transfers them via SCP.
+
+**Command routing** (`lib/remote_mac.sh`):
+- `remote_mac_exec <command>` — runs locally or via SSH based on DEPLOY_MODE
+- `remote_mac_sudo <command>` — same with sudo prefix (uses REMOTE_SUDO_PASSWORD)
+- `remote_mac_cp <local> <remote>` — copies file to target via scp
+- `remote_mac_cp_dir <local> <remote>` — copies directory recursively
+- `remote_mac_file_exists <path>` — checks file on target
+- `remote_mac_dir_exists <path>` — checks directory on target
+- `remote_mac_mkdir <path>` — creates directory on target
+- `remote_mac_rm <path>` — removes file on target
+- `remote_mac_preflight()` — verifies SSH connectivity, required tools, and sudo access
+
+**Key differences in remote mode**:
+- ISO is SCP'd to `/tmp` on target, then extracted remotely via `xorriso`
+- Configuration is generated locally in `${OUTPUT_DIR}/staging`, validated, then SCP'd to target
+- Preflight checks run on the target host (xorriso, sgdisk, python3, diskutil, bless)
+- Root/sudo check is skipped on the local machine
+- Revert can also operate remotely
+
+**CLI flags for remote mode**:
+```bash
+# Interactive remote deployment
+sudo ./prepare-deployment.sh --deploy-mode remote --target-host macpro
+
+# Agent mode remote deployment
+sudo ./prepare-deployment.sh --agent --deploy-mode remote --target-host macpro --remote-password XXX --method 1 --storage 1 --network 1 --json
+
+# No local sudo needed in remote mode
+./prepare-deployment.sh --deploy-mode remote --target-host macpro
+```
+
 ## Boot Methods
 
 | Method | Physical Access? | Status |
@@ -202,7 +246,7 @@ sudo ./prepare-deployment.sh --agent --operation kernel_status --host macpro-lin
 sudo ./prepare-deployment.sh --agent --revert --json
 ```
 
-Flags: `--agent`, `--yes`, `--verbose`, `--dry-run`, `--json`, `--method N`, `--storage N`, `--network N`, `--operation OP`, `--host HOST`, `--wifi-ssid`, `--wifi-password`, `--webhook-host`, `--webhook-port`, `--output-dir DIR`, `--revert`, `--username USER`, `--hostname HOST`, `--vm`
+Flags: `--agent`, `--yes`, `--verbose`, `--dry-run`, `--json`, `--method N`, `--storage N`, `--network N`, `--deploy-mode MODE`, `--target-host HOST`, `--remote-password PWD`, `--operation OP`, `--host HOST`, `--wifi-ssid`, `--wifi-password`, `--webhook-host`, `--webhook-port`, `--output-dir DIR`, `--revert`, `--username USER`, `--hostname HOST`, `--vm`
 
 Exit codes: 0=success, 1=general, 2=usage, 3=config, 4=check, 5=partial, 6=dependency, 7=network, 8=disk, 9=timeout, 10=auth, 11=dry-run-ok, 12=agent-param, 13=agent-denied
 
@@ -327,6 +371,9 @@ SSH_KEYS_FILE=/path/to/file  # Load keys from external file
 | `SSH_KEYS_FILE` | Path to file containing SSH public keys |
 | `ENCRYPTION` | Password encryption mode (see below) |
 | `OUTPUT_DIR` | Override runtime output directory (default: ~/.Ubuntu_Deployment/) |
+| `DEPLOY_MODE` | Deployment mode: `local` (run on Mac Pro) or `remote` (SSH control from another machine) |
+| `TARGET_HOST` | SSH hostname/IP for Mac Pro's macOS partition (required when DEPLOY_MODE=remote) |
+| `REMOTE_SUDO_PASSWORD` | Sudo password for target Mac Pro (only used when DEPLOY_MODE=remote, stored encrypted) |
 
 ### Encryption Modes
 | Mode | Description |
@@ -337,6 +384,9 @@ SSH_KEYS_FILE=/path/to/file  # Load keys from external file
 
 ### First-Run Prompts
 If `deploy.conf` is missing or keys are empty, `prepare-deployment.sh` prompts for:
+- Deployment mode (local or remote) — local runs on Mac Pro directly, remote controls via SSH
+- Target host (if remote mode) — hostname/IP of Mac Pro's macOS partition
+- Remote sudo password (if remote mode) — for elevated operations on target
 - Username, real name, password (with encryption mode selection)
 - SSH key configuration (interactive menu):
   - **Provide existing key**: scans `~/.ssh/*.pub` for keys to select, or paste manually

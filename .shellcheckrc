@@ -1,4 +1,3 @@
 source-path=lib/
-# Document intentional patterns that warrant ignores
-# SC1090/SC1091: Sourced files with variable paths — we use source "$LIB_DIR/foo.sh"
-# SC2034: Unused variables — some are used by sourced scripts
+# SC1090/SC1091: sourced files with variable paths
+# SC2034: unused variables used by sourced scripts

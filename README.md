@@ -64,8 +64,30 @@ Mac Pro has no Ethernet. Broadcom BCM4360 WiFi requires a proprietary `wl` drive
 - **xorriso** — ISO repackaging (`brew install xorriso`)
 - **gptfdisk** — GPT partition table manipulation (`brew install gptfdisk`, provides `sgdisk`)
 
+**For remote mode** (deploying from another machine):
+- **SSH access** to the Mac Pro's macOS partition (key-based auth recommended)
+- **Same prerequisites must be installed on the Mac Pro** (xorriso, gptfdisk, python3) — the script can auto-install them via Homebrew
+
 ```bash
 brew install xorriso gptfdisk python3
+```
+
+## Quick Start
+
+### Build the ISO (required for all methods)
+
+```bash
+sudo ./lib/build-iso.sh
+```
+
+### Deploy (interactive menu)
+
+```bash
+# Local mode (run directly on Mac Pro)
+sudo ./prepare-deployment.sh
+
+# Remote mode (control Mac Pro from another machine)
+./prepare-deployment.sh --deploy-mode remote --target-host macpro
 ```
 
 ## Quick Start
@@ -998,6 +1020,33 @@ sudo ./prepare-deployment.sh --agent --dry-run --method 1 --storage 1 --network 
 sudo ./prepare-deployment.sh --agent --yes --method 4
 ```
 
+### Remote Deployment Mode
+
+In remote mode, you control the Mac Pro from another machine (e.g., a MacBook) via SSH. No local `sudo` is needed — all macOS-specific commands run on the target Mac Pro through SSH. Configuration files are generated locally and transferred via SCP.
+
+```bash
+# Interactive remote deployment (prompts for SSH password, config values)
+./prepare-deployment.sh --deploy-mode remote --target-host macpro
+
+# Agent mode remote deployment (non-interactive)
+./prepare-deployment.sh --agent --yes --deploy-mode remote --target-host macpro \
+  --remote-password XXX --method 1 --storage 1 --network 1 --json
+
+# Remote revert (no local sudo needed)
+./prepare-deployment.sh --deploy-mode remote --revert
+```
+
+**Prerequisites for remote mode:**
+1. SSH key authentication to the Mac Pro's macOS partition (set up `ssh/config.example`)
+2. `xorriso`, `gptfdisk` (`sgdisk`), and `python3` installed on the Mac Pro — the script can auto-install via Homebrew during preflight
+3. Sudo access on the Mac Pro (passwordless recommended, or provide via `--remote-password`)
+
+**How it works:**
+- ISO and configuration files are generated locally on your machine
+- Disk operations (`diskutil`, `bless`, `sgdisk`, `xorriso`) run on the Mac Pro via SSH
+- Files are transferred to the Mac Pro via SCP
+- Preflight checks verify the Mac Pro has all required tools before starting
+
 | Flag | Values | Description |
 |------|--------|-------------|
 | `--method` | `1` | Internal partition (ESP) |
@@ -1072,6 +1121,9 @@ CLI flags override `deploy.conf` settings:
 
 | Flag | Overrides |
 |------|-----------|
+| `--deploy-mode MODE` | `DEPLOY_MODE` — `local` (on Mac Pro) or `remote` (via SSH) |
+| `--target-host HOST` | `TARGET_HOST` — SSH hostname/IP for Mac Pro's macOS |
+| `--remote-password PWD` | `REMOTE_SUDO_PASSWORD` — sudo password for target |
 | `--username USER` | `USERNAME` |
 | `--hostname HOST` | `HOSTNAME` |
 | `--wifi-ssid SSID` | `WIFI_SSID` |
