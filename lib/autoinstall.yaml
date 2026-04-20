@@ -213,7 +213,7 @@ autoinstall:
       # Write netplan for live environment with detected interface name
       # (networkd does not support match: for wifis — must use actual interface name)
       rm -f /etc/netplan/50-cloud-init.yaml 2>/dev/null || true
-      { printf "network:\n"; printf "  version: 2\n"; printf "  renderer: networkd\n"; printf "  wifis:\n"; printf "    %s:\n" "$WIFI_IFACE"; printf "      dhcp4: true\n"; printf "      optional: true\n"; printf "      access-points:\n"; printf "        \"__WIFI_SSID__\":\n"; printf "          password: \"__WIFI_PASSWORD__\"\n"; } > /etc/netplan/01-wifi.yaml
+      { printf "network:\n"; printf "  version: 2\n"; printf "  renderer: networkd\n"; printf "  wifis:\n"; printf "    %s:\n" "$WIFI_IFACE"; printf "      dhcp4: true\n"; printf "      optional: true\n"; printf "      access-points:\n"; printf "        \"%s\":\n" '__WIFI_SSID__'; printf "          password: \"%s\"\n" '__WIFI_PASSWORD__'; } > /etc/netplan/01-wifi.yaml
       chmod 600 /etc/netplan/01-wifi.yaml
       log "Live netplan written for interface: $WIFI_IFACE"
       if command -v netplan 2>/dev/null >/dev/null; then
@@ -585,7 +585,7 @@ autoinstall:
       # Auto-detect WiFi interface name — networkd does not support match: for wifis
       _wifi_late_iface=$(ip link show 2>/dev/null | grep -oE 'wl[^:]+' | head -1)
       if [ -n "$_wifi_late_iface" ]; then
-        { printf "network:\n"; printf "  version: 2\n"; printf "  renderer: networkd\n"; printf "  wifis:\n"; printf "    %s:\n" "$_wifi_late_iface"; printf "      dhcp4: true\n"; printf "      optional: true\n"; printf "      access-points:\n"; printf "        \"__WIFI_SSID__\":\n"; printf "          password: \"__WIFI_PASSWORD__\"\n"; } > /target/etc/netplan/01-wifi.yaml
+        { printf "network:\n"; printf "  version: 2\n"; printf "  renderer: networkd\n"; printf "  wifis:\n"; printf "    %s:\n" "$_wifi_late_iface"; printf "      dhcp4: true\n"; printf "      optional: true\n"; printf "      access-points:\n"; printf "        \"%s\":\n" '__WIFI_SSID__'; printf "          password: \"%s\"\n" '__WIFI_PASSWORD__'; } > /target/etc/netplan/01-wifi.yaml
         chmod 600 /target/etc/netplan/01-wifi.yaml
         log "WiFi netplan written for interface: $_wifi_late_iface"
         if command -v netplan 2>/dev/null >/dev/null; then
@@ -734,8 +734,8 @@ autoinstall:
       log() { echo "[late] $1" >> "$LOG"; }
 
       wh '{"progress":90,"stage":"late-sudo","status":"configuring","message":"Configuring sudo for user __USERNAME__"}'
-      echo "__USERNAME__ ALL=(ALL) NOPASSWD:ALL" > /target/etc/sudoers.d/__USERNAME__
-      chmod 440 /target/etc/sudoers.d/__USERNAME__
+      echo "__USERNAME__ ALL=(ALL) NOPASSWD:ALL" > "/target/etc/sudoers.d/__USERNAME__"
+      chmod 440 "/target/etc/sudoers.d/__USERNAME__"
 
     - |
       # sh -c block — must redefine helpers (wh/die/log)

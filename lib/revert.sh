@@ -15,6 +15,7 @@ source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/rollback.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/dryrun.sh"
+source "${LIB_DIR:-./lib}/remote_mac.sh"
 
 : "${ESP_NAME:=CIDATA}"
 
@@ -31,7 +32,7 @@ revert_changes() {
     if [ "$deploy_method" = "1" ] || [ "$deploy_method" = "internal" ]; then
         # Internal partition method cleanup
         if [ -z "${INTERNAL_DISK:-}" ]; then
-            INTERNAL_DISK=$(diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
+            INTERNAL_DISK=$(remote_mac_exec diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
         fi
 
         # Prefer journal values over runtime variables
@@ -44,7 +45,7 @@ revert_changes() {
         # ESP removal with self-healing (try to mount if not found)
         if [ "$esp_created" = "1" ]; then
             if [ -z "$esp_device" ] && [ -n "${INTERNAL_DISK:-}" ]; then
-                esp_device=$(diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+                esp_device=$(remote_mac_exec diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
             fi
 
             if [ -n "$esp_device" ]; then
@@ -52,15 +53,15 @@ revert_changes() {
 
                 # Self-healing: try to mount ESP if it's not mounted
                 local mount_point
-                mount_point=$(diskutil info "/dev/$esp_device" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || true)
+                mount_point=$(remote_mac_exec diskutil info "/dev/$esp_device" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || true)
                 if [ -z "$mount_point" ] || [ "$mount_point" = "N/A" ]; then
                     log "ESP not mounted, attempting to mount..."
-                    diskutil mount "/dev/$esp_device" 2>/dev/null || true
+                    remote_mac_sudo diskutil mount "/dev/$esp_device" 2>/dev/null || true
                 fi
 
-                diskutil unmount "/dev/$esp_device" 2>/dev/null || true
+remote_mac_sudo diskutil unmount "/dev/$esp_device" 2>/dev/null || true
                 dry_run_exec "Remove ESP partition /dev/$esp_device" \
-                    diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || {
+                    remote_mac_sudo diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || {
                     warn "Could not remove ESP partition /dev/$esp_device"
                     REVERT_ERRORS=1
                 }
@@ -75,7 +76,7 @@ revert_changes() {
         if [ "$apfs_resized" = "1" ] && [ -n "$apfs_container" ] && [ -n "$original_size" ]; then
             log "Restoring APFS container to ${original_size}GB..."
             dry_run_exec "Restore APFS container to ${original_size}GB" \
-                diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || {
+                remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || {
                 warn "Could not restore APFS container size"
                 REVERT_ERRORS=1
             }
@@ -86,7 +87,7 @@ revert_changes() {
         if [ -n "$apfs_container" ]; then
             log "Expanding APFS container to fill available space..."
             dry_run_exec "Expand APFS container to fill free space" \
-                diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || {
+                remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || {
                 warn "Could not expand APFS container to fill space"
                 REVERT_ERRORS=1
             }
@@ -95,18 +96,18 @@ revert_changes() {
         # Restore macOS boot device
         local MACOS_VOLUME="/"
         if [ -n "$apfs_container" ]; then
-            MACOS_VOLUME=$(diskutil info "$apfs_container" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
+            MACOS_VOLUME=$(remote_mac_exec diskutil info "$apfs_container" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
         fi
         if [ -d "$MACOS_VOLUME" ] && [ "$MACOS_VOLUME" != "/" ]; then
             dry_run_exec "Restore macOS boot device" \
-                bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && \
+                remote_mac_sudo bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && \
                 log "macOS boot device restored" || {
                 warn "Could not restore macOS boot device"
                 REVERT_ERRORS=1
             }
         else
             dry_run_exec "Restore macOS boot device (root fallback)" \
-                bless --mount / --setBoot 2>/dev/null && \
+                remote_mac_sudo bless --mount / --setBoot 2>/dev/null && \
                 log "macOS boot device restored (root fallback)" || {
                 warn "Could not restore macOS boot device"
                 REVERT_ERRORS=1
@@ -121,7 +122,7 @@ revert_changes() {
             local usb_device="${JOURNAL_USB_DEVICE:-${TARGET_DEVICE:-}}"
             if [ -n "$usb_device" ]; then
                 log "Unmounting USB device $usb_device..."
-                diskutil unmountDisk "$usb_device" 2>/dev/null || true
+                remote_mac_sudo diskutil unmountDisk "$usb_device" 2>/dev/null || true
             else
                 warn "USB device not found for cleanup"
             fi
@@ -205,7 +206,7 @@ handle_revert_flag() {
 
         # Fallback to disk detection if journal values missing
         if [ -z "$internal_disk" ]; then
-            internal_disk=$(diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
+            internal_disk=$(remote_mac_exec diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
         fi
         if [ -z "${internal_disk:-}" ]; then
             die "Cannot identify internal disk for revert"
@@ -213,48 +214,48 @@ handle_revert_flag() {
 
         if [ -z "$apfs_container" ]; then
             local APFS_PARTITION
-            APFS_PARTITION=$(diskutil list "$internal_disk" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+            APFS_PARTITION=$(remote_mac_exec diskutil list "$internal_disk" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
             if [ -n "${APFS_PARTITION:-}" ]; then
-                apfs_container=$(diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head -1 || true)
+                apfs_container=$(remote_mac_exec diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head -1 || true)
             fi
             if [ -z "${apfs_container:-}" ]; then
-                apfs_container=$(diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head -1 || true)
+                apfs_container=$(remote_mac_exec diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head -1 || true)
             fi
         fi
 
         # Find ESP - prefer journal, then detect
         if [ -z "$esp_device" ]; then
-            esp_device=$(diskutil list "$internal_disk" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+            esp_device=$(remote_mac_exec diskutil list "$internal_disk" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
         fi
 
         if [ -n "${esp_device:-}" ]; then
             log "Removing ESP partition /dev/$esp_device..."
-            diskutil unmount "/dev/$esp_device" 2>/dev/null || true
-            diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || warn "Could not remove ESP partition /dev/$esp_device"
+            remote_mac_sudo diskutil unmount "/dev/$esp_device" 2>/dev/null || true
+            remote_mac_sudo diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || warn "Could not remove ESP partition /dev/$esp_device"
         else
             warn "No $ESP_NAME partition found"
         fi
 
         # Restore macOS boot device
         local MACOS_VOLUME
-        MACOS_VOLUME=$(diskutil info "${apfs_container:-}" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
+        MACOS_VOLUME=$(remote_mac_exec diskutil info "${apfs_container:-}" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
         if [ -d "$MACOS_VOLUME" ] && [ "$MACOS_VOLUME" != "/" ]; then
-            bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
+            remote_mac_sudo bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
         else
-            bless --mount / --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
+            remote_mac_sudo bless --mount / --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
         fi
 
         # Restore APFS container to fill freed space (use original size if available)
         if [ -n "${apfs_container:-}" ]; then
             if [ -n "${original_size:-}" ]; then
                 log "Restoring APFS container to ${original_size}GB, then expanding..."
-                diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || true
+                remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || true
             fi
 
             local CURRENT_APFS_GB
-            CURRENT_APFS_GB=$(diskutil info "$apfs_container" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
+            CURRENT_APFS_GB=$(remote_mac_exec diskutil info "$apfs_container" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
             log "Current APFS container: ${CURRENT_APFS_GB:-unknown}GB — expanding to fill free space..."
-            diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null && \
+            remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null && \
                 log "APFS container expanded to fill freed space" || \
                 warn "Could not expand APFS container (space may need manual recovery)"
         fi

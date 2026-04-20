@@ -21,6 +21,7 @@ source "${LIB_DIR:-./lib}/bless.sh"
 source "${LIB_DIR:-./lib}/retry.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/verify.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/rollback.sh" 2>/dev/null || true
+source "${LIB_DIR:-./lib}/remote_mac.sh" 2>/dev/null || true
 source "${LIB_DIR:-./lib}/tui.sh"
 source "${LIB_DIR:-./lib}/dryrun.sh"
 
@@ -84,22 +85,47 @@ _phase_extract_iso() {
     log_info "Extracting Ubuntu ISO to ESP... (this may take 2-5 minutes)"
     log_info "  ISO: $ISO_PATH"
     log_info "  Target: $ESP_MOUNT"
-    echo "[....] Extracting ISO contents..." >&2
-    if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$ESP_MOUNT" 2>/dev/null; then
-        echo "[FAIL] ISO extraction failed" >&2
-        die "Failed to extract ISO contents"
-    fi
-    echo "[ OK ] ISO extraction complete" >&2
-    if ! verify_iso_extraction "$ESP_MOUNT"; then
-        warn "ISO extraction verification failed, cleaning and retrying..."
-        echo "[....] Retrying ISO extraction..." >&2
-        rm -rf "${ESP_MOUNT:?}"/* 2>/dev/null || true
-        if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$ESP_MOUNT" 2>/dev/null; then
-            echo "[FAIL] ISO extraction failed on retry" >&2
-            error "ISO extraction verification failed after retry"
-            return 1
+
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        local host="${TARGET_HOST:-macpro}"
+        log_info "Remote mode: Transferring ISO to $host..."
+        local REMOTE_ISO="/tmp/ubuntu-macpro.iso"
+        if ! remote_mac_cp "$ISO_PATH" "$REMOTE_ISO"; then
+            die "Failed to transfer ISO to $host"
         fi
-        echo "[ OK ] ISO extraction complete (retry)" >&2
+        log_info "ISO transferred. Extracting on remote host..."
+        echo "[....] Extracting ISO contents on $host..." >&2
+        if ! remote_mac_sudo retry_xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$ESP_MOUNT" 2>/dev/null; then
+            echo "[FAIL] Remote ISO extraction failed" >&2
+            remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
+            die "Failed to extract ISO contents on remote host"
+        fi
+        remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
+        echo "[ OK ] Remote ISO extraction complete" >&2
+        if ! remote_mac_exec verify_iso_extraction "$ESP_MOUNT" 2>/dev/null; then
+            warn "ISO extraction verification failed on remote host"
+            echo "[....] Extracting ISO contents (retry)..." >&2
+            remote_mac_sudo retry_xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$ESP_MOUNT" 2>/dev/null || \
+                die "Remote ISO extraction failed on retry"
+        fi
+    else
+        echo "[....] Extracting ISO contents..." >&2
+        if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$ESP_MOUNT" 2>/dev/null; then
+            echo "[FAIL] ISO extraction failed" >&2
+            die "Failed to extract ISO contents"
+        fi
+        echo "[ OK ] ISO extraction complete" >&2
+        if ! verify_iso_extraction "$ESP_MOUNT"; then
+            warn "ISO extraction verification failed, cleaning and retrying..."
+            echo "[....] Retrying ISO extraction..." >&2
+            rm -rf "${ESP_MOUNT:?}"/* 2>/dev/null || true
+            if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$ESP_MOUNT" 2>/dev/null; then
+                echo "[FAIL] ISO extraction failed on retry" >&2
+                error "ISO extraction verification failed after retry"
+                return 1
+            fi
+            echo "[ OK ] ISO extraction complete (retry)" >&2
+        fi
     fi
 }
 
@@ -109,23 +135,59 @@ _phase_copy_pkgs() {
         ESP_MOUNT="$1"
     fi
     local pkgs_copied=0
-    if ! ls "$ESP_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
-        echo "[....] Copying driver packages to ESP..." >&2
-        mkdir -p "$ESP_MOUNT/macpro-pkgs"
-        cp "$SCRIPT_DIR/packages/"*.deb "$ESP_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
-        if [ "$pkgs_copied" -eq 1 ]; then
-            echo "[ OK ] Driver packages copied ($(ls "$ESP_MOUNT/macpro-pkgs/"*.deb 2>/dev/null | wc -l | tr -d ' ') files)" >&2
+
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        if ! remote_mac_dir_exists "$ESP_MOUNT/macpro-pkgs" || \
+           ! remote_mac_exec ls "$ESP_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
+            echo "[....] Copying driver packages to ESP on remote host..." >&2
+            remote_mac_sudo mkdir -p "$ESP_MOUNT/macpro-pkgs"
+            remote_mac_cp_dir "$SCRIPT_DIR/packages/" "$ESP_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
+            if [ "$pkgs_copied" -eq 1 ]; then
+                echo "[ OK ] Driver packages copied" >&2
+            fi
+        fi
+    else
+        if ! ls "$ESP_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
+            echo "[....] Copying driver packages to ESP..." >&2
+            mkdir -p "$ESP_MOUNT/macpro-pkgs"
+            cp "$SCRIPT_DIR/packages/"*.deb "$ESP_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
+            if [ "$pkgs_copied" -eq 1 ]; then
+                echo "[ OK ] Driver packages copied ($(ls "$ESP_MOUNT/macpro-pkgs/"*.deb 2>/dev/null | wc -l | tr -d ' ') files)" >&2
+            fi
         fi
     fi
-    if [ -d "$SCRIPT_DIR/packages/dkms-patches" ] && [ ! -d "$ESP_MOUNT/macpro-pkgs/dkms-patches" ]; then
-        echo "[....] Copying DKMS patches..." >&2
-        mkdir -p "$ESP_MOUNT/macpro-pkgs/dkms-patches"
-        cp "$SCRIPT_DIR/packages/dkms-patches/"* "$ESP_MOUNT/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS patches — WiFi driver cannot compile without them"
-        echo "[ OK ] DKMS patches copied" >&2
+
+    if [ -d "$SCRIPT_DIR/packages/dkms-patches" ]; then
+        local DKMS_DST="$ESP_MOUNT/macpro-pkgs/dkms-patches"
+        if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+            if ! remote_mac_dir_exists "$DKMS_DST"; then
+                echo "[....] Copying DKMS patches to remote host..." >&2
+                remote_mac_sudo mkdir -p "$DKMS_DST"
+                remote_mac_cp_dir "$SCRIPT_DIR/packages/dkms-patches/" "$DKMS_DST/" || die "Failed to copy DKMS patches — WiFi driver cannot compile without them"
+                echo "[ OK ] DKMS patches copied" >&2
+            fi
+        else
+            if [ ! -d "$DKMS_DST" ]; then
+                echo "[....] Copying DKMS patches..." >&2
+                mkdir -p "$DKMS_DST"
+                cp "$SCRIPT_DIR/packages/dkms-patches/"* "$DKMS_DST/" || die "Failed to copy DKMS patches — WiFi driver cannot compile without them"
+                echo "[ OK ] DKMS patches copied" >&2
+            fi
+        fi
     fi
-    if [ "$pkgs_copied" -eq 1 ] && ! ls "$ESP_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
-        error "Package verification failed: no .deb files found after copy"
-        return 1
+
+    if [ "$pkgs_copied" -eq 1 ]; then
+        if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+            if ! remote_mac_exec ls "$ESP_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
+                error "Package verification failed: no .deb files found on remote host after copy"
+                return 1
+            fi
+        else
+            if ! ls "$ESP_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
+                error "Package verification failed: no .deb files found after copy"
+                return 1
+            fi
+        fi
     fi
 }
 
@@ -138,38 +200,66 @@ _phase_generate_config() {
     local NETWORK_TYPE_ARG="wifi"
     [ "${STORAGE_LAYOUT:-1}" = "2" ] && STORAGE_TYPE_ARG="fulldisk"
     [ "${NETWORK_TYPE:-1}" = "2" ] && NETWORK_TYPE_ARG="ethernet"
-    generate_autoinstall "$ESP_MOUNT/autoinstall.yaml" "$STORAGE_TYPE_ARG" "$NETWORK_TYPE_ARG"
-    log "Creating cidata structure..."
-    mkdir -p "$ESP_MOUNT/cidata"
-    if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
-        generate_dualboot_storage "$ESP_MOUNT/autoinstall.yaml" "$ESP_MOUNT/cidata/user-data" "$INTERNAL_DISK"
-    else
-        cp "$ESP_MOUNT/autoinstall.yaml" "$ESP_MOUNT/cidata/user-data"
-    fi
-    # Validate preserve entries for dual-boot
-    if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
-        if ! grep -q 'preserve: true' "$ESP_MOUNT/cidata/user-data" 2>/dev/null; then
-            die "Generated user-data lacks preserve:true entries — macOS partitions would be wiped"
+
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        local _local_staging="${OUTPUT_DIR:-~/.Ubuntu_Deployment}/staging"
+        mkdir -p "$_local_staging/cidata"
+        generate_autoinstall "$_local_staging/autoinstall.yaml" "$STORAGE_TYPE_ARG" "$NETWORK_TYPE_ARG"
+        if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
+            generate_dualboot_storage "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data" "$INTERNAL_DISK"
+        else
+            cp "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data"
         fi
-        local PRESERVE_COUNT
-        PRESERVE_COUNT=$(grep -c 'preserve: true' "$ESP_MOUNT/cidata/user-data" 2>/dev/null || echo "0")
-        log "Preserve entries in user-data: $PRESERVE_COUNT"
-    fi
-    [ -f "$ESP_MOUNT/cidata/meta-data" ] || echo "instance-id: macpro-linux-i1" > "$ESP_MOUNT/cidata/meta-data"
-    [ -f "$ESP_MOUNT/cidata/vendor-data" ] || touch "$ESP_MOUNT/cidata/vendor-data"
-    write_grub_config "$ESP_MOUNT"
-    # Verification
-    if ! verify_cidata_structure "$ESP_MOUNT"; then
-        error "CIDATA structure verification failed"
-        return 1
-    fi
-    if ! verify_yaml_syntax "$ESP_MOUNT/autoinstall.yaml"; then
-        error "YAML syntax verification failed for autoinstall.yaml"
-        return 1
-    fi
-    if ! verify_autoinstall_schema "$ESP_MOUNT/autoinstall.yaml"; then
-        error "Autoinstall schema validation failed for autoinstall.yaml"
-        return 1
+        echo "instance-id: macpro-linux-i1" > "$_local_staging/cidata/meta-data"
+        touch "$_local_staging/cidata/vendor-data"
+        write_grub_config "$_local_staging"
+        if ! verify_yaml_syntax "$_local_staging/autoinstall.yaml"; then
+            error "YAML syntax verification failed for autoinstall.yaml"
+            return 1
+        fi
+        if ! verify_autoinstall_schema "$_local_staging/autoinstall.yaml"; then
+            error "Autoinstall schema validation failed for autoinstall.yaml"
+            return 1
+        fi
+        log "Transferring autoinstall config to remote ESP..."
+        remote_mac_cp "$_local_staging/autoinstall.yaml" "$ESP_MOUNT/autoinstall.yaml"
+        remote_mac_sudo mkdir -p "$ESP_MOUNT/cidata"
+        remote_mac_cp "$_local_staging/cidata/user-data" "$ESP_MOUNT/cidata/user-data"
+        remote_mac_cp "$_local_staging/cidata/meta-data" "$ESP_MOUNT/cidata/meta-data"
+        remote_mac_cp "$_local_staging/cidata/vendor-data" "$ESP_MOUNT/cidata/vendor-data"
+        if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
+            if ! remote_mac_exec grep -q 'preserve: true' "$ESP_MOUNT/cidata/user-data" 2>/dev/null; then
+                die "Generated user-data lacks preserve:true entries — macOS partitions would be wiped"
+            fi
+        fi
+    else
+        generate_autoinstall "$ESP_MOUNT/autoinstall.yaml" "$STORAGE_TYPE_ARG" "$NETWORK_TYPE_ARG"
+        log "Creating cidata structure..."
+        mkdir -p "$ESP_MOUNT/cidata"
+        if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
+            generate_dualboot_storage "$ESP_MOUNT/autoinstall.yaml" "$ESP_MOUNT/cidata/user-data" "$INTERNAL_DISK"
+        else
+            cp "$ESP_MOUNT/autoinstall.yaml" "$ESP_MOUNT/cidata/user-data"
+        fi
+        if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
+            if ! grep -q 'preserve: true' "$ESP_MOUNT/cidata/user-data" 2>/dev/null; then
+                die "Generated user-data lacks preserve:true entries — macOS partitions would be wiped"
+            fi
+            local PRESERVE_COUNT
+            PRESERVE_COUNT=$(grep -c 'preserve: true' "$ESP_MOUNT/cidata/user-data" 2>/dev/null || echo "0")
+            log "Preserve entries in user-data: $PRESERVE_COUNT"
+        fi
+        [ -f "$ESP_MOUNT/cidata/meta-data" ] || echo "instance-id: macpro-linux-i1" > "$ESP_MOUNT/cidata/meta-data"
+        [ -f "$ESP_MOUNT/cidata/vendor-data" ] || touch "$ESP_MOUNT/cidata/vendor-data"
+        write_grub_config "$ESP_MOUNT"
+        if ! verify_yaml_syntax "$ESP_MOUNT/autoinstall.yaml"; then
+            error "YAML syntax verification failed for autoinstall.yaml"
+            return 1
+        fi
+        if ! verify_autoinstall_schema "$ESP_MOUNT/autoinstall.yaml"; then
+            error "Autoinstall schema validation failed for autoinstall.yaml"
+            return 1
+        fi
     fi
 }
 
@@ -207,20 +297,43 @@ _phase_verify_bless() {
 preflight_checks() {
     log "Running preflight checks..."
 
-    command -v xorriso >/dev/null 2>&1 || die "xorriso not found. Install with: brew install xorriso"
-    command -v sgdisk >/dev/null 2>&1 || die "sgdisk not found. Install with: brew install gptfdisk"
-    command -v comm >/dev/null 2>&1 || die "comm not found. Install with: brew install coreutils"
-    command -v python3 >/dev/null 2>&1 || die "python3 not found. Install with: brew install python3"
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        log "Remote mode: checking target host connectivity..."
+        if ! remote_mac_exec echo "SSH connectivity OK" >/dev/null 2>&1; then
+            die "Cannot connect to target host '${TARGET_HOST:-macpro}' via SSH. Verify SSH config and network."
+        fi
+        log "Remote mode: checking tools on target..."
+        remote_mac_exec command -v xorriso >/dev/null 2>&1 || warn "xorriso not found on target. Install with: brew install xorriso"
+        remote_mac_exec command -v sgdisk >/dev/null 2>&1 || warn "sgdisk not found on target. Install with: brew install gptfdisk"
+        remote_mac_exec command -v python3 >/dev/null 2>&1 || warn "python3 not found on target"
 
-    log "Running on: $(sw_vers -productName) $(sw_vers -productVersion)"
+        log "Running on target: $(remote_mac_exec sw_vers -productName 2>/dev/null || echo 'unknown') $(remote_mac_exec sw_vers -productVersion 2>/dev/null || echo 'unknown')"
 
-    local FV_STATUS
-    FV_STATUS=$(fdesetup status 2>/dev/null | grep -o 'On\|Off' | head -1 || echo "unknown")
-    if [ "$FV_STATUS" = "On" ]; then
-        warn "FileVault is ON — may interfere with APFS resize"
+        local FV_STATUS
+        FV_STATUS=$(remote_mac_exec fdesetup status 2>/dev/null | grep -o 'On\|Off' | head -1 || echo "unknown")
+        if [ "$FV_STATUS" = "On" ]; then
+            warn "FileVault is ON on target — may interfere with APFS resize"
+        fi
+
+        if type verify_headless_readiness >/dev/null 2>&1; then
+            verify_headless_readiness || warn "Headless readiness issues detected on target — deployment may require manual intervention"
+        fi
+    else
+        command -v xorriso >/dev/null 2>&1 || die "xorriso not found. Install with: brew install xorriso"
+        command -v sgdisk >/dev/null 2>&1 || die "sgdisk not found. Install with: brew install gptfdisk"
+        command -v comm >/dev/null 2>&1 || die "comm not found. Install with: brew install coreutils"
+        command -v python3 >/dev/null 2>&1 || die "python3 not found. Install with: brew install python3"
+
+        log "Running on: $(sw_vers -productName) $(sw_vers -productVersion)"
+
+        local FV_STATUS
+        FV_STATUS=$(fdesetup status 2>/dev/null | grep -o 'On\|Off' | head -1 || echo "unknown")
+        if [ "$FV_STATUS" = "On" ]; then
+            warn "FileVault is ON — may interfere with APFS resize"
+        fi
+
+        verify_headless_readiness || warn "Headless readiness issues detected — deployment may require manual intervention"
     fi
-
-    verify_headless_readiness || warn "Headless readiness issues detected — deployment may require manual intervention"
 }
 
 deploy_internal_partition() {
@@ -431,7 +544,7 @@ deploy_manual() {
 
     select_usb_device TARGET_DEVICE
 
-    if ! diskutil info "$TARGET_DEVICE" 2>/dev/null | grep -qi "removable\|external\|usb"; then
+    if ! remote_mac_exec diskutil info "$TARGET_DEVICE" 2>/dev/null | grep -qi "removable\|external\|usb"; then
         echo ""
         warn "WARNING: $TARGET_DEVICE does not appear to be a USB/removable device!"
         warn "Writing to an internal device could DESTROY all data on it."
@@ -451,18 +564,17 @@ deploy_manual() {
         die "Manual deployment cancelled"
     fi
 
-    # Unmount and write ISO
     log "Writing ISO to USB (this may take several minutes)..."
-    retry_diskutil unmountDisk "$TARGET_DEVICE" 2>/dev/null || true
+    remote_mac_sudo retry_diskutil unmountDisk "$TARGET_DEVICE" 2>/dev/null || true
     sleep 2
 
     dry_run_exec "Write ISO to USB with dd" \
-        sudo dd if="$ISO_PATH" of="$TARGET_DEVICE" bs=1m || die "Failed to write ISO to USB"
+        remote_mac_sudo dd if="$ISO_PATH" of="$TARGET_DEVICE" bs=1m || die "Failed to write ISO to USB"
 
-    sync
+    remote_mac_exec sync
     log "ISO written successfully"
 
-    retry_diskutil eject "$TARGET_DEVICE" 2>/dev/null || true
+    remote_mac_sudo retry_diskutil eject "$TARGET_DEVICE" 2>/dev/null || true
 
     show_manual_instructions
 }
@@ -474,7 +586,7 @@ deploy_manual() {
 _phase_detect_usb() {
     select_usb_device TARGET_DEVICE
     journal_set "TARGET_DEVICE" "$TARGET_DEVICE"
-    if ! diskutil info "$TARGET_DEVICE" 2>/dev/null | grep -qi "removable\|external\|usb"; then
+    if ! remote_mac_exec diskutil info "$TARGET_DEVICE" 2>/dev/null | grep -qi "removable\|external\|usb"; then
         echo ""
         warn "WARNING: $TARGET_DEVICE does not appear to be a USB/removable device!"
         warn "Writing to an internal device could DESTROY all data on it."
@@ -487,18 +599,18 @@ _phase_detect_usb() {
 
 _phase_partition_usb() {
     log "Preparing USB device $TARGET_DEVICE..."
-    retry_diskutil unmountDisk "$TARGET_DEVICE" 2>/dev/null || true
+    remote_mac_sudo retry_diskutil unmountDisk "$TARGET_DEVICE" 2>/dev/null || true
     sleep 2
     log "Creating FAT32 partition on USB..."
     dry_run_exec "Partition USB device $TARGET_DEVICE" \
-        retry_diskutil partitionDisk "$TARGET_DEVICE" GPT FAT32 "CIDATA" 100% 2>/dev/null || die "Failed to partition USB device"
+        remote_mac_sudo retry_diskutil partitionDisk "$TARGET_DEVICE" GPT FAT32 "CIDATA" 100% 2>/dev/null || die "Failed to partition USB device"
     sleep 2
     local USB_PARTITION
-    USB_PARTITION=$(diskutil list "$TARGET_DEVICE" | grep "CIDATA" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+    USB_PARTITION=$(remote_mac_exec diskutil list "$TARGET_DEVICE" | grep "CIDATA" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
     [ -n "$USB_PARTITION" ] || die "Cannot identify USB partition"
-    retry_diskutil mount "/dev/$USB_PARTITION" 2>/dev/null || true
+    remote_mac_sudo retry_diskutil mount "/dev/$USB_PARTITION" 2>/dev/null || true
     local USB_MOUNT="/Volumes/CIDATA"
-    [ -d "$USB_MOUNT" ] || die "USB not mounted after format"
+    remote_mac_dir_exists "$USB_MOUNT" || die "USB not mounted after format"
     log "USB mounted at: $USB_MOUNT"
     export USB_MOUNT
 }
@@ -509,21 +621,46 @@ _phase_extract_iso_usb() {
         USB_MOUNT="$1"
     fi
     echo "[....] Extracting Ubuntu ISO to USB... (this may take 2-5 minutes)" >&2
-    if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null; then
-        echo "[FAIL] ISO extraction failed" >&2
-        die "Failed to extract ISO contents"
-    fi
-    echo "[ OK ] ISO extraction complete" >&2
-    if ! verify_iso_extraction "$USB_MOUNT"; then
-        warn "ISO extraction verification failed, cleaning and retrying..."
-        echo "[....] Retrying ISO extraction..." >&2
-        rm -rf "${USB_MOUNT:?}"/* 2>/dev/null || true
-        if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null; then
-            echo "[FAIL] ISO extraction failed on retry" >&2
-            error "ISO extraction verification failed after retry"
-            return 1
+
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        local host="${TARGET_HOST:-macpro}"
+        log_info "Remote mode: Transferring ISO to $host..."
+        local REMOTE_ISO="/tmp/ubuntu-macpro.iso"
+        if ! remote_mac_cp "$ISO_PATH" "$REMOTE_ISO"; then
+            die "Failed to transfer ISO to $host"
         fi
-        echo "[ OK ] ISO extraction complete (retry)" >&2
+        log_info "ISO transferred. Extracting on remote host..."
+        echo "[....] Extracting ISO contents on $host..." >&2
+        if ! remote_mac_sudo retry_xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$USB_MOUNT" 2>/dev/null; then
+            echo "[FAIL] Remote ISO extraction failed" >&2
+            remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
+            die "Failed to extract ISO contents on remote host"
+        fi
+        remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
+        echo "[ OK ] Remote ISO extraction complete" >&2
+        if ! remote_mac_exec verify_iso_extraction "$USB_MOUNT" 2>/dev/null; then
+            warn "ISO extraction verification failed on remote host"
+            echo "[....] Extracting ISO contents (retry)..." >&2
+            remote_mac_sudo retry_xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$USB_MOUNT" 2>/dev/null || \
+                die "Remote ISO extraction failed on retry"
+        fi
+    else
+        if ! remote_mac_exec retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null; then
+            echo "[FAIL] ISO extraction failed" >&2
+            die "Failed to extract ISO contents"
+        fi
+        echo "[ OK ] ISO extraction complete" >&2
+        if ! verify_iso_extraction "$USB_MOUNT"; then
+            warn "ISO extraction verification failed, cleaning and retrying..."
+            echo "[....] Retrying ISO extraction..." >&2
+            remote_mac_exec rm -rf "${USB_MOUNT:?}"/* 2>/dev/null || true
+            if ! remote_mac_exec retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null; then
+                echo "[FAIL] ISO extraction failed on retry" >&2
+                error "ISO extraction verification failed after retry"
+                return 1
+            fi
+            echo "[ OK ] ISO extraction complete (retry)" >&2
+        fi
     fi
 }
 
@@ -533,23 +670,51 @@ _phase_copy_pkgs_usb() {
         USB_MOUNT="$1"
     fi
     local pkgs_copied=0
-    if ! ls "$USB_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
-        echo "[....] Copying driver packages to USB..." >&2
-        mkdir -p "$USB_MOUNT/macpro-pkgs"
-        cp "$SCRIPT_DIR/packages/"*.deb "$USB_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
-        if [ "$pkgs_copied" -eq 1 ]; then
-            echo "[ OK ] Driver packages copied ($(ls "$USB_MOUNT/macpro-pkgs/"*.deb 2>/dev/null | wc -l | tr -d ' ') files)" >&2
+
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        if ! remote_mac_dir_exists "$USB_MOUNT/macpro-pkgs" || \
+           ! remote_mac_exec ls "$USB_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
+            echo "[....] Copying driver packages to USB on remote host..." >&2
+            remote_mac_sudo mkdir -p "$USB_MOUNT/macpro-pkgs"
+            remote_mac_cp_dir "$SCRIPT_DIR/packages/" "$USB_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
+            if [ "$pkgs_copied" -eq 1 ]; then
+                echo "[ OK ] Driver packages copied" >&2
+            fi
         fi
-    fi
-    if [ -d "$SCRIPT_DIR/packages/dkms-patches" ] && [ ! -d "$USB_MOUNT/macpro-pkgs/dkms-patches" ]; then
-        echo "[....] Copying DKMS patches..." >&2
-        mkdir -p "$USB_MOUNT/macpro-pkgs/dkms-patches"
-        cp "$SCRIPT_DIR/packages/dkms-patches/"* "$USB_MOUNT/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS patches — WiFi driver cannot compile without them"
-        echo "[ OK ] DKMS patches copied" >&2
-    fi
-    if [ "$pkgs_copied" -eq 1 ] && ! ls "$USB_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
-        error "Package verification failed: no .deb files found after copy"
-        return 1
+        if [ -d "$SCRIPT_DIR/packages/dkms-patches" ]; then
+            local DKMS_DST="$USB_MOUNT/macpro-pkgs/dkms-patches"
+            if ! remote_mac_dir_exists "$DKMS_DST"; then
+                echo "[....] Copying DKMS patches to remote host..." >&2
+                remote_mac_sudo mkdir -p "$DKMS_DST"
+                remote_mac_cp_dir "$SCRIPT_DIR/packages/dkms-patches/" "$DKMS_DST/" || die "Failed to copy DKMS patches — WiFi driver cannot compile without them"
+                echo "[ OK ] DKMS patches copied" >&2
+            fi
+        fi
+        if [ "$pkgs_copied" -eq 1 ]; then
+            if ! remote_mac_exec ls "$USB_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
+                error "Package verification failed: no .deb files found on remote host after copy"
+                return 1
+            fi
+        fi
+    else
+        if ! ls "$USB_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
+            echo "[....] Copying driver packages to USB..." >&2
+            mkdir -p "$USB_MOUNT/macpro-pkgs"
+            cp "$SCRIPT_DIR/packages/"*.deb "$USB_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
+            if [ "$pkgs_copied" -eq 1 ]; then
+                echo "[ OK ] Driver packages copied ($(ls "$USB_MOUNT/macpro-pkgs/"*.deb 2>/dev/null | wc -l | tr -d ' ') files)" >&2
+            fi
+        fi
+        if [ -d "$SCRIPT_DIR/packages/dkms-patches" ] && [ ! -d "$USB_MOUNT/macpro-pkgs/dkms-patches" ]; then
+            echo "[....] Copying DKMS patches..." >&2
+            mkdir -p "$USB_MOUNT/macpro-pkgs/dkms-patches"
+            cp "$SCRIPT_DIR/packages/dkms-patches/"* "$USB_MOUNT/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS patches — WiFi driver cannot compile without them"
+            echo "[ OK ] DKMS patches copied" >&2
+        fi
+        if [ "$pkgs_copied" -eq 1 ] && ! ls "$USB_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
+            error "Package verification failed: no .deb files found after copy"
+            return 1
+        fi
     fi
 }
 
@@ -562,28 +727,61 @@ _phase_generate_config_usb() {
     local NETWORK_TYPE_ARG="wifi"
     [ "${STORAGE_LAYOUT:-1}" = "2" ] && STORAGE_TYPE_ARG="fulldisk"
     [ "${NETWORK_TYPE:-1}" = "2" ] && NETWORK_TYPE_ARG="ethernet"
-    generate_autoinstall "$USB_MOUNT/autoinstall.yaml" "$STORAGE_TYPE_ARG" "$NETWORK_TYPE_ARG"
-    log "Creating cidata structure..."
-    mkdir -p "$USB_MOUNT/cidata"
-    if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
-        generate_dualboot_storage "$USB_MOUNT/autoinstall.yaml" "$USB_MOUNT/cidata/user-data" "$INTERNAL_DISK"
+
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        local _local_staging="${OUTPUT_DIR:-~/.Ubuntu_Deployment}/staging"
+        mkdir -p "$_local_staging/cidata"
+        generate_autoinstall "$_local_staging/autoinstall.yaml" "$STORAGE_TYPE_ARG" "$NETWORK_TYPE_ARG"
+        if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
+            generate_dualboot_storage "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data" "$INTERNAL_DISK"
+        else
+            cp "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data"
+        fi
+        echo "instance-id: macpro-linux-i1" > "$_local_staging/cidata/meta-data"
+        touch "$_local_staging/cidata/vendor-data"
+        write_grub_config "$_local_staging"
+        if ! verify_yaml_syntax "$_local_staging/autoinstall.yaml"; then
+            error "YAML syntax verification failed for autoinstall.yaml"
+            return 1
+        fi
+        if ! verify_autoinstall_schema "$_local_staging/autoinstall.yaml"; then
+            error "Autoinstall schema validation failed for autoinstall.yaml"
+            return 1
+        fi
+        log "Transferring autoinstall config to remote USB..."
+        remote_mac_cp "$_local_staging/autoinstall.yaml" "$USB_MOUNT/autoinstall.yaml"
+        remote_mac_sudo mkdir -p "$USB_MOUNT/cidata"
+        remote_mac_cp "$_local_staging/cidata/user-data" "$USB_MOUNT/cidata/user-data"
+        remote_mac_cp "$_local_staging/cidata/meta-data" "$USB_MOUNT/cidata/meta-data"
+        remote_mac_cp "$_local_staging/cidata/vendor-data" "$USB_MOUNT/cidata/vendor-data"
+        if ! remote_mac_exec verify_cidata_structure "$USB_MOUNT" 2>/dev/null; then
+            error "CIDATA structure verification failed on remote host"
+            return 1
+        fi
     else
-        cp "$USB_MOUNT/autoinstall.yaml" "$USB_MOUNT/cidata/user-data"
-    fi
-    [ -f "$USB_MOUNT/cidata/meta-data" ] || echo "instance-id: macpro-linux-i1" > "$USB_MOUNT/cidata/meta-data"
-    [ -f "$USB_MOUNT/cidata/vendor-data" ] || touch "$USB_MOUNT/cidata/vendor-data"
-    write_grub_config "$USB_MOUNT"
-    if ! verify_cidata_structure "$USB_MOUNT"; then
-        error "CIDATA structure verification failed"
-        return 1
-    fi
-    if ! verify_yaml_syntax "$USB_MOUNT/autoinstall.yaml"; then
-        error "YAML syntax verification failed for autoinstall.yaml"
-        return 1
-    fi
-    if ! verify_autoinstall_schema "$USB_MOUNT/autoinstall.yaml"; then
-        error "Autoinstall schema validation failed for autoinstall.yaml"
-        return 1
+        generate_autoinstall "$USB_MOUNT/autoinstall.yaml" "$STORAGE_TYPE_ARG" "$NETWORK_TYPE_ARG"
+        log "Creating cidata structure..."
+        mkdir -p "$USB_MOUNT/cidata"
+        if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
+            generate_dualboot_storage "$USB_MOUNT/autoinstall.yaml" "$USB_MOUNT/cidata/user-data" "$INTERNAL_DISK"
+        else
+            cp "$USB_MOUNT/autoinstall.yaml" "$USB_MOUNT/cidata/user-data"
+        fi
+        [ -f "$USB_MOUNT/cidata/meta-data" ] || echo "instance-id: macpro-linux-i1" > "$USB_MOUNT/cidata/meta-data"
+        [ -f "$USB_MOUNT/cidata/vendor-data" ] || touch "$USB_MOUNT/cidata/vendor-data"
+        write_grub_config "$USB_MOUNT"
+        if ! verify_cidata_structure "$USB_MOUNT"; then
+            error "CIDATA structure verification failed"
+            return 1
+        fi
+        if ! verify_yaml_syntax "$USB_MOUNT/autoinstall.yaml"; then
+            error "YAML syntax verification failed for autoinstall.yaml"
+            return 1
+        fi
+        if ! verify_autoinstall_schema "$USB_MOUNT/autoinstall.yaml"; then
+            error "Autoinstall schema validation failed for autoinstall.yaml"
+            return 1
+        fi
     fi
 }
 
@@ -593,7 +791,7 @@ _phase_verify_usb() {
         USB_MOUNT="$1"
     fi
     verify_esp_contents "$USB_MOUNT"
-    retry_diskutil unmountDisk "$TARGET_DEVICE" 2>/dev/null || true
+    remote_mac_sudo retry_diskutil unmountDisk "$TARGET_DEVICE" 2>/dev/null || true
 }
 
 show_blind_boot_instructions() {

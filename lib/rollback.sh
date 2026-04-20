@@ -271,7 +271,7 @@ run_phased() {
     local -a phases
     local phase_idx=0
     local phase
-    for phase in $phase_list; do
+    for phase in ${phase_list:-}; do
         phases[$phase_idx]="$phase"
         phase_idx=$((phase_idx + 1))
     done
@@ -301,7 +301,14 @@ run_phased() {
 
         # Run the phase function
         local exit_code=0
-        if $phase_func; then
+        # Validate phase function name to prevent command injection
+        if ! printf '%s' "$phase_func" | grep -qE '^[a-zA-Z_][a-zA-Z0-9_]*$'; then
+            log_error "run_phased: invalid phase function name: $phase_func"
+            exit_code=1
+        elif ! command -v "$phase_func" >/dev/null 2>&1 && ! type "$phase_func" >/dev/null 2>&1; then
+            log_error "run_phased: undefined phase function: $phase_func"
+            exit_code=1
+        elif $phase_func; then
             exit_code=0
         else
             exit_code=$?

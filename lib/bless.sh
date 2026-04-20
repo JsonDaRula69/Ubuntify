@@ -14,6 +14,7 @@ _BLESS_SH_SOURCED=1
 source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/dryrun.sh"
+source "${LIB_DIR:-./lib}/remote_mac.sh"
 
 : "${ESP_NAME:=CIDATA}"
 
@@ -75,7 +76,7 @@ attempt_bless() {
     if command -v systemsetup >/dev/null 2>&1; then
         log "Attempting systemsetup..."
         if dry_run_exec "Setting startup disk via systemsetup" \
-            systemsetup -setstartupdisk "$ESP_MOUNT" 2>/dev/null; then
+            remote_mac_sudo systemsetup -setstartupdisk "$ESP_MOUNT" 2>/dev/null; then
             log "systemsetup succeeded"
             BLESS_OK=1
         fi
@@ -85,11 +86,11 @@ attempt_bless() {
     if [ "$BLESS_OK" -eq 0 ]; then
         log "Attempting bless --nextonly..."
         if dry_run_exec "Setting boot device via bless --nextonly" \
-            bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>/dev/null; then
+            remote_mac_sudo bless --verbose --setBoot --mount "$ESP_MOUNT" --file "$ESP_MOUNT/EFI/boot/bootx64.efi" --nextonly 2>/dev/null; then
             BLESS_OK=1
         else
-     # Bless may fail due to system restrictions
-     log "bless --nextonly failed — boot device must be selected manually"
+      # Bless may fail due to system restrictions
+      log "bless --nextonly failed — boot device must be selected manually"
         fi
     fi
 
@@ -97,7 +98,7 @@ attempt_bless() {
     if [ "$BLESS_OK" -eq 0 ]; then
         log "Attempting bless --device..."
         if dry_run_exec "Setting boot device via bless --device" \
-            bless --verbose --device "/dev/$ESP_DEVICE" --setBoot --nextonly 2>/dev/null; then
+            remote_mac_sudo bless --verbose --device "/dev/$ESP_DEVICE" --setBoot --nextonly 2>/dev/null; then
             BLESS_OK=1
         else
             log "bless --device also failed"
