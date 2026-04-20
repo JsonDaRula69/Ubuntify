@@ -150,6 +150,10 @@ _tui_mktemp() {
     mktemp 2>/dev/null || echo "/tmp/tui_$$"
 }
 
+# Global result variable — used by tui_menu, tui_input, tui_password, tui_checklist
+# to pass results back to callers without using $() subshells (which break dialog).
+_TUI_RESULT=""
+
 ## Menu Primitives
 
 tui_menu() {
@@ -179,7 +183,7 @@ tui_menu() {
 
         if [ -n "$selection" ]; then
             agent_output "menu" "$title" "$selection"
-            echo "$selection"
+            _TUI_RESULT="$selection"
             return 0
         else
             agent_output "menu_options" "$title" "" "options" "$options"
@@ -204,11 +208,9 @@ tui_menu() {
         done
         log_info "tui_menu[dialog]: before dialog call, items=${#items[@]}"
         if dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --menu "$description" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
-            local result
-            result=$(cat "$tmpfile")
+            _TUI_RESULT=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            log_info "tui_menu[dialog]: result=$result"
-            echo "$result"
+            log_info "tui_menu[dialog]: result=$_TUI_RESULT"
             return 0
         else
             rm -f "$tmpfile"
@@ -222,10 +224,8 @@ tui_menu() {
             shift 2
         done
         if whiptail --backtitle "$TUI_BACKTITLE" --title "$title" --radiolist "$description" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
-            local result
-            result=$(cat "$tmpfile")
+            _TUI_RESULT=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            echo "$result"
             return 0
         else
             rm -f "$tmpfile"
@@ -265,7 +265,7 @@ tui_menu() {
                     ''|*[!0-9]*) ;;
                     *)
                         if [ "$response" -ge 1 ] && [ "$response" -le "$count" ]; then
-                            echo "${tags[$((response-1))]}"
+                            _TUI_RESULT="${tags[$((response-1))]}"
                             return 0
                         fi
                         ;;
@@ -310,7 +310,7 @@ tui_menu() {
                     esac
                     ;;
                 '')
-                    echo "${tags[$selected]}"
+                    _TUI_RESULT="${tags[$selected]}"
                     return 0
                     ;;
                 q|Q)
@@ -474,7 +474,7 @@ tui_input() {
         local result="${AGENT_INPUT_VALUE:-}"
         [ -z "$result" ] && result="$default_value"
         agent_output "input" "$title" "$result"
-        echo "$result"
+        _TUI_RESULT="$result"
         return 0
     fi
 
@@ -492,7 +492,7 @@ tui_input() {
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            echo "$result"
+            _TUI_RESULT="$result"
             return 0
         else
             rm -f "$tmpfile"
@@ -503,7 +503,7 @@ tui_input() {
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            echo "$result"
+            _TUI_RESULT="$result"
             return 0
         else
             rm -f "$tmpfile"
@@ -528,7 +528,7 @@ tui_input() {
             IFS= read -r result < /dev/tty
         fi
         [ -z "$result" ] && result="$default_value"
-        echo "$result"
+        _TUI_RESULT="$result"
         return 0
     fi
 }
@@ -540,7 +540,7 @@ tui_password() {
     if [ "${AGENT_MODE:-0}" -eq 1 ]; then
         local result="${AGENT_PASSWORD_VALUE:-}"
         agent_output "password" "$title" "***"
-        echo "$result"
+        _TUI_RESULT="$result"
         return 0
     fi
 
@@ -558,7 +558,7 @@ tui_password() {
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            echo "$result"
+            _TUI_RESULT="$result"
             return 0
         else
             rm -f "$tmpfile"
@@ -569,7 +569,7 @@ tui_password() {
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            echo "$result"
+            _TUI_RESULT="$result"
             return 0
         else
             rm -f "$tmpfile"
@@ -592,7 +592,7 @@ tui_password() {
             IFS= read -rs pass < /dev/tty
         fi
         printf '\n' >&2
-        echo "$pass"
+        _TUI_RESULT="$pass"
         return 0
     fi
 }
@@ -690,7 +690,7 @@ tui_checklist() {
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            echo "$result"
+            _TUI_RESULT="$result"
             return 0
         else
             rm -f "$tmpfile"
@@ -706,7 +706,7 @@ tui_checklist() {
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            echo "$result"
+            _TUI_RESULT="$result"
             return 0
         else
             rm -f "$tmpfile"
@@ -769,7 +769,7 @@ tui_checklist() {
                     result="$result${tags[$i]}"
                 fi
             done
-            echo "$result"
+            _TUI_RESULT="$result"
             return 0
         fi
 
@@ -837,7 +837,7 @@ tui_checklist() {
                     choices[$selected]=$((1 - ${choices[$selected]}))
                     ;;
                 '')
-                    echo "$selected_tags"
+                    _TUI_RESULT="$selected_tags"
                     return 0
                     ;;
                 q|Q)
@@ -1037,7 +1037,7 @@ tui_checkbox() {
                 choices[$selected]=$((1 - ${choices[$selected]}))
                 ;;
             '')
-                echo "$selected_tags"
+                _TUI_RESULT="$selected_tags"
                 return 0
                 ;;
             q|Q)

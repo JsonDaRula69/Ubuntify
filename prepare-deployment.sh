@@ -340,7 +340,8 @@ prompt_config() {
             agent_error "USERNAME required in deploy.conf or --agent mode"
             missing=1
         else
-            USERNAME=$(tui_input "Username" "Enter username for the Ubuntu system:" "")
+            tui_input "Username" "Enter username for the Ubuntu system:" ""
+            USERNAME="$_TUI_RESULT"
             [ -z "$USERNAME" ] && { die "Username is required"; }
         fi
     fi
@@ -348,7 +349,8 @@ prompt_config() {
         if [ "$AGENT_MODE" -eq 1 ]; then
             REALNAME="$USERNAME"
         else
-            REALNAME=$(tui_input "Full Name" "Enter full name (GECOS):" "$USERNAME")
+            tui_input "Full Name" "Enter full name (GECOS):" "$USERNAME"
+            REALNAME="$_TUI_RESULT"
         fi
     fi
     if [ -z "$PASSWORD_HASH" ]; then
@@ -357,8 +359,10 @@ prompt_config() {
             missing=1
         else
             local password password2
-            password=$(tui_password "Password" "Enter password for $USERNAME:")
-            password2=$(tui_password "Confirm Password" "Confirm password:")
+            tui_password "Password" "Enter password for $USERNAME:"
+            password="$_TUI_RESULT"
+            tui_password "Confirm Password" "Confirm password:"
+            password2="$_TUI_RESULT"
             if [ "$password" != "$password2" ]; then
                 die "Passwords do not match"
             fi
@@ -374,8 +378,10 @@ prompt_config() {
             else
                 warn "Regenerating password hash..."
                 local password password2
-                password=$(tui_password "Password" "PASSWORD_HASH invalid. Enter password for $USERNAME:")
-                password2=$(tui_password "Confirm Password" "Confirm password:")
+                tui_password "Password" "PASSWORD_HASH invalid. Enter password for $USERNAME:"
+                password="$_TUI_RESULT"
+                tui_password "Confirm Password" "Confirm password:"
+                password2="$_TUI_RESULT"
                 if [ "$password" != "$password2" ]; then
                     die "Passwords do not match"
                 fi
@@ -398,7 +404,8 @@ prompt_config() {
                         warn "SSH keys skipped by user"
                     elif [ "$selected_key" = "MANUAL" ]; then
                         local manual_key
-                        manual_key=$(tui_input "SSH Public Key" "Paste your SSH public key:" "")
+                        tui_input "SSH Public Key" "Paste your SSH public key:" ""
+                        manual_key="$_TUI_RESULT"
                         if [ -n "$manual_key" ]; then
                             SSH_KEYS="$manual_key"
                         fi
@@ -426,7 +433,8 @@ prompt_config() {
             agent_error "WIFI_SSID required in deploy.conf or --agent mode"
             missing=1
         else
-            WIFI_SSID=$(tui_input "WiFi SSID" "Enter WiFi network name:" "")
+            tui_input "WiFi SSID" "Enter WiFi network name:" ""
+            WIFI_SSID="$_TUI_RESULT"
         fi
     fi
     if [ -z "$WIFI_PASSWORD" ]; then
@@ -434,7 +442,8 @@ prompt_config() {
             agent_error "WIFI_PASSWORD required in deploy.conf or --agent mode"
             missing=1
         else
-            WIFI_PASSWORD=$(tui_password "WiFi Password" "Enter WiFi password:")
+            tui_password "WiFi Password" "Enter WiFi password:"
+            WIFI_PASSWORD="$_TUI_RESULT"
         fi
     fi
     if [ -z "$WEBHOOK_HOST" ]; then
@@ -449,7 +458,8 @@ prompt_config() {
                     webhook_default="$detected_ip"
                 fi
             fi
-            WEBHOOK_HOST=$(tui_input "Webhook Host" "Enter monitoring host IP (webhook server):" "$webhook_default")
+            tui_input "Webhook Host" "Enter monitoring host IP (webhook server):" "$webhook_default"
+            WEBHOOK_HOST="$_TUI_RESULT"
         fi
     fi
     if [ -z "$WEBHOOK_PORT" ]; then
@@ -581,18 +591,20 @@ EOF
 
 prompt_ssh_key_menu() {
     local choice
-    choice=$(tui_menu "SSH Key Configuration" "Choose how to provide SSH public key:" \
+    tui_menu "SSH Key Configuration" "Choose how to provide SSH public key:" \
         "Provide existing key" "existing" \
         "Generate new key" "generate" \
-        "Skip SSH setup" "skip") || return 1
+            "Skip SSH setup" "skip" || return 1
+    choice="$_TUI_RESULT"
     echo "$choice"
 }
 
 prompt_generate_key() {
     local key_type_choice
-    key_type_choice=$(tui_menu "Generate SSH Key" "Select key type:" \
+    tui_menu "Generate SSH Key" "Select key type:" \
         "ed25519 (recommended)" "ed25519" \
-        "rsa (4096-bit)" "rsa") || return 1
+            "rsa (4096-bit)" "rsa" || return 1
+    key_type_choice="$_TUI_RESULT"
 
     local key_file="$HOME/.ssh/macpro_ubuntu_${key_type_choice}"
     local key_path="${key_file}.pub"
@@ -665,7 +677,8 @@ configure_ssh_config() {
     fi
 
     if [ "$has_macpro" -eq 0 ]; then
-        macpro_ip=$(tui_input "macOS Host IP" "Enter macOS IP address (or leave empty to skip):" "")
+        tui_input "macOS Host IP" "Enter macOS IP address (or leave empty to skip):" ""
+        macpro_ip="$_TUI_RESULT"
     fi
 
     mkdir -p "$HOME/.ssh"
@@ -821,10 +834,11 @@ prompt_deploy_mode() {
     log_info "prompt_deploy_mode: prompting for deployment mode"
 
     if [ -z "$DEPLOY_MODE" ] || [ "$DEPLOY_MODE" = "__REPLACE__" ] || [ "${_USING_EXAMPLE_CONF:-0}" -eq 1 ]; then
-        DEPLOY_MODE=$(tui_menu "Deployment Mode" \
+        tui_menu "Deployment Mode" \
             "Select how to deploy to the Mac Pro:" \
             "Local (running on Mac Pro directly)" "local" \
-            "Remote (SSH to Mac Pro from this machine)" "remote") || return 1
+                    "Remote (SSH to Mac Pro from this machine)" "remote" || return 1
+        DEPLOY_MODE="$_TUI_RESULT"
         log_info "prompt_deploy_mode: user selected DEPLOY_MODE=$DEPLOY_MODE"
     fi
 
@@ -849,17 +863,20 @@ prompt_deploy_mode() {
                 menu_args+=("Manual entry" "manual")
 
                 local selection
-                selection=$(tui_menu "${menu_args[@]}") || return 1
+                tui_menu "${menu_args[@]}" || return 1
+                selection="$_TUI_RESULT"
 
                 if [ "$selection" = "manual" ]; then
-                    TARGET_HOST=$(tui_input "Target Host" \
-                        "Enter SSH hostname or IP for the Mac Pro (macOS):" "macpro") || return 1
+                    tui_input "Target Host" \
+                                            "Enter SSH hostname or IP for the Mac Pro (macOS):" "macpro" || return 1
+                    TARGET_HOST="$_TUI_RESULT"
                 else
                     TARGET_HOST="$selection"
                 fi
             else
-                TARGET_HOST=$(tui_input "Target Host" \
-                    "Enter SSH hostname or IP for the Mac Pro (macOS):" "macpro") || return 1
+                tui_input "Target Host" \
+                                    "Enter SSH hostname or IP for the Mac Pro (macOS):" "macpro" || return 1
+                TARGET_HOST="$_TUI_RESULT"
             fi
         fi
 
@@ -882,12 +899,13 @@ prompt_deploy_mode() {
                 local ssh_resolved=0
                 while [ "$ssh_resolved" -eq 0 ]; do
                     local retry_choice
-                    retry_choice=$(tui_menu "SSH Connection Failed" \
+                    tui_menu "SSH Connection Failed" \
                         "Cannot connect to $TARGET_HOST via SSH.\n\nChoose an option:" \
                         "Try $TARGET_HOST.local" "local" \
                         "Try $TARGET_HOST.lan" "lan" \
                         "Enter different hostname" "manual" \
-                        "Abort" "abort") || { retry_choice="abort"; }
+                                            "Abort" "abort" || { retry_choice="abort"; }
+                    retry_choice="$_TUI_RESULT"
 
                     case "$retry_choice" in
                         local)
@@ -905,8 +923,9 @@ prompt_deploy_mode() {
                             fi
                             ;;
                         manual)
-                            TARGET_HOST=$(tui_input "Target Host" \
-                                "Enter SSH hostname or IP for the Mac Pro (macOS):" "") || continue
+                            tui_input "Target Host" \
+                                                            "Enter SSH hostname or IP for the Mac Pro (macOS):" "" || continue
+                            TARGET_HOST="$_TUI_RESULT"
                             resolved_host="$(resolve_hostname "$TARGET_HOST")"
                             if [ "$resolved_host" != "$TARGET_HOST" ]; then
                                 TARGET_HOST="$resolved_host"
@@ -939,8 +958,9 @@ prompt_deploy_mode() {
             tui_msgbox "Security Notice" "$remote_sudo_warning"
 
             if [ -z "$REMOTE_SUDO_PASSWORD" ]; then
-                REMOTE_SUDO_PASSWORD=$(tui_password "Remote Sudo Password" \
-                    "Enter sudo password for $TARGET_HOST:") || return 1
+                tui_password "Remote Sudo Password" \
+                                    "Enter sudo password for $TARGET_HOST:" || return 1
+                REMOTE_SUDO_PASSWORD="$_TUI_RESULT"
             fi
         fi
     elif [ "$DEPLOY_MODE" != "local" ]; then
@@ -956,11 +976,12 @@ prompt_encryption_mode() {
     fi
 
     local choice
-    choice=$(tui_menu "Password Encryption" \
+    tui_menu "Password Encryption" \
         "How should the password be stored in deploy.conf?" \
         "Plaintext (file chmod 600)" "plaintext" \
         "AES-256 (encrypted, password required to decrypt)" "aes256" \
-        "macOS Keychain (stored in Keychain, config file cleaned)" "keychain") || return 0
+            "macOS Keychain (stored in Keychain, config file cleaned)" "keychain" || return 0
+    choice="$_TUI_RESULT"
 
     ENCRYPTION="$choice"
     export ENCRYPTION
@@ -1173,7 +1194,8 @@ select_mode() {
         esac
     else
         local choice
-        choice=$(tui_menu "Ubuntify" "Select operation mode:" "Deploy" "deploy" "Manage" "manage" "Revert Failed Deploy" "revert" "Exit" "exit") || exit 0
+        tui_menu "Ubuntify" "Select operation mode:" "Deploy" "deploy" "Manage" "manage" "Revert Failed Deploy" "revert" "Exit" "exit" || exit 0
+        choice="$_TUI_RESULT"
         echo "$choice"
     fi
 }
@@ -1182,13 +1204,14 @@ select_mode() {
 
 deploy_menu() {
     local choice
-    choice=$(tui_menu "Deploy Mode" "Select deployment operation:" \
+    tui_menu "Deploy Mode" "Select deployment operation:" \
         "Build ISO" "build_iso" \
         "Deploy" "deploy" \
         "Monitor" "monitor" \
         "Test in VM" "test_vm" \
         "Revert" "revert" \
-        "Back to Main Menu" "back") || return 1
+            "Back to Main Menu" "back" || return 1
+    choice="$_TUI_RESULT"
     echo "$choice"
 }
 
@@ -1220,12 +1243,13 @@ menu_build_iso() {
 
 menu_deploy_select() {
     local method
-    method=$(tui_menu "Select Deployment Method" "Choose how to deploy Ubuntu:" \
+    tui_menu "Select Deployment Method" "Choose how to deploy Ubuntu:" \
         "Internal partition (ESP)" "1" \
         "USB drive" "2" \
         "Full manual" "3" \
         "VM test (VirtualBox)" "4" \
-        "Cancel" "cancel") || return 1
+            "Cancel" "cancel" || return 1
+    method="$_TUI_RESULT"
 
     if [ "$method" = "cancel" ]; then
         return 1
@@ -1237,17 +1261,19 @@ menu_deploy_select() {
     local network=""
 
     if [ "$DEPLOY_METHOD" != "3" ] && [ "$DEPLOY_METHOD" != "4" ]; then
-        storage=$(tui_menu "Select Storage Layout" "Choose partition scheme:" \
+        tui_menu "Select Storage Layout" "Choose partition scheme:" \
             "Dual-boot (preserve macOS)" "1" \
             "Full disk (replace macOS)" "2" \
-            "Cancel" "cancel") || return 1
+                    "Cancel" "cancel" || return 1
+        storage="$_TUI_RESULT"
         [ "$storage" = "cancel" ] && return 1
         STORAGE_LAYOUT="$storage"
 
-        network=$(tui_menu "Select Network Type" "Choose network configuration:" \
+        tui_menu "Select Network Type" "Choose network configuration:" \
             "WiFi only (Broadcom BCM4360)" "1" \
             "Ethernet available" "2" \
-            "Cancel" "cancel") || return 1
+                    "Cancel" "cancel" || return 1
+        network="$_TUI_RESULT"
         [ "$network" = "cancel" ] && return 1
         NETWORK_TYPE="$network"
     fi
@@ -1294,11 +1320,12 @@ menu_monitor() {
     fi
 
     local choice
-    choice=$(tui_menu "Monitor" "Select monitor action:" \
+    tui_menu "Monitor" "Select monitor action:" \
         "Start monitor" "start" \
         "View logs" "logs" \
         "Stop monitor" "stop" \
-        "Back" "back") || return 1
+            "Back" "back" || return 1
+    choice="$_TUI_RESULT"
 
     case "$choice" in
         start)
@@ -1329,14 +1356,15 @@ menu_monitor() {
 menu_test_vm() {
     local vm_dir="$SCRIPT_DIR/tests/vm"
     local choice
-    choice=$(tui_menu "VM Test" "Select VM test action:" \
+    tui_menu "VM Test" "Select VM test action:" \
         "Build VM ISO" "build" \
         "Create VM" "create" \
         "Run VM" "run" \
         "SSH to VM" "ssh" \
         "Stop VM" "stop" \
         "View serial log" "serial" \
-        "Back" "back") || return 1
+            "Back" "back" || return 1
+    choice="$_TUI_RESULT"
 
     case "$choice" in
         build)
@@ -1485,7 +1513,7 @@ manage_menu() {
         esac
     else
         local choice
-        choice=$(tui_menu "Manage Mode" "Select management operation:" \
+        tui_menu "Manage Mode" "Select management operation:" \
             "System Info" "sysinfo" \
             "Kernel Management" "kernel" \
             "WiFi/Driver" "wifi" \
@@ -1493,7 +1521,8 @@ manage_menu() {
             "APT Sources" "apt" \
             "Headless Verify" "headless" \
             "Reboot" "reboot" \
-            "Back to Main Menu" "back") || return 1
+                    "Back to Main Menu" "back" || return 1
+        choice="$_TUI_RESULT"
         echo "$choice"
     fi
 }
@@ -1543,13 +1572,14 @@ menu_kernel() {
         echo "$choices"
     else
         local choice
-        choice=$(tui_menu "Kernel Management" "Select kernel operation:" \
+        tui_menu "Kernel Management" "Select kernel operation:" \
             "Status" "status" \
             "Pin kernel" "pin" \
             "Unpin kernel" "unpin" \
             "Update kernel" "update" \
             "Security updates only" "security" \
-            "Back" "back") || return 1
+                    "Back" "back" || return 1
+        choice="$_TUI_RESULT"
 
         echo "$choice"
     fi
@@ -1667,10 +1697,11 @@ _kernel_security() {
 
 menu_wifi() {
     local choice
-    choice=$(tui_menu "WiFi/Driver" "Select WiFi operation:" \
+    tui_menu "WiFi/Driver" "Select WiFi operation:" \
         "Status" "status" \
         "Rebuild driver" "rebuild" \
-        "Back" "back") || return 1
+            "Back" "back" || return 1
+    choice="$_TUI_RESULT"
 
     case "$choice" in
         status)
@@ -1698,10 +1729,11 @@ menu_wifi() {
 
 menu_storage() {
     local choice
-    choice=$(tui_menu "Storage" "Select storage operation:" \
+    tui_menu "Storage" "Select storage operation:" \
         "Disk usage" "usage" \
         "Erase macOS and expand" "erase" \
-        "Back" "back") || return 1
+            "Back" "back" || return 1
+    choice="$_TUI_RESULT"
 
     case "$choice" in
         usage)
@@ -1729,10 +1761,11 @@ menu_storage() {
 
 menu_apt() {
     local choice
-    choice=$(tui_menu "APT Sources" "Select APT operation:" \
+    tui_menu "APT Sources" "Select APT operation:" \
         "Enable sources" "enable" \
         "Disable sources" "disable" \
-        "Back" "back") || return 1
+            "Back" "back" || return 1
+    choice="$_TUI_RESULT"
 
     case "$choice" in
         enable)
