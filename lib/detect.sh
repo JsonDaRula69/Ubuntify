@@ -30,7 +30,8 @@ detect_iso() {
     done
 
     if [ -z "$iso_path" ]; then
-        iso_path=$(tui_input "ISO Path" "Enter path to Ubuntu ISO" "")
+        tui_input "ISO Path" "Enter path to Ubuntu ISO" ""
+        iso_path="$_TUI_RESULT"
     fi
 
     if [ ! -f "$iso_path" ]; then
@@ -103,8 +104,9 @@ select_usb_device() {
         log "Agent mode: auto-selected USB device $_target_device_val"
     else
         while true; do
+            tui_input "Select USB Device" "Enter device number" "1"
             local choice
-            choice=$(tui_input "Select USB Device" "Enter device number" "1")
+            choice="$_TUI_RESULT"
             case "$choice" in
                 ''|*[!0-9]*)
                     echo "Invalid choice. Please enter a number."

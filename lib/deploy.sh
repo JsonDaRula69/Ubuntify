@@ -533,7 +533,8 @@ deploy_manual() {
     done
 
     if [ -z "$ISO_PATH" ]; then
-        ISO_PATH=$(tui_input "ISO Path" "Enter path to standard Ubuntu Server ISO" "$ISO_PATH")
+        tui_input "ISO Path" "Enter path to standard Ubuntu Server ISO" "$ISO_PATH"
+        ISO_PATH="$_TUI_RESULT"
     fi
 
     if [ ! -f "$ISO_PATH" ]; then

@@ -151,11 +151,12 @@ remote_mac_preflight() {
             return 1
         fi
 
-        local answer
-        answer=$(tui_menu "Missing Prerequisites" \
+        tui_menu "Missing Prerequisites" \
             "The following commands are missing on $host: $missing" \
             "Attempt to install via Homebrew" "install" \
-            "Abort deployment" "abort") || answer="abort"
+            "Abort deployment" "abort" || answer="abort"
+        local answer
+        answer="$_TUI_RESULT"
 
         case "$answer" in
             install)
@@ -203,8 +204,9 @@ remote_mac_preflight() {
             if [ "${AGENT_MODE:-0}" -eq 1 ]; then
                 return 1
             fi
-            REMOTE_SUDO_PASSWORD=$(tui_password "Remote Sudo Password" \
-                "Enter sudo password for $host:") || die "Sudo password required for remote deployment"
+            tui_password "Remote Sudo Password" \
+                "Enter sudo password for $host:" || die "Sudo password required for remote deployment"
+            REMOTE_SUDO_PASSWORD="$_TUI_RESULT"
         fi
     fi
 

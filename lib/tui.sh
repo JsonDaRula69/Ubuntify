@@ -206,15 +206,12 @@ tui_menu() {
             items+=("$2" "$1" "")
             shift 2
         done
-        log_info "tui_menu[dialog]: before dialog call, items=${#items[@]}"
         if dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --menu "$description" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
             _TUI_RESULT=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            log_info "tui_menu[dialog]: result=$_TUI_RESULT"
             return 0
         else
             rm -f "$tmpfile"
-            log_info "tui_menu[dialog]: cancelled"
             return 1
         fi
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
