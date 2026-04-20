@@ -184,7 +184,7 @@ _log_to_terminal() {
 
     # Check if stdout is a tty
     if [ -t 1 ]; then
-        echo -e "${color}[${severity_name}]${NC} ${message}"
+        printf '%b\n' "${color}[${severity_name}]${NC} ${message}"
     else
         echo "[${severity_name}] ${message}"
     fi

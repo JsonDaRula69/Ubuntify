@@ -558,16 +558,6 @@ tui_checklist() {
 
 ## ASCII Art TUI Functions (raw backend enhancements)
 
-tui_animated_intro() {
-    local subtitle="${1:-Mac Pro Conversion and Management Tool}"
-    source "$LIB_DIR/animated_header.sh" 2>/dev/null
-    if declare -f tui_animated_header >/dev/null 2>&1; then
-        tui_animated_header "$subtitle" 0.15 0
-    else
-        tui_cool_header "$subtitle"
-    fi
-}
-
 tui_cool_header() {
     local subtitle="${1:-Mac Pro Conversion and Management Tool}"
     local art=" /\$\$   /\$\$ /\$\$                             /\$\$     /\$\$  /\$\$\$\$\$\$          |

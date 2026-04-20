@@ -133,6 +133,10 @@ if [ "$OUTPUT_DIR" != "${OUTPUT_DIR_INITIAL:-}" ] && [ -f "$OUTPUT_DIR/deploy.co
 fi
 
 mkdir -p "$OUTPUT_DIR" || die "Cannot create output directory: $OUTPUT_DIR"
+_owner="${SUDO_USER:-$USER}"
+if [ "$_owner" != "$USER" ] || [ "$(id -u)" -eq 0 ]; then
+    chown "$_owner" "$OUTPUT_DIR" 2>/dev/null || true
+fi
 
 # Handle SSH_KEYS_FILE: read keys from file and prepend to SSH_KEYS
 if [ -n "$SSH_KEYS_FILE" ] && [ -f "$SSH_KEYS_FILE" ]; then
@@ -627,6 +631,11 @@ EOF
     } >> "$conf"
     chmod 600 "$conf"
 
+    local _owner="${SUDO_USER:-$USER}"
+    if [ "$_owner" != "$USER" ] || [ "$(id -u)" -eq 0 ]; then
+        chown "$_owner" "$conf" 2>/dev/null || true
+    fi
+
     if [ "$ENCRYPTION" != "plaintext" ]; then
         encrypt_config "$conf"
     fi
@@ -653,12 +662,16 @@ encrypt_config() {
     case "$ENCRYPTION" in
         plaintext)
             chmod 600 "$conf"
+            _owner="${SUDO_USER:-$USER}"
+            [ "$(id -u)" -eq 0 ] && chown "$_owner" "$conf" 2>/dev/null || true
             ;;
         aes256)
             local enc_file="${conf}.enc"
             openssl enc -aes-256-cbc -pbkdf2 -salt -in "$conf" -out "$enc_file" || die "Failed to encrypt config"
             rm -f "$conf"
             chmod 600 "$enc_file"
+            _owner="${SUDO_USER:-$USER}"
+            [ "$(id -u)" -eq 0 ] && chown "$_owner" "$enc_file" 2>/dev/null || true
             log "Config encrypted to ${enc_file} (plaintext config removed)"
             ;;
         keychain)
@@ -682,6 +695,7 @@ decrypt_config() {
 
     if [ -f "$enc_file" ]; then
         openssl enc -aes-256-cbc -pbkdf2 -d -in "$enc_file" -out "$conf" || die "Failed to decrypt config"
+        chmod 600 "$conf"
         log "Config decrypted from ${enc_file}"
     elif [ "$(uname)" = "Darwin" ]; then
         local stored
@@ -692,12 +706,17 @@ decrypt_config() {
             log "Config restored from macOS Keychain"
         fi
     fi
+
+    local _owner="${SUDO_USER:-$USER}"
+    if [ "$_owner" != "$USER" ] || [ "$(id -u)" -eq 0 ]; then
+        chown "$_owner" "$conf" 2>/dev/null || true
+    fi
 }
 
 show_help() {
     echo "Usage: sudo ./prepare-deployment.sh [OPTIONS]"
     echo ""
-    echo "Ubuntify - Mac Pro Conversion Tool v0.2.43"
+    echo "Ubuntify - Mac Pro Conversion Tool v0.2.63"
     echo ""
     echo "Options:"
     echo "  --dry-run             Show what would be done without making changes"
@@ -870,7 +889,7 @@ menu_build_iso() {
     fi
 }
 
-menu_deploy() {
+menu_deploy_select() {
     local method
     method=$(tui_menu "Select Deployment Method" "Choose how to deploy Ubuntu:" \
         "Internal partition (ESP)" "1" \
@@ -907,24 +926,27 @@ menu_deploy() {
     if ! show_pre_execution_summary "$STORAGE_LAYOUT" "$NETWORK_TYPE"; then
         return 1
     fi
+}
 
-    log_info "Starting deployment with method $DEPLOY_METHOD..."
-
+_run_deploy_method() {
     local deploy_rc=0
     case "$DEPLOY_METHOD" in
-        1)
-            deploy_internal_partition || deploy_rc=$?
-            ;;
-        2)
-            deploy_usb || deploy_rc=$?
-            ;;
-        3)
-            deploy_manual || deploy_rc=$?
-            ;;
-        4)
-            deploy_vm_test || deploy_rc=$?
-            ;;
+        1) deploy_internal_partition || deploy_rc=$? ;;
+        2) deploy_usb || deploy_rc=$? ;;
+        3) deploy_manual || deploy_rc=$? ;;
+        4) deploy_vm_test || deploy_rc=$? ;;
     esac
+    return "$deploy_rc"
+}
+
+menu_deploy() {
+    if ! menu_deploy_select; then
+        return 1
+    fi
+
+    log_info "Starting deployment with method $DEPLOY_METHOD..."
+    local deploy_rc=0
+    _run_deploy_method || deploy_rc=$?
 
     if [ "$deploy_rc" -ne 0 ]; then
         tui_msgbox "Deployment Failed" "Deployment exited with error code $deploy_rc.\n\nCheck log: $(log_get_file_path)"
@@ -1428,55 +1450,6 @@ run_manage_mode() {
     done
 }
 
-# ── Legacy Menu Functions (for backward compatibility with lib modules) ──
-
-select_deployment_method() {
-    DEPLOY_METHOD=$(tui_menu "Select Deployment Method" "Choose how to deploy:" \
-        "Internal partition (ESP)" "1" \
-        "USB drive" "2" \
-        "Full manual" "3" \
-        "VM test (VirtualBox)" "4")
-}
-
-select_storage_layout() {
-    STORAGE_LAYOUT=$(tui_menu "Select Storage Layout" "Choose partition scheme:" \
-        "Dual-boot (preserve macOS)" "1" \
-        "Full disk (replace macOS)" "2")
-}
-
-select_network_type() {
-    NETWORK_TYPE=$(tui_menu "Select Network Type" "Choose network configuration:" \
-        "WiFi only (Broadcom BCM4360)" "1" \
-        "Ethernet available" "2")
-}
-
-confirm_settings() {
-    local summary="Configuration summary:\n\n"
-    case "$DEPLOY_METHOD" in
-        1) summary+="Method: Internal partition (ESP)\n" ;;
-        2) summary+="Method: USB drive\n" ;;
-        3) summary+="Method: Full manual\n" ;;
-        4) summary+="Method: VM test (VirtualBox)\n" ;;
-    esac
-
-    if [ "$DEPLOY_METHOD" != "3" ] && [ "$DEPLOY_METHOD" != "4" ]; then
-        case "$STORAGE_LAYOUT" in
-            1) summary+="Storage: Dual-boot (preserve macOS)\n" ;;
-            2) summary+="Storage: Full disk (replace macOS)\n" ;;
-        esac
-        case "$NETWORK_TYPE" in
-            1) summary+="Network: WiFi only\n" ;;
-            2) summary+="Network: Ethernet available\n" ;;
-        esac
-    fi
-
-    summary+="\nProceed with deployment?"
-
-    if ! tui_confirm "Confirm Settings" "$summary"; then
-        exit 0
-    fi
-}
-
 # ── Agent Mode ──
 
 # Maps --operation names to remote.sh functions
@@ -1678,7 +1651,7 @@ main() {
     trap 'cleanup_on_error; exit 130' SIGINT
     trap 'cleanup_on_error; exit 143' SIGTERM
 
-    log_info "Ubuntify v0.2.57 starting..."
+    log_info "Ubuntify v0.2.63 starting..."
     log_info "Log file: $(log_get_file_path)"
     log_info "TUI backend: $TUI_BACKEND"
 
@@ -1686,31 +1659,26 @@ main() {
         tui_ascii_header "Mac Pro Conversion and Management Tool"
     fi
 
-     mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
+     mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}" || die "Cannot create output directory"
+     _owner="${SUDO_USER:-$USER}"
+     if [ "$_owner" != "$USER" ] || [ "$(id -u)" -eq 0 ]; then
+         chown "$_owner" "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}" 2>/dev/null || true
+     fi
 
      # _USING_EXAMPLE_CONF tracks whether user has a real config (CONF_FILE is redirected to example at source time)
      if [ "${AGENT_MODE:-0}" -ne 1 ] && [ "${_USING_EXAMPLE_CONF:-0}" -eq 1 ]; then
          if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
              exit 0
          fi
-         # Explore current environment to gather system information
          explore_environment
-         # User confirmed they want to configure a new device - get deployment options first
-         if ! menu_deploy; then
+         if ! menu_deploy_select; then
              exit 0
          fi
-         # Now gather configuration details for the selected deployment
          if ! prompt_config; then
              die "Missing required configuration"
          fi
-         # Run the selected deployment method
          local deploy_rc=0
-         case "$DEPLOY_METHOD" in
-             1) deploy_internal_partition || deploy_rc=$? ;;
-             2) deploy_usb || deploy_rc=$? ;;
-             3) deploy_manual || deploy_rc=$? ;;
-             4) deploy_vm_test || deploy_rc=$? ;;
-         esac
+         _run_deploy_method || deploy_rc=$?
          exit "$deploy_rc"
      fi
 

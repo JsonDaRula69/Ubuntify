@@ -69,6 +69,8 @@ echo ""
 [ "$VM_MODE" -eq 0 ] && [ ! -f "$AUTOINSTALL" ] && die "autoinstall.yaml not found: $AUTOINSTALL"
 [ -d "$PKGS_DIR" ] || die "packages/ directory not found: $PKGS_DIR"
 mkdir -p "$OUTPUT_DIR"
+_owner="${SUDO_USER:-$USER}"
+[ "$(id -u)" -eq 0 ] && chown "$_owner" "$OUTPUT_DIR" 2>/dev/null || true
 
 PKG_COUNT=$(ls "$PKGS_DIR"/*.deb 2>/dev/null | wc -l | tr -d ' ')
 log "Packages to include: $PKG_COUNT"
