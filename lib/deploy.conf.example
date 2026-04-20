@@ -50,6 +50,25 @@ WEBHOOK_PORT="8080"
 #   keychain   — macOS Keychain via 'security' CLI (macOS only, no passphrase needed)
 ENCRYPTION="plaintext"
 
+# ── Deployment Mode ──
+# How this script accesses the Mac Pro's disk and system:
+#   local   — Run directly on the Mac Pro (requires sudo, current behavior)
+#   remote  — Control the Mac Pro via SSH from another machine (no local sudo needed)
+DEPLOY_MODE="local"
+
+# ── Remote Target ──
+# SSH hostname or IP for the Mac Pro's macOS partition.
+# Only used when DEPLOY_MODE=remote.
+# Must be reachable via: ssh -o ConnectTimeout=10 -o BatchMode=yes TARGET_HOST
+# Examples: "macpro", "192.168.1.124"
+TARGET_HOST=""
+
+# ── Remote Sudo Password ──
+# Password for sudo on the TARGET_HOST (macOS side).
+# Stored encrypted (same as PASSWORD_HASH). Only used when DEPLOY_MODE=remote.
+# Leave empty to be prompted each time a remote sudo command is needed.
+REMOTE_SUDO_PASSWORD=""
+
 # ── Output directory ──
 # Where to store generated files (ISO, autoinstall.yaml, staging)
 # Default: ~/.Ubuntu_Deployment/

@@ -8,6 +8,7 @@ export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
 DRY_RUN=0
 VERBOSE=0
 AGENT_MODE=0
+_REVERT_REQUESTED=0
 CONFIRM_YES=0
 JSON_OUTPUT=0
 REMOTE_HOST=""
@@ -34,6 +35,8 @@ source "$LIB_DIR/autoinstall.sh"
 source "$LIB_DIR/bless.sh"
 source "$LIB_DIR/deploy.sh"
 source "$LIB_DIR/revert.sh"
+source "$LIB_DIR/remote_mac.sh"
+source "$LIB_DIR/discover.sh"
 
 # Source remote.sh if it exists (for Manage mode)
 if [ -f "$LIB_DIR/remote.sh" ]; then
@@ -66,7 +69,140 @@ HOSTNAME="macpro-linux"
 SSH_KEYS=""
 SSH_KEYS_FILE=""
 ENCRYPTION="plaintext"
+DEPLOY_MODE="local"
+TARGET_HOST=""
+REMOTE_SUDO_PASSWORD=""
 WHURL=""
+
+# --- Input Validation ---
+# Validate user-facing config fields against their respective standards.
+# Returns 0 if all valid, 1 if any fail (with error messages logged).
+
+validate_username() {
+    # Linux username: 1-32 chars, lowercase alphanumeric + underscore + hyphen,
+    # must start with letter or underscore. No spaces.
+    # Ref: useradd(8), Debian policy
+    local val="$1"
+    if [ ${#val} -lt 1 ] || [ ${#val} -gt 32 ]; then
+        log_error "USERNAME must be 1-32 characters (got ${#val})"
+        return 1
+    fi
+    if ! echo "$val" | grep -qE '^[a-z_][a-z0-9_-]*$'; then
+        log_error "USERNAME must start with a lowercase letter or underscore and contain only lowercase letters, digits, hyphens, and underscores (got: '$val')"
+        return 1
+    fi
+    return 0
+}
+
+validate_hostname() {
+    # RFC 952/1123 hostname: 1-63 chars, alphanumeric + dots + hyphens,
+    # must start/end with alphanumeric, no consecutive dots.
+    # Also allow single-word hostnames (no dots) for local network names.
+    local val="$1"
+    if [ ${#val} -lt 1 ] || [ ${#val} -gt 63 ]; then
+        log_error "HOSTNAME must be 1-63 characters (got ${#val})"
+        return 1
+    fi
+    # Must not start or end with hyphen or dot
+    case "$val" in
+        -*) log_error "HOSTNAME must not start with a hyphen (got: '$val')"; return 1 ;;
+        .*) log_error "HOSTNAME must not start with a dot (got: '$val')"; return 1 ;;
+        *-) log_error "HOSTNAME must not end with a hyphen (got: '$val')"; return 1 ;;
+        *.) log_error "HOSTNAME must not end with a dot (got: '$val')"; return 1 ;;
+    esac
+    # Only lowercase alphanumeric, hyphens, and dots
+    if ! echo "$val" | grep -qE '^[a-z0-9][a-z0-9.-]*[a-z0-9]$|^[a-z0-9]$'; then
+        log_error "HOSTNAME must contain only lowercase letters, digits, hyphens, and dots (got: '$val')"
+        return 1
+    fi
+    # No consecutive dots
+    if echo "$val" | grep -q '\.\.'; then
+        log_error "HOSTNAME must not contain consecutive dots (got: '$val')"
+        return 1
+    fi
+    return 0
+}
+
+validate_realname() {
+    # GECOS field: printable ASCII, no colon (field separator in /etc/passwd)
+    local val="$1"
+    if [ -z "$val" ]; then
+        return 0  # REALNAME can be empty (defaults to USERNAME)
+    fi
+    if echo "$val" | grep -q ':'; then
+        log_error "REALNAME must not contain colons (GECOS field separator in /etc/passwd)"
+        return 1
+    fi
+    # Reject newlines and tabs (non-visible in GECOS)
+    case "$val" in
+        *$'\n'*) log_error "REALNAME must not contain newlines"; return 1 ;;
+    esac
+    return 0
+}
+
+validate_wifi_ssid() {
+    # WiFi SSID: 1-32 bytes, no null bytes, printable characters
+    local val="$1"
+    if [ ${#val} -lt 1 ] || [ ${#val} -gt 32 ]; then
+        log_error "WIFI_SSID must be 1-32 characters (got ${#val})"
+        return 1
+    fi
+    # Reject newlines (break YAML structure)
+    case "$val" in
+        *$'\n'*) log_error "WIFI_SSID must not contain newlines"; return 1 ;;
+    esac
+    return 0
+}
+
+validate_wifi_password() {
+    # WiFi password: 8-63 chars for WPA2/3 PSK (Passphrase), or 64 hex chars for raw key
+    local val="$1"
+    if [ ${#val} -eq 64 ] && echo "$val" | grep -qE '^[0-9a-fA-F]{64}$'; then
+        # Valid 64-char hex key
+        return 0
+    fi
+    if [ ${#val} -lt 8 ] || [ ${#val} -gt 63 ]; then
+        log_error "WIFI_PASSWORD must be 8-63 characters (WPA passphrase) or 64 hex characters (WPA raw key, got ${#val} chars)"
+        return 1
+    fi
+    return 0
+}
+
+validate_inputs() {
+    local errors=0
+
+    case "$DEPLOY_MODE" in
+        local|remote) ;;
+        *) log_error "DEPLOY_MODE must be 'local' or 'remote' (got: '$DEPLOY_MODE')"; errors=$((errors + 1)) ;;
+    esac
+    if [ "$DEPLOY_MODE" = "remote" ] && [ -z "$TARGET_HOST" ]; then
+        log_error "TARGET_HOST is required when DEPLOY_MODE=remote"
+        errors=$((errors + 1))
+    fi
+
+    if ! validate_username "$USERNAME"; then
+        errors=$((errors + 1))
+    fi
+    if ! validate_hostname "$HOSTNAME"; then
+        errors=$((errors + 1))
+    fi
+    if ! validate_realname "$REALNAME"; then
+        errors=$((errors + 1))
+    fi
+    if [ "$NETWORK_TYPE" = "1" ] || [ "$NETWORK_TYPE" = "wifi" ]; then
+        if ! validate_wifi_ssid "$WIFI_SSID"; then
+            errors=$((errors + 1))
+        fi
+        if ! validate_wifi_password "$WIFI_PASSWORD"; then
+            errors=$((errors + 1))
+        fi
+    fi
+
+    if [ "$errors" -gt 0 ]; then
+        return 1
+    fi
+    return 0
+}
 
 parse_conf() {
     local conf="$1"
@@ -105,6 +241,10 @@ parse_conf() {
             WEBHOOK_PORT)   WEBHOOK_PORT="$value" ;;
             # Encryption
             ENCRYPTION)     ENCRYPTION="$value" ;;
+            # Deployment mode
+            DEPLOY_MODE)    DEPLOY_MODE="$value" ;;
+            TARGET_HOST)    TARGET_HOST="$value" ;;
+            REMOTE_SUDO_PASSWORD) REMOTE_SUDO_PASSWORD="$value" ;;
             # Output directory
             OUTPUT_DIR)     OUTPUT_DIR="$value" ;;
             *)              warn "Unknown config key: $key" ;;
@@ -117,7 +257,7 @@ parse_conf "$CONF_FILE" || die "Failed to load $CONF_FILE"
 # so prompt_config() correctly sees them as empty and prompts the user
 if [ "$_USING_EXAMPLE_CONF" -eq 1 ]; then
     for var in USERNAME REALNAME PASSWORD_HASH WIFI_SSID WIFI_PASSWORD; do
-        case "$(eval echo \"\$$var\")" in
+        case "${!var}" in
             __REPLACE__|'') eval "$var=\"\"" ;;
         esac
     done
@@ -301,7 +441,15 @@ prompt_config() {
         if [ "$AGENT_MODE" -eq 1 ]; then
             WEBHOOK_HOST="localhost"
         else
-            WEBHOOK_HOST=$(tui_input "Webhook Host" "Enter monitoring host IP (default: localhost):" "localhost")
+            local webhook_default="localhost"
+            if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+                local detected_ip
+                detected_ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || ipconfig getifaddr en2 2>/dev/null || echo "")
+                if [ -n "$detected_ip" ]; then
+                    webhook_default="$detected_ip"
+                fi
+            fi
+            WEBHOOK_HOST=$(tui_input "Webhook Host" "Enter monitoring host IP (webhook server):" "$webhook_default")
         fi
     fi
     if [ -z "$WEBHOOK_PORT" ]; then
@@ -309,6 +457,7 @@ prompt_config() {
     fi
 
     if [ "$AGENT_MODE" -ne 1 ]; then
+        prompt_deploy_mode
         prompt_encryption_mode
         configure_ssh_config
     fi
@@ -320,6 +469,7 @@ prompt_config() {
     WHURL="http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/webhook"
     export USERNAME REALNAME PASSWORD_HASH HOSTNAME SSH_KEYS SSH_KEYS_FILE
     export WIFI_SSID WIFI_PASSWORD WEBHOOK_HOST WEBHOOK_PORT WHURL
+    export DEPLOY_MODE TARGET_HOST REMOTE_SUDO_PASSWORD
     return 0
 }
 
@@ -601,6 +751,10 @@ EOF
     summary="${summary}Webhook:     ${WEBHOOK_HOST}:${WEBHOOK_PORT}\n"
     summary="${summary}SSH Keys:    ${ssh_key_count} key(s)\n"
     summary="${summary}\n"
+    summary="${summary}Deployment Mode:  ${DEPLOY_MODE:-local}\n"
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        summary="${summary}Target Host:      ${TARGET_HOST:-macpro}\n"
+    fi
     summary="${summary}Deployment Method: ${method_name}\n"
     summary="${summary}Storage Layout:      ${storage_name}\n"
     summary="${summary}Network Type:        ${network_name}\n"
@@ -645,6 +799,9 @@ EOF
         printf 'WEBHOOK_HOST="%s"\n' "$(_conf_escape "$WEBHOOK_HOST")"
         printf 'WEBHOOK_PORT="%s"\n' "$(_conf_escape "$WEBHOOK_PORT")"
         printf 'ENCRYPTION="%s"\n' "$(_conf_escape "$ENCRYPTION")"
+        printf 'DEPLOY_MODE="%s"\n' "$(_conf_escape "$DEPLOY_MODE")"
+        printf 'TARGET_HOST="%s"\n' "$(_conf_escape "$TARGET_HOST")"
+        printf 'REMOTE_SUDO_PASSWORD="%s"\n' "$(_conf_escape "$REMOTE_SUDO_PASSWORD")"
         printf 'OUTPUT_DIR="%s"\n' "$(_conf_escape "$OUTPUT_DIR")"
     } >> "$conf"
     chmod 600 "$conf"
@@ -657,6 +814,138 @@ EOF
     if [ "$ENCRYPTION" != "plaintext" ]; then
         encrypt_config "$conf"
     fi
+}
+
+prompt_deploy_mode() {
+    [ "${_DEPLOY_MODE_PROMPTED:-0}" -eq 1 ] && return 0
+
+    if [ -z "$DEPLOY_MODE" ] || [ "$DEPLOY_MODE" = "__REPLACE__" ] || [ "${_USING_EXAMPLE_CONF:-0}" -eq 1 ]; then
+        DEPLOY_MODE=$(tui_menu "Deployment Mode" \
+            "Select how to deploy to the Mac Pro:" \
+            "Local (running on Mac Pro directly)" "local" \
+            "Remote (SSH to Mac Pro from this machine)" "remote") || return 1
+    fi
+
+    if [ "$DEPLOY_MODE" = "remote" ]; then
+        if [ -z "$TARGET_HOST" ] || [ "$TARGET_HOST" = "__REPLACE__" ]; then
+            local discovered_hosts
+            discovered_hosts="$(detect_remote_hosts)" || true
+
+            if [ -n "$discovered_hosts" ]; then
+                local host_count
+                host_count=$(echo "$discovered_hosts" | wc -l | tr -d ' ')
+                log_info "Found $host_count SSH service(s) via Bonjour"
+
+                local menu_args=("Target Host" "Select the Mac Pro or enter manually:")
+                local host_line=1
+                while IFS= read -r discovered; do
+                    [ -z "$discovered" ] && continue
+                    menu_args+=("$discovered (SSH service)")
+                    menu_args+=("$discovered")
+                    host_line=$((host_line + 1))
+                done <<< "$discovered_hosts"
+                menu_args+=("Manual entry" "manual")
+
+                local selection
+                selection=$(tui_menu "${menu_args[@]}") || return 1
+
+                if [ "$selection" = "manual" ]; then
+                    TARGET_HOST=$(tui_input "Target Host" \
+                        "Enter SSH hostname or IP for the Mac Pro (macOS):" "macpro") || return 1
+                else
+                    TARGET_HOST="$selection"
+                fi
+            else
+                TARGET_HOST=$(tui_input "Target Host" \
+                    "Enter SSH hostname or IP for the Mac Pro (macOS):" "macpro") || return 1
+            fi
+        fi
+
+        local resolved_host
+        resolved_host="$(resolve_hostname "$TARGET_HOST")"
+        local resolve_rc=$?
+        if [ "$resolved_host" != "$TARGET_HOST" ]; then
+            log_info "Hostname resolved: $TARGET_HOST -> $resolved_host"
+            if [ "$AGENT_MODE" -ne 1 ]; then
+                tui_msgbox "Host Resolved" "Hostname resolved:\n\n  $TARGET_HOST -> $resolved_host\n\nUsing $resolved_host for SSH connection."
+            else
+                agent_output "info" "Host Resolved" "$TARGET_HOST -> $resolved_host"
+            fi
+            TARGET_HOST="$resolved_host"
+        elif [ $resolve_rc -ne 0 ]; then
+            if [ "$AGENT_MODE" -eq 1 ]; then
+                log_warn "Could not verify SSH connectivity to $TARGET_HOST via any hostname format"
+                agent_output "warning" "SSH Connectivity" "Could not verify SSH connectivity to $TARGET_HOST"
+            else
+                local ssh_resolved=0
+                while [ "$ssh_resolved" -eq 0 ]; do
+                    local retry_choice
+                    retry_choice=$(tui_menu "SSH Connection Failed" \
+                        "Cannot connect to $TARGET_HOST via SSH.\n\nChoose an option:" \
+                        "Try $TARGET_HOST.local" "local" \
+                        "Try $TARGET_HOST.lan" "lan" \
+                        "Enter different hostname" "manual" \
+                        "Abort" "abort") || { retry_choice="abort"; }
+
+                    case "$retry_choice" in
+                        local)
+                            TARGET_HOST="${TARGET_HOST%%.*}.local"
+                            if remote_mac_test; then
+                                ssh_resolved=1
+                                tui_msgbox "Connected" "Successfully connected to $TARGET_HOST"
+                            fi
+                            ;;
+                        lan)
+                            TARGET_HOST="${TARGET_HOST%%.*}.lan"
+                            if remote_mac_test; then
+                                ssh_resolved=1
+                                tui_msgbox "Connected" "Successfully connected to $TARGET_HOST"
+                            fi
+                            ;;
+                        manual)
+                            TARGET_HOST=$(tui_input "Target Host" \
+                                "Enter SSH hostname or IP for the Mac Pro (macOS):" "") || continue
+                            resolved_host="$(resolve_hostname "$TARGET_HOST")"
+                            if [ "$resolved_host" != "$TARGET_HOST" ]; then
+                                TARGET_HOST="$resolved_host"
+                            fi
+                            if remote_mac_test; then
+                                ssh_resolved=1
+                                tui_msgbox "Connected" "Successfully connected to $TARGET_HOST"
+                            fi
+                            ;;
+                        abort|*)
+                            return 1
+                            ;;
+                    esac
+                done
+            fi
+        fi
+
+        if [ "$AGENT_MODE" -ne 1 ]; then
+            if ! remote_mac_test; then
+                warn "Cannot connect to $TARGET_HOST via SSH. Ensure SSH is enabled and key authentication is set up."
+            fi
+        fi
+
+        if [ "$AGENT_MODE" -ne 1 ]; then
+            local remote_sudo_warning
+            remote_sudo_warning="The remote sudo password will be stored in deploy.conf"
+            remote_sudo_warning="${remote_sudo_warning} (encrypted if encryption is enabled)."
+            remote_sudo_warning="${remote_sudo_warning}\n\nFor security, use a dedicated user account on the Mac Pro"
+            remote_sudo_warning="${remote_sudo_warning} with minimal sudo privileges."
+            tui_msgbox "Security Notice" "$remote_sudo_warning"
+
+            if [ -z "$REMOTE_SUDO_PASSWORD" ]; then
+                REMOTE_SUDO_PASSWORD=$(tui_password "Remote Sudo Password" \
+                    "Enter sudo password for $TARGET_HOST:") || return 1
+            fi
+        fi
+    elif [ "$DEPLOY_MODE" != "local" ]; then
+        die "Invalid DEPLOY_MODE: '$DEPLOY_MODE' (must be 'local' or 'remote')"
+    fi
+
+    _DEPLOY_MODE_PROMPTED=1
 }
 
 prompt_encryption_mode() {
@@ -684,6 +973,13 @@ encrypt_config() {
             [ "$(id -u)" -eq 0 ] && chown "$_owner" "$conf" 2>/dev/null || true
             ;;
         aes256)
+            if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+                log "Agent mode: skipping config encryption (no interactive TTY for password prompt)"
+                chmod 600 "$conf"
+                _owner="${SUDO_USER:-$USER}"
+                [ "$(id -u)" -eq 0 ] && chown "$_owner" "$conf" 2>/dev/null || true
+                return 0
+            fi
             local enc_file="${conf}.enc"
             openssl enc -aes-256-cbc -pbkdf2 -salt -in "$conf" -out "$enc_file" || die "Failed to encrypt config"
             rm -f "$conf"
@@ -712,6 +1008,10 @@ decrypt_config() {
     local enc_file="${conf}.enc"
 
     if [ -f "$enc_file" ]; then
+        if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+            log "Agent mode: skipping config decryption (no interactive TTY for password prompt)"
+            return 0
+        fi
         openssl enc -aes-256-cbc -pbkdf2 -d -in "$enc_file" -out "$conf" || die "Failed to decrypt config"
         chmod 600 "$conf"
         log "Config decrypted from ${enc_file}"
@@ -756,13 +1056,16 @@ show_help() {
     echo "  --webhook-host HOST   Override webhook host from deploy.conf"
     echo "  --webhook-port PORT   Override webhook port from deploy.conf"
     echo "  --encryption MODE     Password storage: plaintext, aes256, keychain (default: plaintext)"
+    echo "  --deploy-mode MODE   Deployment mode: local or remote (default: local)"
+    echo "  --target-host HOST    Mac Pro SSH hostname/IP for remote mode (e.g., macpro)"
+    echo "  --remote-password PWD Remote sudo password (Warning: visible in ps; prefer deploy.conf)"
     echo "  --username USER       Override username from deploy.conf"
     echo "  --hostname HOST       Override hostname from deploy.conf"
     echo "  --vm                  Use VM test mode (autoinstall-vm.yaml)"
     echo "  --output-dir DIR      Override runtime output directory (default: ~/.Ubuntu_Deployment/)"
     echo ""
     echo "Modes:"
-    echo "  Deploy   - Local operations: Build ISO, deploy to ESP/USB/VM, monitor"
+    echo "  Deploy   - Build ISO, deploy to Mac Pro (local or remote)"
     echo "  Manage   - Remote SSH operations (requires lib/remote.sh)"
     echo ""
     echo "Without flags, the TUI menu will start."
@@ -811,15 +1114,21 @@ while [ $# -gt 0 ]; do
         --webhook-port)      WEBHOOK_PORT="$2"; shift 2 ;;
         --webhook-port=*)    WEBHOOK_PORT="${1#*=}"; shift ;;
         --encryption)        ENCRYPTION="$2"; shift 2 ;;
-        --encryption=*)      ENCRYPTION="${1#*=}"; shift ;;
-        --username)          USERNAME="$2"; shift 2 ;;
+        --encryption=*)        ENCRYPTION="${1#*=}"; shift ;;
+        --deploy-mode)          DEPLOY_MODE="$2"; shift 2 ;;
+        --deploy-mode=*)        DEPLOY_MODE="${1#*=}"; shift ;;
+        --target-host)          TARGET_HOST="$2"; shift 2 ;;
+        --target-host=*)        TARGET_HOST="${1#*=}"; shift ;;
+        --remote-password)      REMOTE_SUDO_PASSWORD="$2"; shift 2 ;;
+        --remote-password=*)    REMOTE_SUDO_PASSWORD="${1#*=}"; shift ;;
+        --username)            USERNAME="$2"; shift 2 ;;
         --username=*)        USERNAME="${1#*=}"; shift ;;
         --hostname)          HOSTNAME="$2"; shift 2 ;;
         --hostname=*)        HOSTNAME="${1#*=}"; shift ;;
         --vm)                DEPLOY_METHOD=4; shift ;;
         --output-dir)        OUTPUT_DIR="$2"; shift 2 ;;
         --output-dir=*)      OUTPUT_DIR="${1#*=}"; shift ;;
-        --revert)            handle_revert_flag "--revert"; exit $? ;;
+        --revert)            _REVERT_REQUESTED=1; shift ;;
         --help|-h)           show_help ;;
         *)                   echo "Unknown option: $1"; show_help ;;
     esac
@@ -1381,6 +1690,7 @@ menu_wifi() {
                 fi
             fi
             ;;
+        back) return 0 ;;
     esac
 }
 
@@ -1411,6 +1721,7 @@ menu_storage() {
                 fi
             fi
             ;;
+        back) return 0 ;;
     esac
 }
 
@@ -1438,6 +1749,7 @@ menu_apt() {
                 tui_msgbox "Not Implemented" "remote_apt_disable not available"
             fi
             ;;
+        back) return 0 ;;
     esac
 }
 
@@ -1500,6 +1812,13 @@ _validate_agent_deploy() {
             *) agent_error "Invalid --network: $NETWORK_TYPE (must be 1 or 2)" "$E_USAGE" ;;
         esac
     fi
+    case "${DEPLOY_MODE:-local}" in
+        local|remote) ;;
+        *) agent_error "Invalid --deploy-mode: $DEPLOY_MODE (must be 'local' or 'remote')" "$E_USAGE" ;;
+    esac
+    if [ "${DEPLOY_MODE:-local}" = "remote" ] && [ -z "${TARGET_HOST:-}" ]; then
+        agent_error "Missing --target-host (required when --deploy-mode=remote)" "$E_AGENT_PARAM"
+    fi
 }
 
 _agent_deploy() {
@@ -1508,8 +1827,17 @@ _agent_deploy() {
         "method" "$DEPLOY_METHOD" \
         "storage" "${STORAGE_LAYOUT:-N/A}" \
         "network" "${NETWORK_TYPE:-N/A}" \
+        "deployMode" "${DEPLOY_MODE:-local}" \
+        "targetHost" "${TARGET_HOST:-N/A}" \
         "wifiSsid" "${WIFI_SSID:-}" \
         "dryRun" "${DRY_RUN:-0}"
+
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        if ! remote_mac_preflight; then
+            agent_error "Remote preflight checks failed for ${TARGET_HOST:-macpro}" "$E_CHECK"
+            return 1
+        fi
+    fi
 
     local deploy_rc=0
     case "$DEPLOY_METHOD" in
@@ -1587,6 +1915,9 @@ run_agent_mode() {
     elif [ -n "${DEPLOY_METHOD:-}" ]; then
         # Deploy mode
         _agent_deploy
+    elif [ "${_REVERT_REQUESTED:-0}" -eq 1 ]; then
+        # Revert mode via agent
+        _agent_revert
     elif [ "${DRY_RUN:-0}" -eq 1 ] && [ -z "${DEPLOY_METHOD:-}" ]; then
         # Dry-run without method — run full deploy dry-run
         DEPLOY_METHOD="${DEPLOY_METHOD:-1}"
@@ -1609,53 +1940,94 @@ run_agent_mode() {
 
 # ── Environment Exploration ──
 explore_environment() {
-    local default_ip
-    default_ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || ipconfig getifaddr en2 2>/dev/null || echo "127.0.0.1")
-    
-    local ip_address
-    ip_address=$(tui_input "IP Address" "Enter the IP address of this Mac Pro:" "$default_ip")
-    [ -z "$ip_address" ] && ip_address="$default_ip"
-    
-    local sip_status
-    sip_status=$(csrutil status 2>/dev/null | grep -o 'enabled\|disabled' | head -1 || echo "unknown")
-    sip_status=$(echo "$sip_status" | tr '[:lower:]' '[:upper:]')
-    
-    local boot_device
-    boot_device=$(bless --info --getboot 2>/dev/null | head -1 || echo "Unable to determine")
-    
-    local startup_disk
-    startup_disk=$(systemsetup -getstartupdisk 2>/dev/null | awk -F': ' '{print $2}' || echo "Unable to determine")
-    
-    local disk_info
-    disk_info=$(df -h /)
-    
-    local part_info
-    part_info=$(diskutil list 2>/dev/null || echo "Unable to read partition map")
-    
-    local refind_status="Not found"
-    [ -d "/Volumes/EFI/EFI/refind" ] || [ -d "/EFI/refind" ] && refind_status="Detected"
-    
-    local info
-    info="=== System Information ===
-Mac Pro IP Address: $ip_address
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        local sip_status
+        sip_status=$(remote_mac_exec "csrutil status 2>/dev/null | grep -o 'enabled\\|disabled' | head -1 || echo unknown")
+        sip_status=$(echo "$sip_status" | tr '[:lower:]' '[:upper:]')
+
+        local boot_device
+        boot_device=$(remote_mac_exec "bless --info --getboot 2>/dev/null | head -1 || echo 'Unable to determine'")
+
+        local startup_disk
+        startup_disk=$(remote_mac_exec "systemsetup -getstartupdisk 2>/dev/null | awk -F': ' '{print \\\$2}' || echo 'Unable to determine'")
+
+        local disk_info
+        disk_info=$(remote_mac_exec "df -h /")
+
+        local part_info
+        part_info=$(remote_mac_exec "diskutil list 2>/dev/null || echo 'Unable to read partition map'")
+
+        local refind_status="Not found"
+        remote_mac_exec "test -d /Volumes/EFI/EFI/refind -o -d /EFI/refind" 2>/dev/null && refind_status="Detected"
+
+        local macos_name
+        macos_name=$(remote_mac_exec "sw_vers -productName")
+        local macos_ver
+        macos_ver=$(remote_mac_exec "sw_vers -productVersion")
+        local macos_build
+        macos_build=$(remote_mac_exec "sw_vers -buildVersion")
+
+        local info
+        info="=== System Information (Remote: ${TARGET_HOST:-macpro}) ===
+
+macOS Version: ${macos_name} ${macos_ver}
+Build: ${macos_build}
+
+SIP Status: ${sip_status}
+
+=== Bootloader Information ===
+rEFInd: ${refind_status}
+Current Boot Device (bless): ${boot_device}
+Startup Disk (systemsetup): ${startup_disk}
+
+=== Disk Space ===
+${disk_info}
+
+=== Partition Map ===
+${part_info}"
+
+        tui_msgbox "Environment Exploration (Remote: ${TARGET_HOST:-macpro})" "$info"
+    else
+        local sip_status
+        sip_status=$(csrutil status 2>/dev/null | grep -o 'enabled\|disabled' | head -1 || echo "unknown")
+        sip_status=$(echo "$sip_status" | tr '[:lower:]' '[:upper:]')
+
+        local boot_device
+        boot_device=$(bless --info --getboot 2>/dev/null | head -1 || echo "Unable to determine")
+
+        local startup_disk
+        startup_disk=$(systemsetup -getstartupdisk 2>/dev/null | awk -F': ' '{print $2}' || echo "Unable to determine")
+
+        local disk_info
+        disk_info=$(df -h /)
+
+        local part_info
+        part_info=$(diskutil list 2>/dev/null || echo "Unable to read partition map")
+
+        local refind_status="Not found"
+        [ -d "/Volumes/EFI/EFI/refind" ] || [ -d "/EFI/refind" ] && refind_status="Detected"
+
+        local info
+        info="=== System Information ===
 
 macOS Version: $(sw_vers -productName) $(sw_vers -productVersion)
 Build: $(sw_vers -buildVersion)
 
-SIP Status: $sip_status
+SIP Status: ${sip_status}
 
 === Bootloader Information ===
-rEFInd: $refind_status
-Current Boot Device (bless): $boot_device
-Startup Disk (systemsetup): $startup_disk
+rEFInd: ${refind_status}
+Current Boot Device (bless): ${boot_device}
+Startup Disk (systemsetup): ${startup_disk}
 
 === Disk Space ===
-$disk_info
+${disk_info}
 
 === Partition Map ===
-$part_info"
-    
-    tui_msgbox "Environment Exploration Results" "$info"
+${part_info}"
+
+        tui_msgbox "Environment Exploration Results" "$info"
+    fi
 }
 
 # ── Main Entry Point ──
@@ -1676,61 +2048,92 @@ main() {
     log_info "Log file: $(log_get_file_path)"
     log_info "TUI backend: $TUI_BACKEND"
 
+    check_tui_prerequisites
+    log_info "TUI backend after prerequisites: $TUI_BACKEND"
+
+    # Handle --revert: defer from argument parsing to ensure logging/traps are active
+    if [ "${_REVERT_REQUESTED:-0}" -eq 1 ]; then
+        if [ "${DEPLOY_MODE:-local}" != "remote" ] && [ "$(id -u)" -ne 0 ]; then
+            die "Revert requires root (use sudo)"
+        fi
+        handle_revert_flag "--revert"
+        exit $?
+    fi
+
     if [ "$TUI_BACKEND" = "raw" ]; then
         tui_ascii_header "Mac Pro Conversion and Management Tool"
     fi
 
-     mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}" || die "Cannot create output directory"
-     _owner="${SUDO_USER:-$USER}"
-     if [ "$_owner" != "$USER" ] || [ "$(id -u)" -eq 0 ]; then
-         chown "$_owner" "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}" 2>/dev/null || true
-     fi
+    mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
+    _owner="${SUDO_USER:-$USER}"
+    if [ "$_owner" != "$USER" ] || [ "$(id -u)" -eq 0 ]; then
+        chown "$_owner" "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}" 2>/dev/null || true
+    fi
 
-     # _USING_EXAMPLE_CONF tracks whether user has a real config (CONF_FILE is redirected to example at source time)
-     if [ "${AGENT_MODE:-0}" -ne 1 ] && [ "${_USING_EXAMPLE_CONF:-0}" -eq 1 ]; then
-         if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
-             exit 0
-         fi
-         explore_environment
-         if ! menu_deploy_select; then
-             exit 0
-         fi
-         if ! prompt_config; then
-             die "Missing required configuration"
-         fi
-         local deploy_rc=0
-         _run_deploy_method || deploy_rc=$?
-         exit "$deploy_rc"
-     fi
+    # _USING_EXAMPLE_CONF tracks whether user has a real config (CONF_FILE is redirected to example at source time)
+    if [ "${AGENT_MODE:-0}" -ne 1 ] && [ "${_USING_EXAMPLE_CONF:-0}" -eq 1 ]; then
+        if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
+            exit 0
+        fi
+        # Ask deployment mode before exploring environment — remote mode runs commands via SSH
+        if ! prompt_deploy_mode; then
+            die "Deployment mode selection required"
+        fi
+        explore_environment
+        if ! menu_deploy_select; then
+            exit 0
+        fi
+        if ! prompt_config; then
+            die "Missing required configuration"
+        fi
+        if ! validate_inputs; then
+            die "Invalid configuration — see errors above"
+        fi
+        save_config
+        local deploy_rc=0
+        _run_deploy_method || deploy_rc=$?
+        exit "$deploy_rc"
+    fi
 
-      decrypt_config "$CONF_FILE"
+    decrypt_config "$CONF_FILE"
 
-      # Root check: local operations (deploy, revert, build-ISO) require root.
-      # Remote-only agent operations (--operation) do NOT need root — they run via SSH.
-      local _needs_root=1
-      if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
-          _needs_root=0
-      fi
-      if [ "$_needs_root" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then
-          die "This script must be run as root (use sudo). Agent remote operations (--operation) are the only exception."
-      fi
+    # Root check: local deploy/ISO build needs root. Remote mode and agent remote ops don't.
+    local _needs_root=1
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        _needs_root=0
+    fi
+    if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
+        _needs_root=0
+    fi
+    if [ "$_needs_root" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then
+        die "Local deployment requires root (use sudo). Use --deploy-mode remote for remote control."
+    fi
 
-     # Skip prompt_config for agent remote operations (--operation) - no local config needed.
-     # Required for agent deploy (--method) and all TTY mode operations.
-     local _needs_config=1
-     if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
-         _needs_config=0
-     fi
-     if [ "$_needs_config" -eq 1 ] && ! prompt_config; then
-         die "Missing required configuration — check deploy.conf or provide values via CLI flags"
-     fi
+    # Skip prompt_config for agent remote operations (--operation) - no local config needed.
+    # Required for agent deploy (--method) and all TTY mode operations.
+    local _needs_config=1
+    if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
+        _needs_config=0
+    fi
+    if [ "$_needs_config" -eq 1 ] && ! prompt_config; then
+        die "Missing required configuration — check deploy.conf or provide values via CLI flags"
+    fi
+    if [ "$_needs_config" -eq 1 ] && ! validate_inputs; then
+        die "Invalid configuration — see errors above"
+    fi
 
-     if [ "${AGENT_MODE:-0}" -eq 1 ]; then
-         run_agent_mode
-         local agent_rc=$?
-         log_shutdown
-         exit "$agent_rc"
-     fi
+    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
+        if ! remote_mac_preflight; then
+            die "Remote preflight checks failed for ${TARGET_HOST:-macpro}. See errors above."
+        fi
+    fi
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        run_agent_mode
+        local agent_rc=$?
+        log_shutdown
+        exit "$agent_rc"
+    fi
 
     while true; do
         local mode
