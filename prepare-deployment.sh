@@ -287,6 +287,7 @@ prompt_config() {
     fi
 
     if [ "$AGENT_MODE" -ne 1 ]; then
+        prompt_encryption_mode
         configure_ssh_config
     fi
 
@@ -625,6 +626,26 @@ EOF
         printf 'OUTPUT_DIR="%s"\n' "$(_conf_escape "$OUTPUT_DIR")"
     } >> "$conf"
     chmod 600 "$conf"
+
+    if [ "$ENCRYPTION" != "plaintext" ]; then
+        encrypt_config "$conf"
+    fi
+}
+
+prompt_encryption_mode() {
+    if [ -n "$ENCRYPTION" ] && [ "$ENCRYPTION" != "plaintext" ]; then
+        return 0
+    fi
+
+    local choice
+    choice=$(tui_menu "Password Encryption" \
+        "How should the password be stored in deploy.conf?" \
+        "Plaintext (file chmod 600)" "plaintext" \
+        "AES-256 (encrypted, password required to decrypt)" "aes256" \
+        "macOS Keychain (stored in Keychain, config file cleaned)" "keychain") || return 0
+
+    ENCRYPTION="$choice"
+    export ENCRYPTION
 }
 
 encrypt_config() {
@@ -646,8 +667,8 @@ encrypt_config() {
             fi
             security add-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w "$(cat "$conf")" -U 2>/dev/null || \
                 die "Failed to store config in macOS Keychain"
-            chmod 600 "$conf"
-            log "Config stored in macOS Keychain"
+            rm -f "$conf"
+            log "Config stored in macOS Keychain (plaintext config removed)"
             ;;
         *)
             die "Unknown encryption mode: $ENCRYPTION (use: plaintext, aes256, keychain)"
@@ -697,6 +718,7 @@ show_help() {
     echo "  --wifi-password PASS  Override WiFi password from deploy.conf"
     echo "  --webhook-host HOST   Override webhook host from deploy.conf"
     echo "  --webhook-port PORT   Override webhook port from deploy.conf"
+    echo "  --encryption MODE     Password storage: plaintext, aes256, keychain (default: plaintext)"
     echo "  --username USER       Override username from deploy.conf"
     echo "  --hostname HOST       Override hostname from deploy.conf"
     echo "  --vm                  Use VM test mode (autoinstall-vm.yaml)"
@@ -751,6 +773,8 @@ while [ $# -gt 0 ]; do
         --webhook-host=*)    WEBHOOK_HOST="${1#*=}"; shift ;;
         --webhook-port)      WEBHOOK_PORT="$2"; shift 2 ;;
         --webhook-port=*)    WEBHOOK_PORT="${1#*=}"; shift ;;
+        --encryption)        ENCRYPTION="$2"; shift 2 ;;
+        --encryption=*)      ENCRYPTION="${1#*=}"; shift ;;
         --username)          USERNAME="$2"; shift 2 ;;
         --username=*)        USERNAME="${1#*=}"; shift ;;
         --hostname)          HOSTNAME="$2"; shift 2 ;;
@@ -1690,13 +1714,17 @@ main() {
          exit "$deploy_rc"
      fi
 
-     decrypt_config "$CONF_FILE"
+      decrypt_config "$CONF_FILE"
 
-     if [ "${AGENT_MODE:-0}" -ne 1 ]; then
-         if [ "$(id -u)" -ne 0 ]; then
-             die "This script must be run as root (use sudo)."
-         fi
-     fi
+      # Root check: local operations (deploy, revert, build-ISO) require root.
+      # Remote-only agent operations (--operation) do NOT need root — they run via SSH.
+      local _needs_root=1
+      if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
+          _needs_root=0
+      fi
+      if [ "$_needs_root" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then
+          die "This script must be run as root (use sudo). Agent remote operations (--operation) are the only exception."
+      fi
 
      # Skip prompt_config for agent remote operations (--operation) - no local config needed.
      # Required for agent deploy (--method) and all TTY mode operations.
