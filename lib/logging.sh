@@ -131,7 +131,7 @@ log_init() {
         echo "Mac Pro 2013 Deployment Logging Started"
         echo "Log file: $LOG_FILE_PATH"
         [ -n "$LOG_SERIAL_DEVICE" ] && echo "Serial: $LOG_SERIAL_DEVICE"
-        [ -n "$LOG_WEBHOOK_URL" ] && echo "Webhook: $LOG_WEBHOOK_URL"
+        [ -n "$LOG_WEBHOOK_URL" ] && echo "Webhook: $(echo "$LOG_WEBHOOK_URL" | sed 's#://[^@]*@#://****@#; s#\?.*#\?...#')"
         echo "Timestamp: $(_log_get_timestamp)"
         echo "========================================"
     } >> "$LOG_FILE_PATH"

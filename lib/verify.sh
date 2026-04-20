@@ -304,28 +304,7 @@ verify_cidata_structure() {
     return 0
 }
 
-# verify_bless_result esp_mount
-# Returns 0 if bless succeeded, 1 otherwise with SIP analysis
-verify_bless_result() {
-    local esp_mount="$1"
-    local bless_output
-    local bless_rc
 
-    bless_output=$(bless --info --getboot --mount "$esp_mount" 2>&1)
-    bless_rc=$?
-
-    if [ $bless_rc -eq 0 ]; then
-        return 0
-    fi
-
-    error "verify_bless_result: bless command failed (exit $bless_rc)"
-    error "verify_bless_result: $bless_output"
-
-    warn "verify_bless_result: Bless failed to set boot device"
-    warn "verify_bless_result: Workaround: Boot to Recovery Mode (Cmd+R), run 'csrutil enable --without nvram', then reboot and retry"
-
-    return 1
-}
 
 # verify_disk_space path required_mb
 # Returns 0 if available space >= required_mb, 1 otherwise

@@ -14,6 +14,7 @@ _DETECT_SH_SOURCED=1
 source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/tui.sh"
+source "${LIB_DIR:-./lib}/remote_mac.sh"
 
 : "${SCRIPT_DIR:=$(cd "$(dirname "$0")" && pwd)}"
 
@@ -54,11 +55,11 @@ detect_usb_devices() {
             dev=$(echo "$line" | grep -oE '/dev/disk[0-9]+' | head -1)
             if [ -n "$dev" ]; then
                 local info
-                info=$(diskutil info "$dev" 2>/dev/null | grep -E "Device Identifier|Media Name|Total Size" | head -3)
+                info=$(remote_mac_exec diskutil info "$dev" 2>/dev/null | grep -E "Device Identifier|Media Name|Total Size" | head -3)
                 devices="${devices}${dev}|${info}\n"
             fi
         fi
-    done <<< "$(diskutil list 2>/dev/null | grep -E 'external.*physical' || true)"
+    done <<< "$(remote_mac_exec diskutil list 2>/dev/null | grep -E 'external.*physical' || true)"
 
     echo -e "$devices"
 }
@@ -95,6 +96,9 @@ select_usb_device() {
 
     if [ "${AGENT_MODE:-0}" -eq 1 ]; then
         local _target_device_val="${device_list[0]}"
+        if ! _validate_varname "$_target_device_name"; then
+            die "select_usb_device: invalid variable name: $_target_device_name"
+        fi
         eval "$_target_device_name=\"\$_target_device_val\""
         log "Agent mode: auto-selected USB device $_target_device_val"
     else
@@ -109,6 +113,9 @@ select_usb_device() {
             esac
             if [ "$choice" -ge 1 ] && [ "$choice" -le "$i" ]; then
                 local _target_device_val="${device_list[$((choice-1))]}"
+                if ! _validate_varname "$_target_device_name"; then
+                    die "select_usb_device: invalid variable name: $_target_device_name"
+                fi
                 eval "$_target_device_name=\"\$_target_device_val\""
                 break
             fi
@@ -118,7 +125,7 @@ select_usb_device() {
 
     # Get device size
     local device_size
-    device_size=$(diskutil info "$_target_device_val" 2>/dev/null | grep "Total Size" | grep -oE '[0-9]+\.[0-9]+ GB' | head -1 || echo "unknown")
+    device_size=$(remote_mac_exec diskutil info "$_target_device_val" 2>/dev/null | grep "Total Size" | grep -oE '[0-9]+\.[0-9]+ GB' | head -1 || echo "unknown")
     log "Selected USB device: $_target_device_val ($device_size)"
 
     echo ""

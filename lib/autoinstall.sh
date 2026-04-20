@@ -110,7 +110,8 @@ generate_autoinstall() {
     - type: mount
       id: root-mount
       device: root-format
-      path: /'
+      path: /
+'
 
         # Use sed to replace storage section
         python3 -c "
@@ -119,7 +120,7 @@ with open('$OUTPUT_PATH', 'r') as f:
     content = f.read()
 
 pattern = r'  storage:\n    config:.*?\n(?=  [a-z]|\Z)'
-content = re.sub(pattern, '''$FULL_DISK_STORAGE''', content, flags=re.DOTALL)
+content = re.sub(pattern, '''$FULL_DISK_STORAGE''' + '\n', content, flags=re.DOTALL)
 
 with open('$OUTPUT_PATH', 'w') as f:
     f.write(content)
@@ -191,7 +192,7 @@ with open('$OUTPUT_PATH', 'r') as f:
 
 # Replace early-commands section
 pattern = r'  early-commands:.*?\n(?=  [a-z]|\Z)'
-content = re.sub(pattern, '''$SIMPLE_EARLY''', content, flags=re.DOTALL)
+content = re.sub(pattern, '''$SIMPLE_EARLY''' + '\n', content, flags=re.DOTALL)
 
 with open('$OUTPUT_PATH', 'w') as f:
     f.write(content)
@@ -200,82 +201,69 @@ with open('$OUTPUT_PATH', 'w') as f:
 
     log "Autoinstall configuration generated: $OUTPUT_PATH"
 
-    # Helper: escape special chars for sed replacement with # delimiter
-    # Must escape: \ (escape char), & (pattern repeat), # (delimiter), / (common in URLs)
-    _sed_escape() {
-        # Escape sed replacement special chars: &, \, #, /
-        printf '%s\n' "$1" | sed 's/[&\\\/#]/\\&/g'
-    }
-
-    _sed_escape_yaml_dq() {
-        # Escape for YAML double-quoted strings: backslash, double-quote,
-        # newline, tab, ampersand, hash. Newlines and tabs become \n and \t
-        # (YAML escape sequences). Trailing newline stripped for sed.
-        printf '%s' "$1" | sed -e ':a' -e 'N' -e '$!ba' \
-            -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
-            -e 's/\n/\\n/g' -e 's/\t/\\t/g' \
-            -e 's/&/\\&/g' -e 's/#/\\#/g'
-    }
-
-
     # Deploy.conf placeholders → autoinstall template
-    if [ -n "${USERNAME:-}" ]; then
-        local escaped_val
-        escaped_val=$(_sed_escape "$USERNAME")
-        sed -i "s#__USERNAME__#${escaped_val}#g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s#__USERNAME__#${escaped_val}#g" "$OUTPUT_PATH"
-    fi
-    if [ -n "${REALNAME:-}" ]; then
-        local escaped_val
-        escaped_val=$(_sed_escape "$REALNAME")
-        sed -i "s#__REALNAME__#${escaped_val}#g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s#__REALNAME__#${escaped_val}#g" "$OUTPUT_PATH"
-    fi
-    if [ -n "${PASSWORD_HASH:-}" ]; then
-        # $6$ hashes contain $ — already escaped by _sed_escape
-        local escaped_val
-        escaped_val=$(_sed_escape "$PASSWORD_HASH")
-        sed -i "s#__PASSWORD_HASH__#${escaped_val}#g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s#__PASSWORD_HASH__#${escaped_val}#g" "$OUTPUT_PATH"
-    fi
-    if [ -n "${HOSTNAME:-}" ]; then
-        local escaped_val
-        escaped_val=$(_sed_escape "$HOSTNAME")
-        sed -i "s#__HOSTNAME__#${escaped_val}#g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s#__HOSTNAME__#${escaped_val}#g" "$OUTPUT_PATH"
-    fi
-    if [ -n "${WHURL:-}" ]; then
-        local escaped_val
-        escaped_val=$(_sed_escape "$WHURL")
-        sed -i "s#__WHURL__#${escaped_val}#g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s#__WHURL__#${escaped_val}#g" "$OUTPUT_PATH"
-    fi
-    if [ -n "${SSH_KEYS:-}" ]; then
-        local yaml_keys=""
-        local bash_keys=""
-        while IFS= read -r key; do
-            [ -z "$key" ] && continue
-            yaml_keys="${yaml_keys}      - ${key}"$'\n'
-            bash_keys="${bash_keys} \"${key}\""
-        done <<< "$SSH_KEYS"
-        yaml_keys="${yaml_keys%$'\n'}"
-        local escaped_yaml escaped_bash
-        escaped_yaml=$(_sed_escape "$yaml_keys")
-        escaped_bash=$(_sed_escape "$bash_keys")
-        sed -i "s#__SSH_KEYS__#${escaped_yaml}#g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s#__SSH_KEYS__#${escaped_yaml}#g" "$OUTPUT_PATH"
-        sed -i "s#__SSH_KEYS_LIST__#${escaped_bash}#g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s#__SSH_KEYS_LIST__#${escaped_bash}#g" "$OUTPUT_PATH"
-    fi
-    if [ -n "${WIFI_SSID:-}" ] && [ -n "${WIFI_PASSWORD:-}" ]; then
-        local escaped_ssid escaped_password
-        escaped_ssid=$(_sed_escape_yaml_dq "$WIFI_SSID")
-        escaped_password=$(_sed_escape_yaml_dq "$WIFI_PASSWORD")
-        sed -i "s#__WIFI_SSID__#${escaped_ssid}#g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s#__WIFI_SSID__#${escaped_ssid}#g" "$OUTPUT_PATH"
-        sed -i "s#__WIFI_PASSWORD__#${escaped_password}#g" "$OUTPUT_PATH" 2>/dev/null || \
-            sed -i '' "s#__WIFI_PASSWORD__#${escaped_password}#g" "$OUTPUT_PATH"
-    fi
+    # Uses Python for placeholder substitution to avoid shell quoting issues
+    # with special characters (double-quotes, backslashes, ampersands, etc.)
+    python3 - "$OUTPUT_PATH" "$USERNAME" "$REALNAME" "$PASSWORD_HASH" "$HOSTNAME" "$WHURL" "$SSH_KEYS" "$WIFI_SSID" "$WIFI_PASSWORD" << 'PYEOF' || die "Failed to substitute placeholders"
+import sys
+
+output_path = sys.argv[1]
+username = sys.argv[2] if len(sys.argv) > 2 else ""
+realname = sys.argv[3] if len(sys.argv) > 3 else ""
+password_hash = sys.argv[4] if len(sys.argv) > 4 else ""
+hostname_arg = sys.argv[5] if len(sys.argv) > 5 else ""
+whurl = sys.argv[6] if len(sys.argv) > 6 else ""
+ssh_keys = sys.argv[7] if len(sys.argv) > 7 else ""
+wifi_ssid = sys.argv[8] if len(sys.argv) > 8 else ""
+wifi_password = sys.argv[9] if len(sys.argv) > 9 else ""
+
+def shell_sq_escape(val):
+    """Escape a value for shell single-quoted context: ' -> '\\''"""
+    return val.replace("'", "'\\''")
+
+def yaml_dq_escape(val):
+    """Escape a value for YAML double-quoted string context."""
+    val = val.replace('\\', '\\\\')
+    val = val.replace('"', '\\"')
+    val = val.replace('\n', '\\n')
+    val = val.replace('\t', '\\t')
+    return val
+
+with open(output_path, 'r') as f:
+    content = f.read()
+
+if username:
+    content = content.replace('__USERNAME__', yaml_dq_escape(username))
+if realname:
+    content = content.replace('__REALNAME__', yaml_dq_escape(realname))
+if password_hash:
+    content = content.replace('__PASSWORD_HASH__', yaml_dq_escape(password_hash))
+if hostname_arg:
+    content = content.replace('__HOSTNAME__', yaml_dq_escape(hostname_arg))
+if whurl:
+    content = content.replace('__WHURL__', yaml_dq_escape(whurl))
+
+if ssh_keys:
+    yaml_lines = []
+    bash_items_list = []
+    for key in ssh_keys.strip().split('\n'):
+        key = key.strip()
+        if not key:
+            continue
+        yaml_lines.append(f'      - "{yaml_dq_escape(key)}"')
+        bash_items_list.append(f'"{key}"')
+    yaml_block = '\n'.join(yaml_lines)
+    bash_list = ' '.join(bash_items_list)
+    content = content.replace('__SSH_KEYS__', yaml_block)
+    content = content.replace('__SSH_KEYS_LIST__', bash_list)
+
+if wifi_ssid and wifi_password:
+    content = content.replace('__WIFI_SSID__', shell_sq_escape(wifi_ssid))
+    content = content.replace('__WIFI_PASSWORD__', shell_sq_escape(wifi_password))
+
+with open(output_path, 'w') as f:
+    f.write(content)
+PYEOF
 }
 
 generate_dualboot_storage() {
