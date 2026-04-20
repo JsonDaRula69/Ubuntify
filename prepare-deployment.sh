@@ -818,12 +818,14 @@ EOF
 
 prompt_deploy_mode() {
     [ "${_DEPLOY_MODE_PROMPTED:-0}" -eq 1 ] && return 0
+    log_info "prompt_deploy_mode: prompting for deployment mode"
 
     if [ -z "$DEPLOY_MODE" ] || [ "$DEPLOY_MODE" = "__REPLACE__" ] || [ "${_USING_EXAMPLE_CONF:-0}" -eq 1 ]; then
         DEPLOY_MODE=$(tui_menu "Deployment Mode" \
             "Select how to deploy to the Mac Pro:" \
             "Local (running on Mac Pro directly)" "local" \
             "Remote (SSH to Mac Pro from this machine)" "remote") || return 1
+        log_info "prompt_deploy_mode: user selected DEPLOY_MODE=$DEPLOY_MODE"
     fi
 
     if [ "$DEPLOY_MODE" = "remote" ]; then
@@ -2075,14 +2077,18 @@ main() {
         if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
             exit 0
         fi
+        log_info "First-run: User confirmed new device configuration"
         # Ask deployment mode before exploring environment — remote mode runs commands via SSH
         if ! prompt_deploy_mode; then
             die "Deployment mode selection required"
         fi
+        log_info "First-run: Deploy mode=$DEPLOY_MODE, target=$TARGET_HOST"
         explore_environment
+        log_info "First-run: Environment exploration complete"
         if ! menu_deploy_select; then
             exit 0
         fi
+        log_info "First-run: Deploy method=$DEPLOY_METHOD, storage=$STORAGE_LAYOUT, network=$NETWORK_TYPE"
         if ! prompt_config; then
             die "Missing required configuration"
         fi

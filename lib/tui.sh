@@ -195,7 +195,6 @@ tui_menu() {
     width=$(echo "$size" | cut -d' ' -f2)
     local tmpfile
     tmpfile=$(_tui_mktemp)
-    trap '_tui_cleanup '"'$tmpfile'"'' EXIT
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
         local items=()
@@ -203,16 +202,14 @@ tui_menu() {
             items+=("$2" "$1" "")
             shift 2
         done
-        if dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --menu "\Z3$description\Zn" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
+        if dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --menu "\Z3$description\Zn" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            trap - ERR
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
-            trap - ERR
             return 1
         fi
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
@@ -225,16 +222,13 @@ tui_menu() {
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            trap - ERR
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
-            trap - ERR
             return 1
         fi
     else
-        trap - ERR
         local labels=()
         local tags=()
         local count=0
@@ -352,7 +346,7 @@ tui_confirm() {
     width=$(echo "$size" | cut -d' ' -f2)
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
-        if dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --yesno "\Z3$message\Zn" "$height" "$width" 2>/dev/null; then
+        if dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --yesno "\Z3$message\Zn" "$height" "$width" 2>/dev/null; then
             return 0
         else
             return 1
@@ -451,7 +445,7 @@ tui_msgbox() {
     width=$(echo "$size" | cut -d' ' -f2)
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
-        dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --msgbox "\Z3$message\Zn" "$height" "$width" 2>/dev/null || true
+        dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --msgbox "\Z3$message\Zn" "$height" "$width" 2>/dev/null || true
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
         whiptail --backtitle "$TUI_BACKTITLE" --title "$title" --msgbox "$message" "$height" "$width" 2>/dev/null || true
     else
@@ -489,19 +483,16 @@ tui_input() {
     width=$(echo "$size" | cut -d' ' -f2)
     local tmpfile
     tmpfile=$(_tui_mktemp)
-    trap '_tui_cleanup '"'$tmpfile'"'' EXIT
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
-        if dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --inputbox "\Z3$label\Zn" "$height" "$width" "$default_value" 2>"$tmpfile"; then
+        if dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --inputbox "\Z3$label\Zn" "$height" "$width" "$default_value" 2>"$tmpfile"; then
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            trap - ERR
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
-            trap - ERR
             return 1
         fi
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
@@ -509,16 +500,13 @@ tui_input() {
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            trap - ERR
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
-            trap - ERR
             return 1
         fi
     else
-        trap - ERR
         local width=66
         local display_default="${default_value:-}"
         [ -n "$display_default" ] && display_default=" [$display_default]"
@@ -561,19 +549,16 @@ tui_password() {
     width=$(echo "$size" | cut -d' ' -f2)
     local tmpfile
     tmpfile=$(_tui_mktemp)
-    trap '_tui_cleanup '"'$tmpfile'"'' EXIT
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
-        if dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --passwordbox "\Z3$label\Zn" "$height" "$width" 2>"$tmpfile"; then
+        if dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --passwordbox "\Z3$label\Zn" "$height" "$width" 2>"$tmpfile"; then
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            trap - ERR
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
-            trap - ERR
             return 1
         fi
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
@@ -581,16 +566,13 @@ tui_password() {
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            trap - ERR
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
-            trap - ERR
             return 1
         fi
     else
-        trap - ERR
         local width=66
         printf '\n' >&2
         printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))" >&2
@@ -637,7 +619,7 @@ tui_progress() {
             percent=$(echo "$line" | cut -d' ' -f1)
             local message
             message=$(echo "$line" | cut -d' ' -f2-)
-            echo "$percent" | dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --gauge "\Z3$message\Zn" "$height" "$width" 2>/dev/null || break
+            echo "$percent" | dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --gauge "\Z3$message\Zn" "$height" "$width" 2>/dev/null || break
         done
     else
         local line
@@ -668,7 +650,7 @@ tui_tailbox() {
     width=$(echo "$size" | cut -d' ' -f2)
 
     if [ "$TUI_BACKEND" = "dialog" ] && [ "$TUI_HAS_TAILBOX" -eq 1 ]; then
-        dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --tailbox "$filepath" "$height" "$width" 2>/dev/null || true
+        dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --tailbox "$filepath" "$height" "$width" 2>/dev/null || true
     else
         local width=66
         printf '\n' >&2
@@ -692,7 +674,6 @@ tui_checklist() {
     width=$(echo "$size" | cut -d' ' -f2)
     local tmpfile
     tmpfile=$(_tui_mktemp)
-    trap '_tui_cleanup '"'$tmpfile'"'' EXIT
 
     if [ "$TUI_BACKEND" = "dialog" ]; then
         local items=()
@@ -702,16 +683,14 @@ tui_checklist() {
             items+=("$2" "$1" "$state")
             shift 3
         done
-        if dialog --colors --backtitle "$TUI_BACKTITLE" --title "$title" --checklist "\Z3$description\Zn" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
+        if dialog --keep-tite --colors --backtitle "$TUI_BACKTITLE" --title "$title" --checklist "\Z3$description\Zn" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            trap - ERR
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
-            trap - ERR
             return 1
         fi
     elif [ "$TUI_BACKEND" = "whiptail" ]; then
@@ -724,16 +703,13 @@ tui_checklist() {
             local result
             result=$(cat "$tmpfile")
             rm -f "$tmpfile"
-            trap - ERR
             echo "$result"
             return 0
         else
             rm -f "$tmpfile"
-            trap - ERR
             return 1
         fi
     else
-        trap - ERR
         local labels=()
         local tags=()
         local states=()
