@@ -6,6 +6,7 @@
 set -e
 set -o pipefail
 
+[ "${_REMOTE_MAC_SH_SOURCED:-0}" -eq 1 ] && return 0
 _REMOTE_MAC_SH_SOURCED=1
 
 # ── SSH Options ──

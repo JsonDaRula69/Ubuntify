@@ -216,6 +216,13 @@ create_esp_partition() {
     local _esp_created_name="$2"
     local _esp_device_name="$3"
 
+    if ! _validate_varname "$_esp_created_name"; then
+        die "create_esp_partition: invalid variable name: $_esp_created_name"
+    fi
+    if ! _validate_varname "$_esp_device_name"; then
+        die "create_esp_partition: invalid variable name: $_esp_device_name"
+    fi
+
     log "Creating ESP partition for Ubuntu installer..."
 
     # Remove leftover CIDATA ESP from a previous failed run
