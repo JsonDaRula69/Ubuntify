@@ -11,6 +11,7 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
 - [Phase 0: Codebase Architecture Model](#phase-0-codebase-architecture-model)
 - [Phase 1: Static Code Analysis](#phase-1-static-code-analysis)
   - [1.1.1 TUI Module Raw Fallback Audit](#111-tui-module-raw-fallback-audit)
+  - [1.1.2 TUI Dialog Subshell and Trap Audit](#112-tui-dialog-subshell-and-trap-audit)
   - [1.7 Systematic Execution Path Walkthrough](#17-systematic-execution-path-walkthrough)
 - [Phase 2: Functional Behavior Testing](#phase-2-functional-behavior-testing)
   - [2.8 TUI Interactive Prompt Testing](#28-tui-interactive-prompt-testing)
@@ -76,6 +77,7 @@ Determine if any module can be double-sourced and what would break
 Verify: if colors.sh is double-sourced, readonly RED/GREEN/etc. would fail — does the guard prevent this?
 Verify: lib/retry.sh has a one-line guard — does it properly prevent re-execution of the readonly declarations?
 Check: lib/tui.sh declares `readonly TUI_BACKEND`, `readonly TUI_HAS_GAUGE`, `readonly TUI_HAS_TAILBOX`, `readonly TUI_BACKTITLE` — what happens on double-source?
+Check: guard pattern consistency — every lib file with a guard MUST use the check-before-set pattern: `[ "${_GUARD:-0}" -eq 1 ] && return 0` BEFORE `_GUARD=1`. A guard that only sets the variable (e.g., `_GUARD=1`) without the check allows double-sourcing which can fail on `readonly` re-declarations. Verify: `grep -L '&& return 0' lib/*.sh | xargs grep '_SOURCED=1\|_GUARD=1'` — any file that sets a guard variable but lacks the early-return check has a P2 bug.
 
 ### 0.5 Architecture Diagram
 Produce a dependency diagram: main script → libs → sub-libs
@@ -160,6 +162,35 @@ For EACH hit:
 2. If yes, does it have a non-interactive fallback (e.g., `--pass` flag, `-N ""` flag, stdin pipe)?
 3. Will it hang indefinitely waiting for input that never comes?
 This is a COMPLETE audit — a command that hangs in agent mode is a P0 bug.
+
+### 1.1.2 TUI Dialog Subshell and Trap Audit
+
+**Dialog command substitution audit (P0 — hangs on macOS):**
+Dialog (`dialog`, `whiptail`) CANNOT run inside `$(...)` command substitution on macOS. The `$(...)` creates a subshell where dialog's ncurses cannot properly access `/dev/tty` for terminal rendering and keyboard input, causing an invisible hang.
+
+- `grep -n '\$(tui_menu\|\$(tui_input\|\$(tui_password\|\$(tui_checklist' prepare-deployment.sh lib/*.sh` — ALL must be zero matches
+- ALL TUI result-returning functions (tui_menu, tui_input, tui_password, tui_checklist, tui_checkbox, tui_grid_checklist) MUST use a global result variable (e.g., `_TUI_RESULT`) instead of `echo`/stdout
+- Callers MUST use the pattern `tui_X ... || return 1; VAR="$_TUI_RESULT"` NOT `VAR=$(tui_X ...)`
+- tui_confirm and tui_msgbox are exempt — they return exit codes, not values, so `$(...)` is never used with them
+
+**EXIT trap pollution audit (P1 — prevents cleanup):**
+TUI functions that set `trap ... EXIT` inside their body overwrite the main script's EXIT trap. After the function returns, the main script's cleanup trap is gone.
+
+- `grep -n 'trap.*EXIT' lib/tui.sh` — must be zero matches (TUI functions must NOT set EXIT traps)
+- `grep -n 'trap.*EXIT' prepare-deployment.sh` — verify the main script's EXIT trap is intact and not overwritten
+- TUI functions that need temp file cleanup must use manual `rm -f "$tmpfile"` at every exit point (success and failure), NOT EXIT traps
+- The main script's EXIT trap (`trap 'cleanup_on_error' EXIT`) must remain active for the entire script lifecycle
+
+**Dialog/whiptail menu column audit (P1 — duplicate/blank entries):**
+- `dialog --menu` items are pairs: `tag label` (2 columns per item)
+- `dialog --checklist` items are triples: `tag label state` (3 columns per item)
+- `whiptail --radiolist` items are triples: `tag label ON/OFF` (3 columns per item)
+- Verify each TUI function constructs its items array with the correct column count for the backend:
+  - tui_menu dialog path: `items+=(tag label)` — exactly 2 elements per item
+  - tui_menu whiptail path: `items+=(tag label state)` — exactly 3 elements per item
+  - tui_checklist dialog path: `items+=(tag label state)` — exactly 3 elements per item
+  - tui_checklist whiptail path: `items+=(tag label state)` — exactly 3 elements per item
+- A trailing empty column (e.g., `items+=(tag label "")`) in menu mode causes dialog to render blank/duplicate entries — this is a P1 bug
 
 ### 1.2 Variable and Scope Analysis
 **This section builds on Phase 0.2 (Variable Namespace Collision Map).** If Phase 0.2 found no collisions, this section focuses on the remaining checks: usage safety, input handling, and scope correctness. Do not re-audit collision findings from Phase 0.2.
@@ -701,7 +732,7 @@ grep -n 'tui_menu\|tui_confirm\|tui_input\|tui_password\|tui_checklist\|tui_msgb
 **Key invariants to verify for every flow**:
 - Menu tag values in `tui_menu` calls match the `case` statements that consume them
 - All destructive operations (APFS resize, ESP create, kernel pin/unpin/update, macOS erase) are gated by `tui_confirm`
-- All tui_menu callers capture output as `choice=$(tui_menu ...)` — NOT as `if tui_menu ...`
+- All tui_menu/tui_input/tui_password callers use the global result variable pattern: `tui_X ...; VAR="$_TUI_RESULT"` — NOT `VAR=$(tui_X ...)` which hangs dialog
 - All tui_confirm callers use it as `if tui_confirm ...` or `||` — NOT capturing output
 - tui_input and tui_password results are checked for emptiness before use
 - Back/exit choices always return from the function or exit the script, never fall through
