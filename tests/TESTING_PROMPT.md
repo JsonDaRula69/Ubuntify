@@ -9,6 +9,7 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
 ## Table of Contents
 
 - [Phase 0: Codebase Architecture Model](#phase-0-codebase-architecture-model)
+  - [0.6 Bug Class Taxonomy and Custom Check Generation](#06-bug-class-taxonomy-and-custom-check-generation)
 - [Phase 1: Static Code Analysis](#phase-1-static-code-analysis)
   - [1.1.1 TUI Module Raw Fallback Audit](#111-tui-module-raw-fallback-audit)
   - [1.1.2 TUI Dialog Subshell and Trap Audit](#112-tui-dialog-subshell-and-trap-audit)
@@ -28,6 +29,7 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
 - [Phase 4: Best Practices and Patterns](#phase-4-best-practices-and-patterns)
 - [Phase 5: Execution and Validation](#phase-5-execution-and-validation)
 - [Phase 6: Refactoring and Simplification](#phase-6-refactoring-and-simplification)
+- [Phase 7: Self-Improvement and Coverage Gap Analysis](#phase-7-self-improvement-and-coverage-gap-analysis)
 - [Iterative Fix and Test Cycle](#iterative-fix-and-test-cycle)
 - [Reporting Requirements](#reporting-requirements)
 - [Final Checklist](#final-checklist)
@@ -87,6 +89,49 @@ Highlight circular dependencies or fragile ordering assumptions
 Verify: rollback.sh depends on retry.sh and dryrun.sh — is this documented?
 Verify: deploy.sh sources nearly everything — is the order significant?
 Check: does build-iso.sh source a subset of libs? Which ones? Does it miss any it needs?
+
+### 0.6 Bug Class Taxonomy and Custom Check Generation
+
+**Purpose:** Phase 0 doesn't just model what IS — it must model what GOES WRONG. Every bug found (whether during review cycles OR manually between them) represents a **bug class** that may have additional instances. Phase 0 must extract the general pattern from each past bug and generate custom checks for the current cycle.
+
+**Critical: Catalog PATTERNS, not instances.** Bug class entries must NEVER reference specific line numbers, function names, file paths, or version numbers. These details are transient — the pattern is permanent. A good bug class description applies equally to ANY codebase with the same architectural structure, not just this one at a specific point in time.
+
+**CRITICAL: Include bugs found outside review cycles.** Many bugs are found by manual testing, user reports, or ad-hoc investigation between formal review cycles. These bugs are EQUALLY valuable for pattern extraction — they represent blind spots the checklists missed. Before each review cycle:
+
+1. Review `git log --oneline` since the last review cycle for commits containing `fix`, `Fix`, or `bug`
+2. Review CHANGELOG.md entries since the last review cycle
+3. Ask the user: "Were any bugs found manually since the last review cycle?"
+4. For EACH bug found (whether during review or outside it), extract the bug class
+
+**Bug class extraction process:**
+For EACH bug found since the last review cycle:
+
+1. **Generalize the bug**: Strip ALL instance-specific details. What is the abstract pattern?
+2. **Identify the class**: What structural condition enables this pattern? Where else could it occur?
+3. **Generate a check**: Write a concrete, executable check that finds ALL instances of this class in the CURRENT codebase (not the historical one)
+4. **Add to the appropriate phase**: Insert the check with a `[BUG-CLASS]` tag
+
+**Bug class catalog (accrues across review cycles — never remove entries):**
+
+| Bug Class | Abstract Pattern | Custom Check |
+|-----------|-----------------|--------------|
+| Output channel contamination | A module writes to stdout for both informational output AND return values; callers capturing via `$(...)` receive both channels mixed together | Verify all logging/diagnostic output goes to stderr; verify no function uses stdout for both logging and return values |
+| Confirmation-before-collection | A summary/confirmation is called from a function that executes before the data it summarizes has been collected | Trace call sequence: summary/confirm must appear AFTER all data-gathering functions, never inside a function called before data collection completes |
+| Placeholder-as-set | Prompt skip conditions treat template/default values as "already configured" because the value is non-empty but not user-provided | Check all "skip if set" conditions also check for known placeholder patterns, not just emptiness |
+| Widget column mismatch | UI widget item arrays have wrong column count for the backend (e.g., trailing empty column) | Verify each widget backend path constructs item arrays with exactly the column count the widget expects |
+| Unsafe variable indirection | Variable indirection via eval without validating the variable name contains only safe characters | Audit all eval calls: any that interpolate a variable name must validate it against `^[a-zA-Z_][a-zA-Z0-9_]*$` |
+| Duplicate definition overwrite | Two definitions of the same name in the same file where the second silently overwrites the first | Check for duplicate function/variable definitions within single files |
+
+**Custom check generation template:**
+```
+Bug Class: [abstract name — NO line numbers, NO function names, NO file paths]
+Abstract Pattern: [general description that could apply to any codebase with this structure]
+How to Detect: [concrete methodology to find ALL instances in current codebase]
+Phase: [which phase this check belongs in]
+Expected Severity: [P0/P1/P2 if found]
+```
+
+**Phase 0 Gate Addition:** Before proceeding to Phase 1, ALL bugs found since the last review cycle (both during-review AND manual/outside) must have their bug class extracted, generalized, and custom checks inserted into the appropriate phase sections. This ensures each review cycle is STRICTLY MORE COMPREHENSIVE than the last — institutional knowledge of failure patterns compounds over time.
 
 ---
 
@@ -1426,9 +1471,82 @@ If Phase 6 identifies changes, those changes are implemented, committed, and the
 
 ---
 
+## PHASE 7: SELF-IMPROVEMENT AND COVERAGE GAP ANALYSIS
+
+**This phase executes AFTER Phase 6 completes (or after Phases 0-5 complete with zero findings).** Its purpose is to improve the testing protocol itself by analyzing what the protocol missed, what was found outside the protocol, and where coverage gaps exist. This makes the protocol self-improving — each cycle should be strictly better than the last.
+
+**Gate:** Do NOT start Phase 7 until Phases 0–5 pass with zero P0, P1, P2 findings (or Phase 6 completes with zero regressions).
+
+### 7.1 Coverage Gap Detection
+
+**The fundamental question:** "If this protocol were run on the codebase in its BEFORE-fix state, would it have caught the bugs that were found manually?"
+
+For each bug found outside a formal review cycle:
+1. Which phase SHOULD have caught it? (Map the bug to a phase)
+2. Did that phase's checklist include a check that would find it?
+3. If yes: why didn't the check catch it? (Stale grep pattern? Reviewer didn't execute it? Check was too specific?)
+4. If no: what new check should be added? (This feeds §0.6 Bug Class Taxonomy)
+
+**Coverage gap categories:**
+- **Missing check**: No checklist item addresses this bug class → add one
+- **Stale check**: Check references specific patterns that have changed → update
+- **Unevaluated check**: Check exists but reviewer skipped it or misapplied it → strengthen enforcement mechanism
+- **Wrong-phase check**: Check exists but in the wrong phase (e.g., architecture issue checked in Phase 2 instead of Phase 0) → move
+
+### 7.2 Checklist Staleness Audit
+
+Grep patterns, function names, and file references in this document become stale as the codebase evolves. Before each review cycle, validate that the document's references are current:
+
+- `grep -c 'grep.*lib/' tests/TESTING_PROMPT.md` — count all grep commands that reference specific file paths. For each, verify the file still exists
+- `grep -c 'tui_menu\|tui_confirm\|tui_input' tests/TESTING_PROMPT.md` — verify all referenced TUI functions still exist in lib/tui.sh
+- Check for TODO/FIXME items added to this document that were intended to be resolved but weren't
+- If a module was renamed, split, or merged since the last update, update all references in this document
+
+### 7.3 Cross-Phase Feedback Loop
+
+**Architecture findings from later phases must feed back to Phase 0.** The current protocol assumes Phase 0 runs first and later phases consume its output, but in practice, Phase 2+ often discovers architectural issues that Phase 0 missed. This feedback is currently lost.
+
+**Mechanism:** When any phase (1-5) discovers an architectural issue (e.g., a function called from the wrong place in a flow, a module boundary violation, a variable lifecycle problem), that finding must be:
+
+1. **Recorded as a Phase 0 finding** — add it to the architecture model as if Phase 0 had found it
+2. **Cross-referenced** — note which phase found it and why Phase 0 missed it
+3. **Used to improve Phase 0** — add a check to Phase 0 that would catch this class of architecture issue proactively
+
+**Concrete example:** The confirmation-before-collection bug (found by user testing, not by the protocol) is an architecture issue — a function is called from the wrong position in a flow. Phase 0's architecture model should include "call sequence verification" — tracing that every function is called from the correct position relative to the data it depends on.
+
+### 7.4 Quality Signal Tracking
+
+**The binary pass/fail gate doesn't distinguish "nothing wrong" from "didn't look hard enough."** Track quality signals that indicate review depth:
+
+- **Findings per phase**: How many NEW (not checklist-expected) findings did each phase produce? Zero new findings in a phase may indicate insufficient depth
+- **Findings beyond checklist**: Count findings that are NOT covered by any checklist item — these indicate genuine discovery vs. rote verification
+- **False negative rate**: After each cycle, track how many bugs were found OUTSIDE the protocol (by user testing, ad-hoc investigation, etc.) within N days of the cycle completing. This is the protocol's miss rate
+- **Bug class coverage**: After extracting bug classes per §0.6, verify each class has a check in at least one phase. A class without a check is a coverage gap
+
+**Quality signal targets:**
+- Each phase should produce at least 1 finding not covered by its checklist items (indicates genuine review, not just checking boxes)
+- Post-cycle miss rate should trend toward zero over successive cycles
+- All known bug classes should have ≥1 check in the protocol
+
+### 7.5 Protocol Self-Update
+
+After completing Phase 7, update this document with all changes:
+
+1. **Add new bug classes** to §0.6 Bug Class Taxonomy (generalized, no instance-specific details)
+2. **Add new checks** to the appropriate phase sections with `[BUG-CLASS]` tags
+3. **Update stale references** from §7.2 Checklist Staleness Audit
+4. **Add cross-phase feedback** entries from §7.3
+5. **Record quality metrics** from §7.4 for trend tracking
+
+**Commit the protocol update separately from code changes** — the testing protocol is a living document that evolves with the project.
+
+---
+
 ## ITERATIVE FIX AND TEST CYCLE
 
 **Discovery vs. verification:** Each phase has two purposes: (1) verify the SPECIFIC items listed in that phase's checklists pass, and (2) DISCOVER new issues NOT listed in any checklist. The checklists define MINIMUM coverage, not maximum. If a reviewer finds themselves only checking items off a list and not finding any new issues, they are not reviewing thoroughly enough. Every phase should produce findings beyond the checklist items.
+
+**Bug class extraction (MANDATORY for every bug found):** Before fixing any bug, extract its abstract pattern per §0.6. Every fix must be accompanied by a generalized bug class entry. This transforms individual fixes into institutional knowledge that prevents the entire class from recurring.
 
 Process findings in severity order: P0 first, then P1, then P2, then P3.
 Within each severity level, fix bugs one at a time, **except when a single root cause affects multiple files** — in that case, fix all affected files in one commit with a clear commit message listing all files changed. Then re-run all phases. Do not fix one file, test, fix the next file, test — this wastes regression cycles on what is logically one change.
