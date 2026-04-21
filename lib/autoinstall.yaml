@@ -234,9 +234,9 @@ autoinstall:
       # Start SSH server for remote debugging
       wh '{"progress":23,"stage":"prep-ssh","status":"starting","message":"Starting SSH server for remote debugging"}'
       log "Starting SSH server for remote debugging..."
-      dpkg --force-depends -i /cdrom/pool/restricted/o/openssh/openssh-server_*.deb /cdrom/pool/restricted/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
+      dpkg --force-depends -i /cdrom/pool/main/o/openssh/openssh-server_*.deb /cdrom/pool/main/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
       if [ ! -f /usr/sbin/sshd ]; then
-        dpkg --force-depends -i /isodevice/pool/restricted/o/openssh/openssh-server_*.deb /isodevice/pool/restricted/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
+        dpkg --force-depends -i /isodevice/pool/main/o/openssh/openssh-server_*.deb /isodevice/pool/main/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
       fi
       if [ -f /usr/sbin/sshd ]; then
         # Create installer user for SSH access (ssh: install-server only applies to target)

@@ -220,7 +220,9 @@ remote_mac_file_exists() {
     if [ "${DEPLOY_MODE:-local}" = "local" ]; then
         [ -f "$path" ]
     else
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "test -f '$path'" 2>/dev/null
+        local escaped_path
+        escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
+        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "test -f '${escaped_path}'" 2>/dev/null
     fi
 }
 
@@ -230,7 +232,9 @@ remote_mac_dir_exists() {
     if [ "${DEPLOY_MODE:-local}" = "local" ]; then
         [ -d "$path" ]
     else
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "test -d '$path'" 2>/dev/null
+        local escaped_path
+        escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
+        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "test -d '${escaped_path}'" 2>/dev/null
     fi
 }
 
@@ -240,7 +244,9 @@ remote_mac_mkdir() {
     if [ "${DEPLOY_MODE:-local}" = "local" ]; then
         mkdir -p "$path"
     else
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "mkdir -p '$path'"
+        local escaped_path
+        escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
+        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "mkdir -p '${escaped_path}'"
     fi
 }
 
@@ -250,6 +256,8 @@ remote_mac_rm() {
     if [ "${DEPLOY_MODE:-local}" = "local" ]; then
         rm -f "$path"
     else
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "rm -f '$path'"
+        local escaped_path
+        escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
+        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "rm -f '${escaped_path}'"
     fi
 }

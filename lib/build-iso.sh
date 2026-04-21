@@ -3,7 +3,7 @@ set -e
 set -o pipefail
 set -u
 
-# Parse --vm flag before any other processing
+# Parse flags before any other processing
 VM_MODE=0
 for arg in "$@"; do
     case "$arg" in
@@ -112,16 +112,21 @@ mkdir -p "$STAGING/iso_root/cidata"
 mkdir -p "$STAGING/iso_root/macpro-pkgs"
 
 if [ "$VM_MODE" -eq 1 ]; then
-    # Generate VM autoinstall YAML using generate_autoinstall (ethernet, full-disk)
-    # Use deploy.conf values if available, otherwise fall back to VM defaults
-    _VM_USERNAME="${USERNAME:-ubuntu}"
-    _VM_REALNAME="${REALNAME:-VM Test User}"
-    _VM_PASSWD_HASH="${PASSWORD_HASH:-$(openssl passwd -6 "ubuntu" 2>/dev/null || echo "*")}"
-    _VM_HOSTNAME="${HOSTNAME:-macpro-vmtest}"
-    _VM_WHURL="${WHURL:-http://10.0.2.2:8081/webhook}"
-    _VM_SSH_KEYS="${SSH_KEYS:-}"
-    generate_autoinstall "$STAGING/iso_root/autoinstall.yaml" fulldisk ethernet || \
-        die "Failed to generate VM autoinstall configuration"
+    # Use dedicated VM autoinstall template (purpose-built for VM testing)
+    cp "$LIB_DIR/autoinstall-vm.yaml" "$STAGING/iso_root/autoinstall.yaml" || \
+        die "VM autoinstall template not found: $LIB_DIR/autoinstall-vm.yaml"
+    VM_HOSTNAME="${VM_HOSTNAME:-macpro-vmtest}"
+    VM_WHURL="${WHURL:-http://10.0.2.2:8081/webhook}"
+    VM_PASSWORD_HASH="${PASSWORD_HASH:-$(openssl passwd -6 "ubuntu" 2>/dev/null || echo "*")}"
+    sed -i.bak \
+        -e "s|__HOSTNAME__|macpro-vmtest|g" \
+        -e "s|__WHURL__|http://10.0.2.2:8081/webhook|g" \
+        -e "s|__PASSWORD_HASH__|${VM_PASSWORD_HASH}|g" \
+        -e "/authorized-keys:/,/^[^ ]/ s|authorized-keys:.*|authorized-keys: []|" \
+        -e "/^[[:space:]]*__SSH_KEYS__[[:space:]]*$/d" \
+        -e "s|__SSH_KEYS_LIST__||g" \
+         "$STAGING/iso_root/autoinstall.yaml" || die "Failed to substitute VM placeholders"
+    rm -f "$STAGING/iso_root/autoinstall.yaml.bak"
     cp "$STAGING/iso_root/autoinstall.yaml" "$STAGING/iso_root/cidata/user-data"
     echo "instance-id: vmtest-i1" > "$STAGING/iso_root/cidata/meta-data"
     cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || die "Failed to copy .deb packages"
@@ -147,13 +152,13 @@ set timeout=3
 
 menuentry "Ubuntu Server 24.04 VM Test Autoinstall" {
     set gfxpayload=keep
-    linux /casper/vmlinuz autoinstall ds=nocloud nomodeset amdgpu.si.modeset=0 console=ttyS0,115200 ---
+    linux /casper/vmlinuz autoinstall ds=nocloud nomodeset console=ttyS0,115200 ---
     initrd /casper/initrd
 }
 
 menuentry "Ubuntu Server 24.04 (VM Manual Install)" {
     set gfxpayload=keep
-    linux /casper/vmlinuz nomodeset amdgpu.si.modeset=0 console=ttyS0,115200 ---
+    linux /casper/vmlinuz nomodeset console=ttyS0,115200 ---
     initrd /casper/initrd
 }
 GRUBEOF

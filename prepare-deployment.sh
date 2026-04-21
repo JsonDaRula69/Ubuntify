@@ -551,21 +551,22 @@ EOF
         return 1
     fi
 
-    # Build menu items using positional args for tui_menu
+    # Build menu items using array for tui_menu (no eval needed)
     # tui_menu takes pairs: "Display Text" "tag_value"
-    local menu_args=""
+    local -a menu_args=("SSH Public Key" "Select SSH public key to use:")
     local idx=1
     local IFS_OLD="$IFS"
     IFS='|'
     for label in $key_labels; do
-        menu_args="${menu_args} \"${label}\" \"${idx}\""
+        menu_args+=("${label}" "${idx}")
         idx=$((idx + 1))
     done
     IFS="$IFS_OLD"
-    menu_args="${menu_args} \"Paste key manually...\" \"manual\" \"Skip SSH keys\" \"skip\""
+    menu_args+=("Paste key manually..." "manual" "Skip SSH keys" "skip")
 
     local selection
-    selection=$(eval "tui_menu \"SSH Public Key\" \"Select SSH public key to use:\" $menu_args") || return 1
+    tui_menu "${menu_args[@]}" || return 1
+    selection="$_TUI_RESULT"
 
     if [ "$selection" = "skip" ]; then
         echo "SKIP"

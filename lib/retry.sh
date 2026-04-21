@@ -64,8 +64,7 @@ retry_run() {
     local exit_code=0
 
     while [ "$attempt" -le "$max_attempts" ]; do
-        "$@"
-        exit_code=$?
+        "$@" && exit_code=0 || exit_code=$?
 
         if [ "$exit_code" -eq 0 ]; then
             return 0
@@ -104,8 +103,7 @@ retry_diskutil() {
             warn "diskutil attempt $attempt/$max_attempts"
         fi
 
-        diskutil "$@" 2>"$stderr_file"
-        exit_code=$?
+        diskutil "$@" 2>"$stderr_file" && exit_code=0 || exit_code=$?
 
         if [ "$exit_code" -eq 0 ]; then
             rm -f "$stderr_file"
@@ -164,8 +162,7 @@ retry_ssh() {
             warn "SSH attempt $attempt/$max_attempts to $host"
         fi
 
-        ssh -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no "$host" "$@" 2>"$stderr_file"
-        exit_code=$?
+        ssh -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no "$host" "$@" 2>"$stderr_file" && exit_code=0 || exit_code=$?
 
         if [ "$exit_code" -eq 0 ]; then
             rm -f "$stderr_file"
@@ -236,8 +233,7 @@ retry_xorriso() {
             warn "xorriso attempt $attempt/$max_attempts"
         fi
 
-        xorriso "$@" 2>"$stderr_file"
-        exit_code=$?
+        xorriso "$@" 2>"$stderr_file" && exit_code=0 || exit_code=$?
 
         if [ "$exit_code" -eq 0 ]; then
             rm -f "$stderr_file"

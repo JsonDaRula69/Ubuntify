@@ -125,8 +125,10 @@ journal_set() {
             fi
         done
 
-        # Write the new key-value pair
-        printf 'JOURNAL_%s="%s"\n' "$key" "$value"
+        # Write the new key-value pair (escape double quotes in value for safe sourcing)
+        local escaped_value
+        escaped_value=$(printf '%s' "$value" | sed 's/"/\\"/g')
+        printf 'JOURNAL_%s="%s"\n' "$key" "$escaped_value"
     } > "$tmpfile"
 
     # Atomic rename

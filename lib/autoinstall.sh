@@ -113,18 +113,17 @@ generate_autoinstall() {
       path: /
 '
 
-        # Use sed to replace storage section
-        python3 -c "
-import re
-with open('$OUTPUT_PATH', 'r') as f:
+         # Replace storage section via Python (avoids shell quoting issues)
+         python3 - "$OUTPUT_PATH" "$FULL_DISK_STORAGE" << 'PYEOF' || die "Failed to modify storage section"
+import sys, re
+path, storage = sys.argv[1], sys.argv[2]
+with open(path, 'r') as f:
     content = f.read()
-
 pattern = r'  storage:\n    config:.*?\n(?=  [a-z]|\Z)'
-content = re.sub(pattern, '''$FULL_DISK_STORAGE''' + '\n', content, flags=re.DOTALL)
-
-with open('$OUTPUT_PATH', 'w') as f:
+content = re.sub(pattern, storage + '\n', content, flags=re.DOTALL)
+with open(path, 'w') as f:
     f.write(content)
-" || die "Failed to modify storage section"
+PYEOF
     fi
 
     if [ "$NETWORK_TYPE" = "ethernet" ]; then
@@ -140,17 +139,17 @@ with open('$OUTPUT_PATH', 'w') as f:
         optional: true
 '
 
-        # Insert network section before early-commands
-        python3 -c "
-with open('$OUTPUT_PATH', 'r') as f:
+        # Insert network section before early-commands (avoids shell quoting issues)
+        python3 - "$OUTPUT_PATH" "$NETWORK_CONFIG" << 'PYEOF' || die "Failed to add network section"
+import sys
+path, netconf = sys.argv[1], sys.argv[2]
+with open(path, 'r') as f:
     content = f.read()
-
 if '  network:' not in content:
-    content = content.replace('  early-commands:', '''$NETWORK_CONFIG  early-commands:''')
-
-with open('$OUTPUT_PATH', 'w') as f:
+    content = content.replace('  early-commands:', netconf + '  early-commands:')
+with open(path, 'w') as f:
     f.write(content)
-" || die "Failed to add network section"
+PYEOF
 
         # For ethernet, replace early-commands with minimal version (no DKMS)
         local SIMPLE_EARLY
@@ -159,17 +158,17 @@ with open('$OUTPUT_PATH', 'w') as f:
       set -x
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
-      wh() { curl -s -X POST "\$WHURL" -H "Content-Type: application/json" -d "\$1" > /dev/null 2>&1 || true; }
-      log() { echo "[early] \$1" >> "\$LOG"; }
+      wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
+      log() { echo "[early] $1" >> "$LOG"; }
 
-      echo "=== MAC PRO 2013 AUTOINSTALL (Ethernet mode) ===" > "\$LOG"
-      echo "Kernel: \$(uname -r)" >> "\$LOG"
+      echo "=== MAC PRO 2013 AUTOINSTALL (Ethernet mode) ===" > "$LOG"
+      echo "Kernel: $(uname -r)" >> "$LOG"
       wh '"'"'{"progress":5,"stage":"prep-init","status":"running","message":"Autoinstall started — Ethernet mode, network ready"}'"'"'
 
       # Start SSH server for remote debugging (ethernet network already up)
       wh '"'"'{"progress":20,"stage":"prep-ssh","status":"starting","message":"Starting SSH server for remote debugging"}'"'"'
       log "Starting SSH server..."
-      dpkg --force-depends -i /cdrom/pool/restricted/o/openssh/openssh-server_*.deb 2>>"\$LOG" || true
+      dpkg --force-depends -i /cdrom/pool/restricted/o/openssh/openssh-server_*.deb 2>>"$LOG" || true
       if [ -f /usr/sbin/sshd ]; then
         useradd -m -s /bin/bash ubuntu 2>/dev/null || true
         echo "ubuntu:ubuntu" | chpasswd 2>/dev/null || true
@@ -185,18 +184,17 @@ with open('$OUTPUT_PATH', 'w') as f:
       fi
       set +x'
 
-        python3 -c "
-import re
-with open('$OUTPUT_PATH', 'r') as f:
+        # Replace early-commands section (avoids shell quoting issues)
+        python3 - "$OUTPUT_PATH" "$SIMPLE_EARLY" << 'PYEOF' || die "Failed to simplify early-commands"
+import sys, re
+path, early = sys.argv[1], sys.argv[2]
+with open(path, 'r') as f:
     content = f.read()
-
-# Replace early-commands section
 pattern = r'  early-commands:.*?\n(?=  [a-z]|\Z)'
-content = re.sub(pattern, '''$SIMPLE_EARLY''' + '\n', content, flags=re.DOTALL)
-
-with open('$OUTPUT_PATH', 'w') as f:
+content = re.sub(pattern, early + '\n', content, flags=re.DOTALL)
+with open(path, 'w') as f:
     f.write(content)
-" || die "Failed to simplify early-commands"
+PYEOF
     fi
 
     log "Autoinstall configuration generated: $OUTPUT_PATH"

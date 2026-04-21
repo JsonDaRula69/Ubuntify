@@ -61,6 +61,7 @@ check_recovery_health() {
 
     if [ "$RECOVERY_MOUNT_OK" -eq 0 ]; then
         warn "Recovery partition exists but appears unhealthy (missing BaseSystem.dmg)"
+        return 1
     fi
 
     return 0
