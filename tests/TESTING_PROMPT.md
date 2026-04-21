@@ -4,6 +4,49 @@
 >
 > **Critical principle:** The checklists in this document define the MINIMUM scope of review — they are a starting point, not an exhaustive list of everything that could be wrong. The reviewer MUST go beyond the specific items listed here and perform thorough, original analysis on every line of code and every execution path. Do not limit your review to checking items off a list; actively seek bugs, logic errors, and structural problems that are NOT anticipated by the checklists. The goal is to discover ALL issues, not just confirm that listed checks pass.
 
+## Subagent Usage Guidelines
+
+This review protocol is designed to be executed by a lead agent orchestrating subagents (explore, librarian, plan, oracle, etc.) for maximum parallelism and coverage. Follow these guidelines to use subagents effectively:
+
+### When to Use Subagents vs. Direct Tools
+
+| Task Type | Best Approach | Why |
+|-----------|--------------|-----|
+| Searching for a **known pattern** (e.g., `grep -n 'eval '` in all shell scripts) | **Direct tools** (grep, read, ast_grep) | You already know exactly what to search for; subagent overhead is wasted |
+| Discovering **unknown patterns** (e.g., "find all functions that call both echo and log_*") | **Explore subagent** | You know the shape of the bug but not the exact pattern; subagent can search broadly |
+| Checking **external library behavior** (e.g., how Subiquity handles `wifis:` in netplan) | **Librarian subagent** | Requires documentation lookup, not local code search |
+| **Architecture decisions** or debugging **hard problems** after 2+ failed attempts | **Oracle subagent** | Expensive but high-quality reasoning for complex tradeoffs |
+| **Planning multi-step implementations** | **Plan subagent** | Produces structured work breakdowns with parallel execution opportunities |
+
+### Subagent Prompt Structure (MANDATORY)
+
+Every subagent delegation MUST include these 6 sections. Vague prompts = poor results:
+
+```
+1. CONTEXT: What task I'm working on, which files/modules are involved, and what approach I'm taking
+2. GOAL: The specific outcome I need — what decision or action the results will unblock
+3. DOWNSTREAM: How I will use the results — what I'll build/decide based on what's found
+4. REQUEST: Concrete search instructions — what to find, what format to return, and what to SKIP
+5. CONSTRAINTS: File paths, severity levels, patterns to exclude, known false positives to ignore
+6. ANTI-PATTERNS: What NOT to do (e.g., "Don't just list files — show the specific line with context")
+```
+
+### Parallelism Rules
+
+- **Fire 3-5 explore agents in parallel** for discovery tasks (Phase 0 architecture, Phase 1 static analysis)
+- **Fire 2-3 librarian agents** when external documentation is needed (Subiquity schema, netplan behavior, DKMS)
+- **Never block** waiting for a single subagent — continue with non-overlapping work
+- **Cross-reference** subagent results before trusting them — always verify a sample of findings directly
+- **Prefer direct tools for targeted checks** — if you can write the grep pattern yourself, do it. Reserve subagents for genuine discovery.
+
+### Subagent Anti-Patterns
+
+1. **Don't ask one subagent to "analyze everything."** Break broad tasks into narrow, pattern-specific searches. One subagent per bug class, per file group, per pattern.
+2. **NEVER repeat work assigned to a subagent.** Once you delegate a search to a subagent, you MUST NOT run the same search yourself. If an explore agent was tasked with finding all `eval` calls, running `grep -rn 'eval '` yourself is FORBIDDEN — you already delegated that work. Wait for the subagent's results, then use them. The only exception is verifying a small sample (3-5 items) to confirm accuracy. Repeating the full search wastes context budget and contradicts the reason for delegation.
+3. **Don't trust subagent results blindly.** Verify a sample of findings (3-5 items) directly before relying on the full result set. This is sample verification, not a full re-search — check a few results, then trust the rest.
+4. **Don't delegate trivial checks.** If you can run `grep -n 'trap.*EXIT' lib/tui.sh` in 2 seconds, do it yourself. Don't spawn a subagent for that.
+5. **Don't forget to cancel** idle background subagents after collecting results.
+
 Execute a systematic, multi-phase review and testing cycle. Do not stop at static analysis. Each phase must be completed before moving to the next. Found bugs must be fixed, then ALL tests re-run from the beginning.
 
 ## Table of Contents
@@ -132,6 +175,15 @@ For EACH bug found since the last review cycle:
 | Widget column mismatch | UI widget item arrays have wrong column count for the backend (e.g., trailing empty column) | Verify each widget backend path constructs item arrays with exactly the column count the widget expects |
 | Unsafe variable indirection | Variable indirection via eval without validating the variable name contains only safe characters | Audit all eval calls: any that interpolate a variable name must validate it against `^[a-zA-Z_][a-zA-Z0-9_]*$` |
 | Duplicate definition overwrite | Two definitions of the same name in the same file where the second silently overwrites the first | Check for duplicate function/variable definitions within single files |
+| Eval-with-user-input | `eval` is used with a string containing user-controllable input (filenames, config values) without proper quoting or sanitization | Audit all `eval` calls: verify the expanded string does not incorporate unsanitized external input; prefer global-variable patterns over `eval` for return values |
+| Command substitution with TUI | TUI result-returning functions are called inside `$(...)` which creates a subshell that breaks dialog/whiptail on macOS (hangs) and mixes stdout channels | Grep for `$(tui_menu`, `$(tui_input`, etc. — all result-returning TUI functions must use `_TUI_RESULT` global, never stdout capture |
+| Dry-run journal skip | In dry-run mode, phase-tracking journal entries are not recorded, so journal-based skip-on-resume logic cannot work after dry-run | Verify dry-run paths either record journal phases with a dry-run marker or explicitly document that dry-run state is not resumable |
+| Sh-c-subshell function call | A bash function is called inside a `sh -c` string; the subshell doesn't inherit bash functions from the parent, causing "command not found" | Grep for `sh -c` strings that reference bash-defined functions; verify all functions called within `sh -c` are either system commands or defined in the target shell |
+| Awk field mismatch | Awk field references don't match the actual column layout of the command output being parsed, causing silent empty results | For every `cmd | awk '{print $N}'`, verify `$N` matches the actual column in command output by testing with representative data; cross-reference command man page for field descriptions |
+| Local-after-assignment | `var=value` is set before `local var` on the next line; the `local` declaration nullifies the prior assignment, making the fallback value lost | Grep for patterns where a variable assignment precedes its `local` declaration within the same scope; `local var=value` must be on the same line, or `local` must come first |
+| Retry-after-cleanup | A retry block attempts to use a resource (file, device, connection) that was already deleted/closed in a prior success or cleanup path | Trace resource lifecycle: if a resource is deleted at path A, verify no subsequent retry at path B references it; consider whether retry should recreate the resource |
+| Pipe-OR-capture | `cmd | filter || handler` applies the `||` to the filter's exit code, not the command's; command failure is silently swallowed | Use `var=$(cmd | filter)` to capture, then check result; or use `set -o pipefail` and verify the pipe chain; never rely on `||` after a pipe to catch the first command's failure |
+| TUI-bypass-in-agent | Interactive `read` prompts bypass the TUI layer and agent mode auto-confirm, hanging indefinitely when stdin is not a TTY | Grep for `read -rp` or `read -p` outside TUI functions; all interactive prompts must use `tui_confirm`, `tui_input`, or `agent_confirm` to respect AGENT_MODE |
 
 **Custom check generation template:**
 ```
@@ -2377,3 +2429,84 @@ Agent mode should have an independent execution path that does NOT overlap with 
 - Agent mode does NOT trigger first-run flow
 - Agent mode calls execute-only functions directly, not through collect-and-execute wrappers
 - Running both `--agent --method 1` and interactive mode in separate invocations produces the same result (same deploy function called, same side effects)
+
+---
+
+## Phase 7: Self-Improvement and Coverage Gap Analysis
+
+This section documents meta-findings from the review process itself — patterns in how the review was conducted, what was missed, and how to improve subsequent cycles.
+
+### 7.1 Subagent Usage and Delegation Patterns
+
+**Finding:** During this review cycle, subagents were used for parallel exploration (Phase 1.1.1-1.1.3 TUI/logging audits and Phase 1.2 eval/security audit). The results were mixed:
+
+- **Structured grep-based searches worked well.** When the prompt specified exact grep patterns (`grep -n "Proceed\?" lib/tui.sh`), the subagent produced useful results.
+- **Broad analysis tasks produced verbose but shallow output.** When the prompt asked for "comprehensive analysis" without specifying exact patterns, the subagent produced lengthy reasoning but often restated the prompt rather than providing actionable findings.
+- **Direct tool usage was more efficient for targeted checks.** For specific, known patterns (eval audit, /dev/tty audit, EXIT trap check), running grep directly was faster and more reliable than delegating.
+
+**Improved subagent pattern for future cycles:**
+
+1. **Use subagents for breadth, not depth.** Fire 5+ parallel explore agents each searching for ONE specific pattern (e.g., one per bug class from §0.6), not one agent asking "analyze everything."
+2. **Specify exact search methodology in the prompt.** Instead of "audit X", say: "Run grep -n 'PATTERN' on FILE. For each match, check Y and Z. Report file:line with severity."
+3. **Cross-reference subagent results before trusting them.** The TUI raw-fallback audit agent initially reported incorrect guard patterns. Direct verification of a sample caught this error.
+4. **Prefer direct tools for known-pattern checks.** If you already know what to search for (from a checklist), run grep yourself. Reserve subagents for discovery tasks where you don't know the pattern.
+
+### 7.2 Review Coverage Assessment
+
+**Phases completed this cycle:**
+- Phase 0: Full (0.1-0.6, all gates passed)
+- Phase 1.1-1.3: Full (syntax, structure, TUI audits, logging audit, variable scope)
+- Phase 1.4: Partial (control flow patterns checked, `|| true` audit, retry logic)
+- Phase 1.5: Targeted (eval sites, sed -i, `|| true`, specific line-by-line on key functions)
+- Phase 1.6: YAML validation passed, schema valid
+- Phase 2: Unit tests run (83 pass), agent mode basic flow tested
+- Phase 5: Dry-run execution tested, --help verified
+
+**Phases NOT completed this cycle:**
+- Phase 1.7: Systematic execution path walkthrough (only specific paths traced, not exhaustive)
+- Phase 2.1-2.16: Most functional behavior tests not executed (requires macOS target)
+- Phase 3: Integration testing (requires Mac Pro hardware)
+- Phase 4: Best practices review (partially covered by Phase 1 findings)
+- Phase 5.5: VM integration test (deferred)
+- Phase 6: Refactoring (not started)
+
+**New bug classes discovered this cycle:**
+
+| Bug Class | Abstract Pattern | Custom Check |
+|-----------|-----------------|--------------|
+| Eval-with-user-input | `eval` is used with a string containing user-controllable input (filenames, config values) without proper quoting or sanitization | Audit all `eval` calls: verify the expanded string does not incorporate unsanitized external input; prefer global-variable patterns over `eval` for return values |
+| Command substitution with TUI | TUI result-returning functions are called inside `$(...)` which creates a subshell that breaks dialog/whiptail on macOS (hangs) and mixes stdout channels | Grep for `$(tui_menu`, `$(tui_input`, etc. — all result-returning TUI functions must use `_TUI_RESULT` global, never stdout capture |
+| Dry-run journal skip | In dry-run mode, phase-tracking journal entries are not recorded, so journal-based skip-on-resume logic cannot work after dry-run | Verify dry-run paths either record journal phases with a dry-run marker or explicitly document that dry-run state is not resumable |
+
+### 7.3 Findings Summary for This Cycle
+
+**P1 Findings (Critical):**
+
+1. **P1-001: `$(eval "tui_menu ... $menu_args")` in prompt_ssh_key_selection (prepare-deployment.sh:563)**
+   - Uses command substitution with tui_menu — can hang on macOS when dialog backend is active
+   - Uses `eval` with `$menu_args` containing SSH key filenames (user-controllable from `~/.ssh/*.pub`)
+   - All other TUI calls in prepare-deployment.sh correctly use `_TUI_RESULT` pattern
+   - Fix: Replace `$(eval "tui_menu ... $menu_args")` with direct `tui_menu` call using `_TUI_RESULT` pattern
+
+**P2 Findings (Major):**
+
+1. **P2-001: ESP_NAME/ESP_SIZE redundant defaults**
+   - `ESP_NAME` and `ESP_SIZE` declared `readonly` in prepare-deployment.sh but also have `:=` defaults in disk.sh, bless.sh, revert.sh
+   - Harmless when sourced from main (readonly already set) but redundant and confusing
+
+2. **P2-002: build-iso.sh eval with BOOT_PARAMS**
+   - `eval "xorriso -as mkisofs $BOOT_PARAMS ..."` on line 200 of build-iso.sh
+   - Injection check on lines 196-198 guards against metacharacters but regex could be more comprehensive
+
+**P3 Findings (Minor):**
+
+1. **P3-001: `die()` shadow in build-iso.sh** — intentional isolation, not a collision
+2. **P3-002: `log()` shadows macOS system `log` command** — minor, all project code uses `log_*` functions
+3. **P3-003: journal_set eval with set-enumerated variables** — key validated, minor concern
+
+**Tests Status:**
+- `bash -n`: All 16 lib/*.sh + prepare-deployment.sh PASS
+- `shellcheck --severity=error`: All individual scripts PASS (main script timed out at warning level)
+- Unit tests: 83/83 PASS (config:34, dryrun:24, retry:10, rollback:8, verify:7)
+- Node.js syntax: PASS
+- YAML validation: PASS
