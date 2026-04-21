@@ -376,10 +376,10 @@ rollback_internal() {
             rollback_status="${rollback_status}boot_restored "
             log_info "Boot device restored successfully"
         else
-            # SIP likely blocking
-            warn "rollback_internal: bless failed (SIP may be enabled)"
-            warn "rollback_internal: Workaround: Boot to Recovery Mode (Cmd+R), run 'csrutil enable --without nvram', then retry"
-            rollback_status="${rollback_status}boot_failed(SIP) "
+            # bless may fail on this hardware/firmware
+            warn "rollback_internal: bless failed — firmware may not support NVRAM boot device changes"
+            warn "rollback_internal: Workaround: Use keyboard Option key at startup to select boot device, or System Preferences → Startup Disk"
+            rollback_status="${rollback_status}boot_failed(firmware) "
         fi
     fi
 
