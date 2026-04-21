@@ -28,6 +28,17 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
 - [Phase 3: Integration and System Testing](#phase-3-integration-and-system-testing)
 - [Phase 4: Best Practices and Patterns](#phase-4-best-practices-and-patterns)
 - [Phase 5: Execution and Validation](#phase-5-execution-and-validation)
+  - [5.4 VM Integration Test (Deferred to Phase 5.5)](#54-vm-integration-test-deferred-to-phase-55)
+  - [5.5 Logging Verification](#55-logging-verification)
+- [Phase 5.5: VM Integration Test](#phase-55-vm-integration-test)
+  - [5.5.1 Build VM Test ISO](#551-build-vm-test-iso)
+  - [5.5.2 Create VirtualBox VM](#552-create-virtualbox-vm)
+  - [5.5.3 Start Webhook Monitor](#553-start-webhook-monitor)
+  - [5.5.4 Run VM Installation](#554-run-vm-installation)
+  - [5.5.5 Verify Installation Completion via SSH](#555-verify-installation-completion-via-ssh)
+  - [5.5.6 Serial Log Deep Analysis](#556-serial-log-deep-analysis)
+  - [5.5.7 Webhook Event Verification](#557-webhook-event-verification)
+  - [5.5.8 Cleanup](#558-cleanup)
 - [Phase 6: Refactoring and Simplification](#phase-6-refactoring-and-simplification)
 - [Phase 7: Self-Improvement and Coverage Gap Analysis](#phase-7-self-improvement-and-coverage-gap-analysis)
 - [Iterative Fix and Test Cycle](#iterative-fix-and-test-cycle)
@@ -1326,17 +1337,11 @@ Test macpro-monitor/server.js independently:
 - Test WebSocket refresh: verify dashboard auto-refreshes every 3 seconds
 - Test body size limit: POST >256KB, verify 413 response
 
-### 5.4 VM Test Execution
-Build VM test ISO: `cd vm-test && sudo ./build-iso-vm.sh`
-Create VM: `cd vm-test && sudo ./create-vm.sh`
-Run VM test: `./test-vm.sh` (monitors VM serial console for DKMS compilation success/failure)
-Verify serial log at `/tmp/vmtest-serial.log` contains expected progress stages
-Verify webhook events received by macpro-monitor during VM test
-Verify autoinstall-vm.yaml produces valid YAML (per Phase 1.6 validation)
-Verify VM test completes all DKMS compilation and driver installation phases
-Verify VM test Ethernet networking works (enp0s3)
-Verify VM test WiFi driver compilation succeeds (non-fatal — no Broadcom HW in VM)
-Clean up: `./create-vm.sh --force` to remove VM for next test
+### 5.4 VM Integration Test (Deferred to Phase 5.5)
+
+The VM integration test is deferred to **Phase 5.5** to avoid spinning a VM on every 0-5 bug fix iteration. Phases 0-5 focus on static analysis, functional verification, and dry-run testing — the VM test only runs once those phases pass clean.
+
+See **Phase 5.5** for the full VM integration test procedure.
 
 ### 5.5 Logging Verification
 Verify multi-target logging writes to all configured targets:
@@ -1350,6 +1355,295 @@ Verify multi-target logging writes to all configured targets:
 
 ---
 
+## PHASE 5.5: VM INTEGRATION TEST
+
+**This phase ONLY executes after Phases 0–5 all pass with zero P0, P1, P2 findings.** The VM integration test is the ONLY way to verify the autoinstall works end-to-end. It is deliberately separated from Phase 5 to avoid spinning a VM on every bug-fix iteration — VM tests are expensive (30+ minutes, 30GB+ disk) and should only run when static analysis and dry-run testing have already confirmed the code is correct.
+
+**Gate:** Do NOT start Phase 5.5 until ALL of the following are true:
+- Phase 0: Architecture model complete, no P0 issues
+- Phase 1: Zero P0, zero P1 findings
+- Phase 2: All deployment methods produce correct output, no P0/P1 findings
+- Phase 3: No P0/P1 integration issues
+- Phase 4: No P0/P1 security findings
+- Phase 5: All SAFE-classified tests pass, dry-run deployment paths complete
+
+**If Phase 5.5 uncovers bugs:** Fix them, then restart from Phase 0 (NOT just Phase 5.5 — a bug found in VM testing may have static analysis signatures that Phases 0-5 should have caught).
+
+**Prerequisites:**
+- VirtualBox installed and `VBoxManage` in PATH
+- Stock Ubuntu 24.04.4 Server ISO in `prereqs/` directory
+- `sshpass` available for automated SSH log grabbing
+- Node.js available for the webhook monitor
+- At least 30GB free disk space (ISO ~3.5GB, VM disk 25GB, staging ~3GB)
+
+### 5.5.1 Build VM Test ISO
+
+```bash
+sudo ./lib/build-iso.sh --vm
+```
+
+**Verify:**
+- ISO exists at `~/.Ubuntu_Deployment/ubuntu-vmtest.iso`
+- ISO size is reasonable (~3-4GB)
+- `xorriso` extraction completed without errors
+- Build log shows "VM Test Mode" prefix
+- GRUB config includes `console=ttyS0,115200` in kernel command line
+- No `__REPLACE__` placeholders remain in the generated autoinstall.yaml
+- autoinstall.yaml uses `fulldisk` storage (no `preserve:` entries)
+- autoinstall.yaml uses `ethernet` network (enp0s3, not wlp*/wl*)
+- Webhook URL is `http://10.0.2.2:8081/webhook` (VirtualBox NAT host gateway)
+
+### 5.5.2 Create VirtualBox VM
+
+```bash
+cd tests/vm && sudo ./create-vm.sh
+```
+
+**Verify:**
+- VM `macpro-vmtest` appears in `VBoxManage list vms`
+- VM has EFI firmware (not BIOS)
+- VM has 4 CPUs, 4.5GB RAM
+- VM has serial port UART1 configured: `--uart1 0x3F8 4 --uartmode1 file /tmp/vmtest-serial.log`
+- VM has NAT networking with SSH port forward: host 2222 → guest 22
+- VM disk is at the correct path (VirtualBox default machine folder, NOT the project directory)
+- ISO is attached as IDE DVD
+
+**Critical: Serial Console Configuration**
+
+The VM MUST have UART1 outputting to `/tmp/vmtest-serial.log`. This is the primary mechanism for observing the installation without a display. Verify:
+- `VBoxManage showvminfo macpro-vmtest | grep "UART 1"` shows the serial port configuration
+- The file `/tmp/vmtest-serial.log` will be created when the VM starts
+- The autoinstall kernel command line includes `console=ttyS0,115200` which directs all kernel and installer output to serial
+
+### 5.5.3 Start Webhook Monitor
+
+```bash
+cd macpro-monitor && PORT=8081 ./start.sh
+# Or use test-vm.sh:
+./tests/vm/test-vm.sh monitor
+```
+
+**Verify:**
+- Monitor server starts on port 8081
+- Webhook endpoint accessible at `http://localhost:8081/webhook`
+- Dashboard accessible at `http://localhost:8081/`
+
+### 5.5.4 Run VM Installation
+
+```bash
+cd tests/vm && ./test-vm.sh run
+# Or manually: VBoxManage startvm macpro-vmtest --type headless
+```
+
+**Monitor the installation in real-time:**
+
+```bash
+# Watch serial log (kernel + Subiquity output):
+tail -f /tmp/vmtest-serial.log
+
+# Watch webhook events:
+curl -s http://localhost:8081/api/progress | python3 -m json.tool
+
+# Take screenshots (if VM has graphics):
+./tests/vm/test-vm.sh screenshot
+```
+
+**Serial log timeline — the agent MUST verify these stages appear in `/tmp/vmtest-serial.log`:**
+
+| Stage | Serial Log Marker | Timeout |
+|-------|-------------------|---------|
+| VM boot, GRUB menu | `GNU GRUB` or `menuentry` | 30s |
+| Kernel boot | `Linux version 6.8.0` | 60s |
+| Subiquity installer start | `subiquity` or `curtin` | 120s |
+| Early-commands begin | `macpro-pkgs` or `early-commands` | 180s |
+| Driver DKMS build | `dkms` or `wl.ko` | 300s (5 min) |
+| Network config (ethernet) | `enp0s3` or `DHCP` | 60s after network |
+| Storage provisioning | `curtin` or `partition` | 120s |
+| Late-commands begin | `late-commands` or `macpro-install` | 300s |
+| GRUB install | `grub-install` | 60s |
+| System reboot | `reboot: Power down` or `systemd-shutdown` | 60s |
+| Post-reboot SSH available | SSH on port 2222 | 300s (5 min) |
+
+**If any stage is missing from the serial log after its timeout expires:**
+1. Take a screenshot: `./tests/vm/test-vm.sh screenshot`
+2. Check if the VM is still running: `VBoxManage showvminfo macpro-vmtest | grep State`
+3. Check last 200 lines of serial log for errors: `tail -200 /tmp/vmtest-serial.log`
+4. Document the failure stage and any error messages
+
+### 5.5.5 Verify Installation Completion via SSH
+
+After SSH becomes available (port 2222), run comprehensive verification:
+
+```bash
+# SSH into the VM
+ssh -p 2222 ubuntu@localhost
+
+# Or use the test script:
+./tests/vm/test-vm.sh ssh
+```
+
+**Mandatory verification commands (run on the installed VM):**
+
+```bash
+# 1. DKMS status — wl driver MUST show "installed"
+sudo dkms status
+
+# 2. WiFi driver module (non-fatal — no Broadcom HW in VM)
+lsmod | grep wl
+# Expected: module loads but may not associate (no hardware)
+
+# 3. Network connectivity
+ip addr show enp0s3
+ping -c 3 google.com
+
+# 4. Disk layout verification
+lsblk
+# Expected: /dev/sda with EFI, /boot, / partitions (no macOS partitions)
+
+# 5. Kernel version
+uname -r
+# Expected: 6.8.0-100-generic or whichever kernel the ISO was built with
+
+# 6. Kernel pin verification
+cat /etc/apt/preferences.d/99-pin-kernel
+sudo apt-mark showhold | grep linux
+
+# 7. Netplan configuration
+cat /etc/netplan/*.yaml
+# Expected: enp0s3 with DHCP, no match: clause, cloud-init disabled
+
+# 8. Cloud-init network config disabled
+cat /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+# Expected: network: {config: disabled}
+
+# 9. UFW firewall
+sudo ufw status
+# Expected: Status: active, 22/tcp ALLOW
+
+# 10. GRUB configuration
+cat /etc/default/grub.d/macpro.cfg
+# Expected: nomodeset amdgpu.si.modeset=0 console=ttyS0,115200
+```
+
+**Log collection (automated via test-vm.sh or manual):**
+
+```bash
+./tests/vm/test-vm.sh logs
+# Saves to tests/vm/vm-logs/:
+#   macpro.log, curtin-install.log, subiquity.log, dmesg.log,
+#   dkms-status.log, lsmod.log, lspci.log, netplan-configs.txt,
+#   wl-module.txt
+```
+
+**Critical success criteria — the VM test PASSES only if ALL of the following are true:**
+
+1. Serial log contains all 11 stages from the timeline table above
+2. SSH is reachable on port 2222 within 5 minutes of VM start
+3. `dkms status` shows broadcom-sta module installed (non-fatal if DKMS attempted but no Broadcom hardware)
+4. Ethernet networking works (enp0s3 has IP, can ping external host)
+5. Disk layout has no macOS/APFS partitions (fulldisk)
+6. Netplan config uses enp0s3 with DHCP, no `match:` clause
+7. Cloud-init network config is disabled
+8. UFW is active with SSH allowed
+9. GRUB command line includes `nomodeset` and `console=ttyS0,115200`
+10. No errors in `/var/log/macpro-install/late-commands.log`
+
+**Non-fatal conditions (VM test passes but logs warnings):**
+- `wl.ko` driver loads but doesn't associate (no Broadcom hardware in VM — expected)
+- `lspci` doesn't show Broadcom device (expected in VM)
+- DKMS build for `wl` shows warning about missing hardware (expected)
+
+**Fatal conditions (VM test FAILS):**
+- DKMS build exits with error code (driver source compilation failed)
+- Subiquity crashes or halts (storage or network misconfiguration)
+- SSH not reachable within 5 minutes of reboot (broken GRUB or network)
+- Ethernet not functional (enp0s3 has no IP or can't ping out)
+- Disk layout has APFS or macOS partitions (dual-boot config leaked into VM test)
+
+### 5.5.6 Serial Log Deep Analysis
+
+Beyond verifying stages exist, the agent MUST review the serial log for ERRORs, WARNINGs, and failures:
+
+```bash
+# Extract all error-level messages
+grep -iE 'error|fail|panic|oops|warning' /tmp/vmtest-serial.log | grep -v 'expected\|non-fatal\|DEBUG'
+
+# Find DKMS build output
+grep -A5 -B5 'dkms\|DKMS\|wl.ko\|broadcom' /tmp/vmtest-serial.log
+
+# Find network configuration events
+grep -A3 -B3 'enp0s3\|netplan\|DHCP\|networkd' /tmp/vmtest-serial.log
+
+# Find Subiquity status events
+grep -iE 'subiquity.*event|curtin.*install|install.*complete' /tmp/vmtest-serial.log
+
+# Find late-commands execution
+grep -A10 'late-commands\|macpro-install\|macpro-pkgs' /tmp/vmtest-serial.log
+```
+
+**For each ERROR or WARNING found:**
+1. Classify as fatal or non-fatal (see criteria in §5.5.5)
+2. Trace the error back to its source (which `- |` block in autoinstall.yaml, which package, which command)
+3. Determine if the error exists in production autoinstall.yaml too (not just VM-specific)
+4. If production-affecting: fix the root cause, rebuild ISO, and restart from Phase 0
+5. If VM-specific: document the difference and whether it needs a code change
+
+### 5.5.7 Webhook Event Verification
+
+During the VM installation, the webhook monitor should receive progress events. Verify:
+
+```bash
+# Check all events received
+curl -s http://localhost:8081/api/progress | python3 -m json.tool
+
+# Expected event stages (from AGENTS.md progress list):
+# prep-init(2%), prep-headers(5%), prep-toolchain(10%), prep-dkms(13-15%),
+# prep-wifi(18-22%), prep-ssh(23-25%), late-init(30%), late-headers(35%),
+# late-libs(45%), late-tools(55%), late-dkms(60-65%), late-netplan(70-73%),
+# late-grub(75-78%), late-mdns(80-83%), late-hold(85-88%), late-sudo(90%),
+# late-logs(95%), complete(100%)
+```
+
+**Verify webhook events:**
+- Events are received in chronological order with increasing progress
+- No event uses `{name, event_type, origin}` fields (those trigger built-in Subiquity handler)
+- All events use `{progress, stage, status, message}` format
+- Final event shows `status: "complete"` with `progress: 100`
+
+### 5.5.8 Cleanup
+
+After successful verification:
+
+```bash
+# Power off and destroy VM
+cd tests/vm && ./test-vm.sh destroy
+
+# Stop webhook monitor
+./macpro-monitor/stop.sh
+
+# Remove serial log (contains sensitive data)
+rm -f /tmp/vmtest-serial.log
+
+# Remove VM test ISO (optional — keep for re-runs)
+# rm -f ~/.Ubuntu_Deployment/ubuntu-vmtest.iso
+```
+
+**If the VM test FAILS:** Do NOT destroy the VM. Save all logs first:
+```bash
+# Save serial log
+cp /tmp/vmtest-serial.log tests/vm/vm-logs/serial-failure.log
+
+# Grab SSH logs (if reachable)
+./tests/vm/test-vm.sh logs
+
+# Take final screenshot
+./tests/vm/test-vm.sh screenshot
+```
+
+Then diagnose the failure from the logs, fix the root cause, rebuild the ISO, and restart from **Phase 0** (not just Phase 5.5 — VM bugs may have static analysis signatures that earlier phases should catch).
+
+---
+
 ## PHASE 6: REFACTORING AND SIMPLIFICATION
 
 **This phase only executes once Phases 0–5 all pass with zero P0, P1, P2 findings.** Its purpose is to identify opportunities to simplify, consolidate, and improve code clarity — not to find new bugs, but to reduce maintenance burden and cognitive complexity.
@@ -1360,7 +1654,8 @@ Verify multi-target logging writes to all configured targets:
 - Phase 2: All deployment methods produce correct output, no P0/P1 findings
 - Phase 3: No P0/P1 findings, all safety boundaries verified
 - Phase 4: No P0/P1 security or accuracy findings
-- Phase 5: All SAFE-classified tests pass, VM test completes successfully
+- Phase 5: All SAFE-classified tests pass, dry-run deployment paths complete
+- Phase 5.5: VM integration test completes successfully (all 10 criteria in §5.5.5)
 
 If Phase 6 identifies changes, those changes are implemented, committed, and the ENTIRE cycle restarts from Phase 0 (because refactoring can introduce regressions).
 
@@ -1619,7 +1914,8 @@ After each phase, provide:
 - **Phase 2 PASS:** All deployment methods produce correct output in dry-run mode, no P0/P1 findings
 - **Phase 3 PASS:** No P0/P1 findings, all safety boundary classifications verified
 - **Phase 4 PASS:** No P0/P1 security findings, no P0/P1 accuracy findings
-- **Phase 5 PASS:** All SAFE-classified tests pass, VM test completes with DKMS success
+- **Phase 5 PASS:** All SAFE-classified tests pass, dry-run deployment paths complete
+- **Phase 5.5 PASS:** VM integration test completes with all 10 success criteria met (§5.5.5), DKMS builds successfully
 - **Phase 6 PASS:** No remaining simplifications that reduce code by 10+ lines or nesting by 2+ levels; all refactoring changes verified via Phases 0-5 re-run with zero regressions
 
 ---
@@ -1661,7 +1957,10 @@ Before completion, verify:
 - [ ] Node.js monitor tested — XSS, rate limiting, body size, persistence
 - [ ] macpro-monitor CORS and security headers verified
 - [ ] Server.js stall detection and graceful shutdown verified
-- [ ] VM test executed and DKMS compilation verified
+- [ ] VM integration test executed per Phase 5.5 (all 10 success criteria met)
+- [ ] VM serial log contains all 11 installation stages
+- [ ] DKMS compilation verified in VM (non-fatal: wl module loads but no hardware)
+- [ ] VM SSH verification: networking, disk layout, kernel pin, netplan, UFW, GRUB
 - [ ] Multi-target logging verified (serial + file + webhook)
 - [ ] Journal state machine tested (init, set, destroy, rollback, crash recovery)
 - [ ] Config round-trip tested (parse_conf → save_config → parse_conf)
