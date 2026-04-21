@@ -99,7 +99,7 @@ autoinstall:
               $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
               $PKGS/libsframe1_*.deb $PKGS/libgprofng0_*.deb \
               $PKGS/binutils_*.deb $PKGS/binutils-x86-64-linux-gnu_*.deb \
-              $PKGS/libgcc-s1_*.deb $PKGS/gcc-13-base_*.deb \
+              $PKGS/libgcc-s1_*.deb $PKGS/gcc-13-base_*.deb $PKGS/gcc-14-base_*.deb \
               $PKGS/libisl23_*.deb $PKGS/libmpc3_*.deb $PKGS/libmpfr6_*.deb \
               $PKGS/libgcc-13-dev_*.deb $PKGS/cpp-13_*.deb \
               $PKGS/libcc1-0_*.deb $PKGS/cpp-13-x86-64-linux-gnu_*.deb \
@@ -476,7 +476,7 @@ autoinstall:
         $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
         $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
         $PKGS/libsframe1_*.deb $PKGS/libgprofng0_*.deb \
-        $PKGS/libgcc-s1_*.deb $PKGS/gcc-13-base_*.deb \
+        $PKGS/libgcc-s1_*.deb $PKGS/gcc-13-base_*.deb $PKGS/gcc-14-base_*.deb \
         $PKGS/libisl23_*.deb $PKGS/libmpfr6_*.deb $PKGS/libmpc3_*.deb \
         $PKGS/libstdc++6_*.deb $PKGS/libstdc++-13-dev_*.deb \
         $PKGS/libcrypt-dev_*.deb $PKGS/libc-dev-bin_*.deb \
