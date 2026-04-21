@@ -182,11 +182,13 @@ _log_to_terminal() {
     local color="$3"
     local severity_name="$4"
 
-    # Check if stdout is a tty
-    if [ -t 1 ]; then
-        printf '%b\n' "${color}[${severity_name}]${NC} ${message}"
+    # Write to stderr — log messages must NEVER go to stdout
+    # because any function returning a value via echo will have
+    # its output corrupted if log_info also writes to stdout
+    if [ -t 2 ]; then
+        printf '%b\n' "${color}[${severity_name}]${NC} ${message}" >&2
     else
-        echo "[${severity_name}] ${message}"
+        echo "[${severity_name}] ${message}" >&2
     fi
 }
 
