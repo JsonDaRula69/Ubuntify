@@ -951,10 +951,9 @@ prompt_deploy_mode() {
 
         if [ "$AGENT_MODE" -ne 1 ]; then
             local remote_sudo_warning
-            remote_sudo_warning="The remote sudo password will be stored in deploy.conf"
-            remote_sudo_warning="${remote_sudo_warning} (encrypted if encryption is enabled)."
-            remote_sudo_warning="${remote_sudo_warning}\n\nFor security, use a dedicated user account on the Mac Pro"
-            remote_sudo_warning="${remote_sudo_warning} with minimal sudo privileges."
+            remote_sudo_warning="The remote sudo password will be stored in deploy.conf (encrypted if"
+            remote_sudo_warning="${remote_sudo_warning} encryption is enabled).\n\nFor security, backup your Mac Pro, use a dedicated user account,"
+            remote_sudo_warning="${remote_sudo_warning} and remove any sensitive data."
             tui_msgbox "Security Notice" "$remote_sudo_warning"
 
             if [ -z "$REMOTE_SUDO_PASSWORD" ]; then
