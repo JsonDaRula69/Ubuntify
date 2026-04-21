@@ -757,11 +757,11 @@ EOF
 
     local summary=""
     summary="Configuration Summary:\n\n"
-    summary="${summary}Username:    ${USERNAME}\n"
-    summary="${summary}Hostname:    ${HOSTNAME}\n"
-    summary="${summary}Real Name:   ${REALNAME}\n"
+    summary="${summary}Username:    ${USERNAME:-(not set)}\n"
+    summary="${summary}Hostname:    ${HOSTNAME:-(not set)}\n"
+    summary="${summary}Real Name:   ${REALNAME:-(not set)}\n"
     summary="${summary}WiFi SSID:   ${WIFI_SSID:-(not set)}\n"
-    summary="${summary}Webhook:     ${WEBHOOK_HOST}:${WEBHOOK_PORT}\n"
+    summary="${summary}Webhook:     ${WEBHOOK_HOST:-(not set)}:${WEBHOOK_PORT:-8080}\n"
     summary="${summary}SSH Keys:    ${ssh_key_count} key(s)\n"
     summary="${summary}\n"
     summary="${summary}Deployment Mode:  ${DEPLOY_MODE:-local}\n"
@@ -1276,10 +1276,6 @@ menu_deploy_select() {
         [ "$network" = "cancel" ] && return 1
         NETWORK_TYPE="$network"
     fi
-
-    if ! show_pre_execution_summary "$STORAGE_LAYOUT" "$NETWORK_TYPE"; then
-        return 1
-    fi
 }
 
 _run_deploy_method() {
@@ -1295,6 +1291,10 @@ _run_deploy_method() {
 
 menu_deploy() {
     if ! menu_deploy_select; then
+        return 1
+    fi
+
+    if ! show_pre_execution_summary "$STORAGE_LAYOUT" "$NETWORK_TYPE"; then
         return 1
     fi
 
@@ -2126,6 +2126,9 @@ main() {
         fi
         if ! validate_inputs; then
             die "Invalid configuration — see errors above"
+        fi
+        if ! show_pre_execution_summary "$STORAGE_LAYOUT" "$NETWORK_TYPE"; then
+            die "Deployment cancelled"
         fi
         save_config
         local deploy_rc=0
