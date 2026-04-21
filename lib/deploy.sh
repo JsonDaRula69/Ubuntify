@@ -103,10 +103,7 @@ _phase_extract_iso() {
         remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
         echo "[ OK ] Remote ISO extraction complete" >&2
         if ! remote_mac_exec verify_iso_extraction "$ESP_MOUNT" 2>/dev/null; then
-            warn "ISO extraction verification failed on remote host"
-            echo "[....] Extracting ISO contents (retry)..." >&2
-            remote_mac_sudo retry_xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$ESP_MOUNT" 2>/dev/null || \
-                die "Remote ISO extraction failed on retry"
+            die "ISO extraction verification failed on remote host — cannot retry (remote ISO deleted)"
         fi
     else
         echo "[....] Extracting ISO contents..." >&2
@@ -640,13 +637,10 @@ _phase_extract_iso_usb() {
         remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
         echo "[ OK ] Remote ISO extraction complete" >&2
         if ! remote_mac_exec verify_iso_extraction "$USB_MOUNT" 2>/dev/null; then
-            warn "ISO extraction verification failed on remote host"
-            echo "[....] Extracting ISO contents (retry)..." >&2
-            remote_mac_sudo retry_xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$USB_MOUNT" 2>/dev/null || \
-                die "Remote ISO extraction failed on retry"
+            die "ISO extraction verification failed on remote host — cannot retry (remote ISO deleted)"
         fi
     else
-        if ! remote_mac_exec retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null; then
+        if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null; then
             echo "[FAIL] ISO extraction failed" >&2
             die "Failed to extract ISO contents"
         fi
@@ -654,8 +648,8 @@ _phase_extract_iso_usb() {
         if ! verify_iso_extraction "$USB_MOUNT"; then
             warn "ISO extraction verification failed, cleaning and retrying..."
             echo "[....] Retrying ISO extraction..." >&2
-            remote_mac_exec rm -rf "${USB_MOUNT:?}"/* 2>/dev/null || true
-            if ! remote_mac_exec retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null; then
+            rm -rf "${USB_MOUNT:?}"/* 2>/dev/null || true
+            if ! retry_xorriso -osirrox on -indev "$ISO_PATH" -extract / "$USB_MOUNT" 2>/dev/null; then
                 echo "[FAIL] ISO extraction failed on retry" >&2
                 error "ISO extraction verification failed after retry"
                 return 1

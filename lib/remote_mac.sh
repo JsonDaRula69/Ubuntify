@@ -154,9 +154,8 @@ remote_mac_preflight() {
         tui_menu "Missing Prerequisites" \
             "The following commands are missing on $host: $missing" \
             "Attempt to install via Homebrew" "install" \
-            "Abort deployment" "abort" || answer="abort"
-        local answer
-        answer="$_TUI_RESULT"
+            "Abort deployment" "abort" || true
+        local answer="${_TUI_RESULT:-abort}"
 
         case "$answer" in
             install)

@@ -40,7 +40,7 @@ check_recovery_health() {
 
     log "Recovery volume found: /dev/$RECOVERY_VOLUME"
 
-    RECOVERY_UUID=$(remote_mac_exec diskutil info "/dev/$RECOVERY_VOLUME" 2>/dev/null | grep -i "volume UUID" | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' | head-1 || true)
+    RECOVERY_UUID=$(remote_mac_exec diskutil info "/dev/$RECOVERY_VOLUME" 2>/dev/null | grep -i "volume UUID" | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' | head -1 || true)
     if [ -n "$RECOVERY_UUID" ]; then
         log "Recovery UUID: $RECOVERY_UUID"
     fi
@@ -77,22 +77,22 @@ analyze_disk_layout() {
     local _internal_disk_val
     local _apfs_container_val
 
-    _internal_disk_val=$(remote_mac_exec diskutil list | grep -E 'internal.*physical' | head-1 | grep -oE '/dev/disk[0-9]+' || true)
+    _internal_disk_val=$(remote_mac_exec diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
     [ -n "$_internal_disk_val" ] || die "Cannot identify internal disk"
 
     log "Internal disk: $_internal_disk_val"
     remote_mac_exec diskutil list "$_internal_disk_val"
     echo ""
 
-    APFS_PARTITION=$(remote_mac_exec diskutil list "$_internal_disk_val" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head-1 || true)
+    APFS_PARTITION=$(remote_mac_exec diskutil list "$_internal_disk_val" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
     if [ -n "$APFS_PARTITION" ]; then
-        _apfs_container_val=$(remote_mac_exec diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head-1 || true)
+        _apfs_container_val=$(remote_mac_exec diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head -1 || true)
     fi
     if [ -z "$_apfs_container_val" ]; then
-        _apfs_container_val=$(remote_mac_exec diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head-1 || true)
+        _apfs_container_val=$(remote_mac_exec diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head -1 || true)
     fi
     if [ -n "$_apfs_container_val" ]; then
-        FREE_SPACE=$(remote_mac_exec diskutil apfs list 2>/dev/null | grep -A5 "Capacity" | grep "Available" | grep -oE '[0-9]+.*B' | head-1 || true)
+        FREE_SPACE=$(remote_mac_exec diskutil apfs list 2>/dev/null | grep -A5 "Capacity" | grep "Available" | grep -oE '[0-9]+.*B' | head -1 || true)
         log "APFS partition: /dev/${APFS_PARTITION:-unknown}"
         log "APFS container: /dev/$_apfs_container_val"
         log "Free space: ${FREE_SPACE:-unknown}"

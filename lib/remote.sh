@@ -119,8 +119,7 @@ remote_kernel_unpin() {
     host=$(remote__get_host "${1:-}")
 
     warn "This will REMOVE kernel holds and pinning (Phase 2 of update process)"
-    read -rp "Type 'yes' to confirm: " confirm
-    if [ "$confirm" != "yes" ]; then
+    if ! tui_confirm "Kernel Unpin" "Remove all kernel holds and apt pinning? This enables kernel updates."; then
         log "Operation cancelled"
         return 1
     fi
@@ -153,8 +152,7 @@ remote_kernel_repin() {
     host=$(remote__get_host "${1:-}")
 
     warn "This will RE-APPLY kernel holds and pinning for the CURRENT kernel"
-    read -rp "Type 'yes' to confirm: " confirm
-    if [ "$confirm" != "yes" ]; then
+    if ! tui_confirm "Kernel Pin" "Re-apply kernel holds and apt pinning for the current kernel?"; then
         log "Operation cancelled"
         return 1
     fi
@@ -199,7 +197,7 @@ Package: linux-modules-${abi}*
 Pin: release o=Ubuntu
 Pin-Priority: 1001"
     echo "$prefs_content" | dry_run_exec "Writing kernel apt preferences on $host" \
-        sh -c "remote__exec '$host' 'sudo tee /etc/apt/preferences.d/99-pin-kernel > /dev/null'"
+        remote__exec "$host" "sudo tee /etc/apt/preferences.d/99-pin-kernel > /dev/null"
 
     dry_run_exec "Disabling apt sources by commenting out on $host" \
         remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
@@ -509,8 +507,7 @@ remote_non_kernel_update() {
     host=$(remote__get_host "${1:-}")
 
     warn "This will update non-kernel packages (security updates only)"
-    read -rp "Type 'yes' to confirm: " confirm
-    if [ "$confirm" != "yes" ]; then
+    if ! tui_confirm "Security Update" "Install non-kernel security updates?"; then
         log "Operation cancelled"
         return 1
     fi
@@ -580,7 +577,8 @@ remote_health_check() {
     echo ""
 
     echo "=== Disk Usage ==="
-    remote__exec "$host" "df -h /" | tail -1 || errors=$((errors + 1))
+    disk_line=$(remote__exec "$host" "df -h / | tail -1") || errors=$((errors + 1))
+    echo "$disk_line"
     echo ""
 
     echo "=== DKMS Status ==="
@@ -616,8 +614,7 @@ remote_reboot() {
     host=$(remote__get_host "${1:-}")
 
     warn "This will REBOOT the remote machine $host"
-    read -rp "Type 'reboot' to confirm: " confirm
-    if [ "$confirm" != "reboot" ]; then
+    if ! tui_confirm "Reboot" "Reboot the remote machine $host?"; then
         log "Operation cancelled"
         return 1
     fi
@@ -770,7 +767,7 @@ remote_erase_macos() {
 $(remote__exec "$host" "lsblk -no NAME,MOUNTPOINT,FSTYPE,SIZE /dev/sda")
 EOF
 
-    macos_parts=$(remote__exec "$host" "sudo sgdisk -p /dev/sda | awk '\$3 ~ /7C3457EF|426F6F74|C12A7328/ || tolower(\$5) ~ /apfs|apple|hfs/ {print \$1}'") || true
+    macos_parts=$(remote__exec "$host" "sudo sgdisk -p /dev/sda | awk '\$5 ~ /^(AF0[0-9]|AB0[0-9])\$/ || tolower(\$6) ~ /apfs|apple|hfs/ || tolower(\$6) ~ /recovery|macintosh/ {print \$1}'") || true
 
     if [ -z "$macos_parts" ]; then
         log "No macOS partitions found on $host"
@@ -854,8 +851,7 @@ remote_boot_macos() {
     host=$(remote__get_host "${1:-}")
 
     warn "This will reboot $host into macOS"
-    read -rp "Type 'macos' to confirm: " confirm
-    if [ "$confirm" != "macos" ]; then
+    if ! tui_confirm "Boot to macOS" "Reboot the remote machine into macOS?"; then
         log "Operation cancelled"
         return 1
     fi
