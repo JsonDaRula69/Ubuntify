@@ -1,4 +1,4 @@
-# Mac Pro 2013 Ubuntu Autoinstall - AGENTS.md
+# Ubuntify - Mac Pro Conversion and Management Tool - AGENTS.md
 
 > **This document is for LLM agents and automated tools.** It describes architecture, constraints, code conventions, and implementation details that agents need to work effectively. For human-oriented usage instructions, troubleshooting, and examples, see `README.md`. For a record of what changed between versions, see `CHANGELOG.md`.
 >
@@ -46,7 +46,8 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 │   ├── deploy.sh                    # 7-phase checkpointed deployment with journal state
 │   ├── remote_mac.sh                # Remote execution wrapper (SSH/local routing based on DEPLOY_MODE)
 │   └── revert.sh                    # revert_changes, handle_revert_flag, journal-aware rollback
-├── packages/                        # .deb files for driver compilation (34 debs)
+│   ├── discover.sh                  # Bonjour/mDNS host discovery, hostname resolution
+├── packages/                        # .deb files for driver compilation (36 debs)
 │   ├── broadcom-sta-dkms_*.deb      # Broadcom WiFi driver source
 │   ├── dkms_*.deb                   # Dynamic Kernel Module Support
 │   ├── linux-headers-6.8.0-100*     # Kernel headers matching ISO kernel (6.8.0-100-generic)
@@ -348,6 +349,7 @@ const MAX_UPDATES = 200;
 - Tags are assigned in chronological order (oldest commit = lowest N)
 - Version series MUST stay on v0.2.* — do NOT iterate to v0.3.* or higher without explicit user permission
 - When creating a commit, immediately tag it with the next sequential v0.2.N number
+- Runtime version is derived via `git describe --tags` (set as `APP_VERSION` in prepare-deployment.sh); falls back to `"dev"` if not in a git repo
 
 ## deploy.conf Configuration
 

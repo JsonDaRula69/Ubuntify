@@ -1,4 +1,4 @@
-# Mac Pro 2013 Ubuntu 24.04 — Autoinstall Deployment
+# Ubuntify — Mac Pro 2013 Ubuntu Autoinstall
 
 > **This document is for humans.** It covers how to use the deployment tool, what each feature does, and how to troubleshoot problems. For machine-oriented architecture details, code conventions, and constraint specifications, see `AGENTS.md`. For a record of what changed between versions, see `CHANGELOG.md`.
 >
@@ -48,7 +48,7 @@ Mac Pro has no Ethernet. Broadcom BCM4360 WiFi requires a proprietary `wl` drive
 | `lib/autoinstall.sh` | Template engine: substitutes placeholders from `deploy.conf` into `autoinstall.yaml` |
 | `lib/build-iso.sh` | Builds modified ISO: extract, overlay, repack preserving EFI boot (`--vm` for VM test) |
 | `lib/deploy.conf.example` | Config template: copy to `~/.Ubuntu_Deployment/deploy.conf` and customize |
-| `packages/` | .deb files for driver compilation (34 packages) |
+| `packages/` | .deb files for driver compilation (36 packages) |
 | `packages/dkms-patches/` | 6 DKMS patches for kernel 6.8+ compatibility (series file + *.patch) |
 | `tests/` | Unit tests (`run_tests.sh`) and VM test environment |
 | `ssh/` | SSH config template (`config.example`) for `macpro` and `macpro-linux` hosts |
@@ -88,20 +88,6 @@ sudo ./prepare-deployment.sh
 
 # Remote mode (control Mac Pro from another machine)
 ./prepare-deployment.sh --deploy-mode remote --target-host macpro
-```
-
-## Quick Start
-
-### Build the ISO (required for all methods)
-
-```bash
-sudo ./lib/build-iso.sh
-```
-
-### Deploy (interactive menu)
-
-```bash
-sudo ./prepare-deployment.sh
 ```
 
 Select deployment method:
