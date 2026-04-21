@@ -12,6 +12,7 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
 - [Phase 1: Static Code Analysis](#phase-1-static-code-analysis)
   - [1.1.1 TUI Module Raw Fallback Audit](#111-tui-module-raw-fallback-audit)
   - [1.1.2 TUI Dialog Subshell and Trap Audit](#112-tui-dialog-subshell-and-trap-audit)
+  - [1.1.3 Logging Output Destination Audit](#113-logging-output-destination-audit)
   - [1.7 Systematic Execution Path Walkthrough](#17-systematic-execution-path-walkthrough)
 - [Phase 2: Functional Behavior Testing](#phase-2-functional-behavior-testing)
   - [2.8 TUI Interactive Prompt Testing](#28-tui-interactive-prompt-testing)
@@ -191,6 +192,21 @@ TUI functions that set `trap ... EXIT` inside their body overwrite the main scri
   - tui_checklist dialog path: `items+=(tag label state)` — exactly 3 elements per item
   - tui_checklist whiptail path: `items+=(tag label state)` — exactly 3 elements per item
 - A trailing empty column (e.g., `items+=(tag label "")`) in menu mode causes dialog to render blank/duplicate entries — this is a P1 bug
+
+### 1.1.3 Logging Output Destination Audit
+
+**Log-to-stdout contamination audit (P0 — corrupts captured return values):**
+Any function that returns a value via `echo` (stdout) AND calls a log function has a data corruption bug when captured via `$(...)`. The `$(...)` captures ALL stdout — both the intended return value AND any log messages written to stdout. This produces output like `[INFO] message real_return_value` instead of `real_return_value`.
+
+- `grep -n 'printf\|echo' lib/logging.sh` — verify ALL terminal output goes to stderr (`>&2`), never stdout
+- Specifically check `_log_to_terminal()`: it MUST write to stderr. If it uses bare `printf` or `echo` without `>&2`, any `$(function_that_logs)` capture will be contaminated
+- `grep -rn 'log_info\|log_warn\|log_error\|log_debug\|log_fatal' lib/discover.sh lib/detect.sh lib/disk.sh` — any function in these files that also uses `echo` for return values IS a contamination bug if logging goes to stdout
+- General rule: **logging module output MUST go to stderr.** Functions return values via `echo` (stdout). These two channels must never mix.
+
+**$(...) capture audit (P0 — find all contamination-susceptible calls):**
+- `grep -rn '$(' lib/discover.sh lib/detect.sh lib/disk.sh` — any `$(command)` where `command` calls both `echo` and `log_*` is a contamination candidate
+- For each candidate, verify that logging goes to stderr (not stdout) so `$(...)` only captures `echo` output
+- Also check: do any functions use `echo` for BOTH logging AND return values? (e.g., `echo "status: ok"; echo "$result"` — the first echo pollutes the capture)
 
 ### 1.2 Variable and Scope Analysis
 **This section builds on Phase 0.2 (Variable Namespace Collision Map).** If Phase 0.2 found no collisions, this section focuses on the remaining checks: usage safety, input handling, and scope correctness. Do not re-audit collision findings from Phase 0.2.
@@ -1637,6 +1653,17 @@ Any first-run flow must present prompts in a specific logical order. Verify thes
 **Invariant 4: No prompt duplication across flow paths**
 - If a function collects user selections AND performs an action, and the caller also performs that same action, the action runs twice
 - Test: For every call from main() to a menu/function, verify the callee's scope (collect-only vs collect-and-execute) and ensure the caller doesn't redundantly execute
+
+**Invariant 5: Confirmation/summary AFTER all data collection**
+- The pre-execution summary (`show_pre_execution_summary`) and final confirmation prompt MUST appear AFTER `prompt_config()` completes — never before
+- Test: Trace the call sequence. If `show_pre_execution_summary` appears between `menu_deploy_select` and `prompt_config`, it will display blank/placeholder values for Username, WiFi, SSH Keys, etc. because the user hasn't been prompted for them yet
+- Test: Verify the summary function is NOT called inside a menu/selection function that runs before config gathering
+- General rule: **a summary function must NEVER be called from a function that is itself called before the data it summarizes has been collected**
+
+**Invariant 6: Config prompt functions must see empty/placeholder values as "not set"**
+- When using a template/example config (e.g., `deploy.conf.example` with `__REPLACE__` placeholders), the `prompt_config()` skip conditions must treat placeholder values as equivalent to empty
+- Test: `grep -c '__REPLACE__' lib/deploy.conf.example` — count all placeholder keys, then verify each one is either: (a) stripped to empty before `prompt_config()` runs, or (b) explicitly checked in `prompt_config()` with `[ "$VAR" = "__REPLACE__" ]`
+- Test: Also check for non-`__REPLACE__` placeholder patterns (e.g., `192.168.1.X` for WEBHOOK_HOST, `macpro-linux` for HOSTNAME) — these are "valid-looking but not user-configured" values that should trigger prompting on first-run
 
 **General test methodology — prompt sequence trace:**
 ```
