@@ -1988,7 +1988,7 @@ explore_environment() {
         boot_device=$(remote_mac_exec "bless --info --getboot 2>/dev/null | head -1 || echo 'Unable to determine'")
 
         local startup_disk
-        startup_disk=$(remote_mac_exec "systemsetup -getstartupdisk 2>/dev/null | awk -F': ' '{print \\\$2}' || echo 'Unable to determine'")
+        startup_disk=$(remote_mac_exec "systemsetup -getstartupdisk" 2>/dev/null | awk -F': ' '{print $2}' || echo "Unable to determine")
 
         local disk_info
         disk_info=$(remote_mac_exec "df -h /")
