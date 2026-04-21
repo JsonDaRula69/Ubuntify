@@ -574,20 +574,56 @@ tui_password() {
         fi
     else
         local width=66
+        local show_pass=0
         printf '\n' >&2
         printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))" >&2
         printf '    ║  %b%s%b%*s║\n' "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) '' >&2
         printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))" >&2
         printf '    ║  %b%s%b%*s║\n' "$CYAN" "$label" "$NC" $((width - ${#label} - 4)) '' >&2
         printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 "$width"))" >&2
-        printf '\n' >&2
         printf '    %b▸%b ' "$BRIGHT_CYAN" "$NC" >&2
-        local pass
-        if [ -t 0 ]; then
-            IFS= read -rs pass
-        else
-            IFS= read -rs pass < /dev/tty
-        fi
+        local pass=""
+        local char
+        local mask_stars=""
+        # Read one char at a time; show * per char; Ctrl+S toggles visibility
+        while IFS= read -r -n1 -s char; do
+            if [ -z "$char" ]; then
+                # Enter key (empty read with -n1)
+                break
+            elif [ "$char" = $'\003' ] || [ "$char" = $'\033' ]; then
+                # Ctrl-C or Esc — cancel
+                printf '\n' >&2
+                _TUI_RESULT=""
+                return 1
+            elif [ "$char" = $'\023' ]; then
+                # Ctrl+S — toggle show/hide
+                show_pass=$((1 - show_pass))
+                # Redraw: erase current display, reprint with new mask
+                local display_len=${#pass}
+                printf "\r%*s\r" $((display_len + 4)) '' >&2
+                if [ "$show_pass" -eq 1 ]; then
+                    printf '    %b▸%b %s' "$BRIGHT_CYAN" "$NC" "$pass" >&2
+                else
+                    printf '    %b▸%b %s' "$BRIGHT_CYAN" "$NC" "$mask_stars" >&2
+                fi
+            elif [ "$char" = $'\177' ] || [ "$char" = $'\010' ]; then
+                # Backspace / Delete
+                if [ -n "$pass" ]; then
+                    pass="${pass%?}"
+                    mask_stars="${mask_stars%?}"
+                    printf '\b \b' >&2
+                fi
+            else
+                pass="${pass}${char}"
+                mask_stars="${mask_stars}*"
+                if [ "$show_pass" -eq 1 ]; then
+                    printf '%s' "$char" >&2
+                else
+                    printf '*' >&2
+                fi
+            fi
+        done < /dev/tty
+        printf '\n\n    %b(Ctrl+S toggles password visibility)%b\n' "$DIM" "$NC" >&2
         printf '\n' >&2
         _TUI_RESULT="$pass"
         return 0
