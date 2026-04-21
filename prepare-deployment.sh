@@ -18,6 +18,11 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly ESP_NAME="CIDATA"
 readonly ESP_SIZE="5g"
 
+# Derive version from git tags (falls back to "dev" if not in a git repo or no tags)
+APP_VERSION="$(cd "$SCRIPT_DIR" && git describe --tags 2>/dev/null | sed 's/^v//' || echo "dev")"
+readonly APP_VERSION
+export APP_VERSION
+
 # Library path - can be overridden for testing
 readonly LIB_DIR="${LIB_DIR:-$SCRIPT_DIR/lib}"
 
@@ -1056,7 +1061,7 @@ decrypt_config() {
 show_help() {
     echo "Usage: sudo ./prepare-deployment.sh [OPTIONS]"
     echo ""
-    echo "Ubuntify - Mac Pro Conversion Tool v0.2.63"
+    echo "Ubuntify - Mac Pro Conversion Tool v${APP_VERSION}"
     echo ""
     echo "Options:"
     echo "  --dry-run             Show what would be done without making changes"
@@ -1163,7 +1168,7 @@ fi
 # ── Mode Selection ──
 
 select_mode() {
-    tui_ascii_header "Ubuntu 24.04 LTS · Mac Pro 2013"
+    tui_ascii_header "Ubuntu 24.04 LTS · Mac Pro 2013 · v${APP_VERSION}"
 
     if [ "$TUI_BACKEND" = "raw" ]; then
         local width=76
@@ -1476,7 +1481,7 @@ run_deploy_mode() {
 # ── Manage Mode Sub-menus ──
 
 manage_menu() {
-    tui_ascii_header
+    tui_ascii_header "Mac Pro Management · v${APP_VERSION}"
 
     if [ "$TUI_BACKEND" = "raw" ]; then
         local width=76
@@ -2078,7 +2083,7 @@ main() {
     trap 'cleanup_on_error; exit 130' SIGINT
     trap 'cleanup_on_error; exit 143' SIGTERM
 
-    log_info "Ubuntify v0.2.63 starting..."
+    log_info "Ubuntify v${APP_VERSION} starting..."
     log_info "Log file: $(log_get_file_path)"
     log_info "TUI backend: $TUI_BACKEND"
 
@@ -2095,7 +2100,9 @@ main() {
     fi
 
     if [ "$TUI_BACKEND" = "raw" ]; then
-        tui_ascii_header "Mac Pro Conversion and Management Tool"
+        tui_ascii_header "Mac Pro Conversion and Management Tool v${APP_VERSION}"
+    else
+        tui_ascii_header "Mac Pro Conversion and Management Tool v${APP_VERSION}" >&2
     fi
 
     mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
