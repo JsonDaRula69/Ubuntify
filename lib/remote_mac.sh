@@ -13,14 +13,22 @@ _REMOTE_MAC_SH_SOURCED=1
 _REMOTE_MAC_SSH_OPTS="-o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no"
 
 # ── Core Execution Wrapper ──
+
 # Runs a command locally or remotely based on DEPLOY_MODE.
-# Usage: remote_mac_exec diskutil list
-#        remote_mac_exec "diskutil info disk0s2"
+# Two calling patterns:
+#   1. Multi-arg simple command:  remote_mac_exec diskutil list "$DISK"
+#      — each arg escaped individually for safe SSH transport
+#   2. Single-string pipeline:   remote_mac_exec "csrutil status 2>/dev/null | grep ..."
+#      — passed verbatim to remote shell (pipe/redirect operators preserved)
 remote_mac_exec() {
     if [ "${DEPLOY_MODE:-local}" = "local" ]; then
         "$@"
+    elif [ $# -eq 1 ]; then
+        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "$1"
     else
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "$*"
+        local cmd
+        cmd=$(printf '%q ' "$@")
+        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "$cmd"
     fi
 }
 
@@ -28,17 +36,29 @@ remote_mac_exec() {
 # Runs a command with sudo on the remote host.
 # In local mode, assumes already running as root (via sudo).
 # In remote mode, uses the stored REMOTE_SUDO_PASSWORD.
+# Same dual-pattern as remote_mac_exec: single-string or multi-arg.
 remote_mac_sudo() {
     if [ "${DEPLOY_MODE:-local}" = "local" ]; then
         "$@"
-    else
+    elif [ $# -eq 1 ]; then
         if [ -n "${REMOTE_SUDO_PASSWORD:-}" ]; then
             printf '%s\n' "$REMOTE_SUDO_PASSWORD" | \
                 ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
-                "sudo -S -p '' $*"
+                "sudo -S -p '' $1"
         else
             ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
-                "sudo -n $*"
+                "sudo -n $1"
+        fi
+    else
+        local cmd
+        cmd=$(printf '%q ' "$@")
+        if [ -n "${REMOTE_SUDO_PASSWORD:-}" ]; then
+            printf '%s\n' "$REMOTE_SUDO_PASSWORD" | \
+                ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
+                "sudo -S -p '' $cmd"
+        else
+            ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
+                "sudo -n $cmd"
         fi
     fi
 }

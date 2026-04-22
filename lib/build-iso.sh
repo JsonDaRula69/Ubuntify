@@ -34,10 +34,12 @@ fi
 
 source "$LIB_DIR/colors.sh"
 
-log()   { echo -e "${GREEN}${VM_PREFIX}${NC} $1"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
-error() { echo -e "${RED}[ERROR]${NC} $1"; }
-die()   { error "$1"; exit 1; }
+# Prefixed names avoid collision with logging.sh aliases (log/warn/error/die)
+# sourced indirectly via autoinstall.sh → logging.sh
+iso_log()   { echo -e "${GREEN}${VM_PREFIX}${NC} $1"; }
+iso_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+iso_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+iso_die()   { iso_error "$1"; exit 1; }
 
 source "${LIB_DIR}/dryrun.sh"
 source "${LIB_DIR}/autoinstall.sh"
@@ -46,8 +48,8 @@ cleanup() {
     local exit_code=$?
     if [ $exit_code -ne 0 ] && [ -d "$STAGING" ]; then
         echo ""
-        warn "Build failed (exit $exit_code). Staging dir preserved for debugging: $STAGING"
-        warn "Remove manually: rm -rf $STAGING"
+        iso_warn "Build failed (exit $exit_code). Staging dir preserved for debugging: $STAGING"
+        iso_warn "Remove manually: rm -rf $STAGING"
     elif [ -d "$STAGING" ]; then
         rm -rf "$STAGING" 2>/dev/null || true
     fi
@@ -65,48 +67,48 @@ echo " Extract-and-repack approach"
 echo "========================================="
 echo ""
 
-[ -f "$BASE_ISO" ] || die "Base ISO not found: $BASE_ISO"
-[ "$VM_MODE" -eq 0 ] && [ ! -f "$AUTOINSTALL" ] && die "autoinstall.yaml not found: $AUTOINSTALL"
-[ -d "$PKGS_DIR" ] || die "packages/ directory not found: $PKGS_DIR"
+[ -f "$BASE_ISO" ] || iso_die "Base ISO not found: $BASE_ISO"
+[ "$VM_MODE" -eq 0 ] && [ ! -f "$AUTOINSTALL" ] && iso_die "autoinstall.yaml not found: $AUTOINSTALL"
+[ -d "$PKGS_DIR" ] || iso_die "packages/ directory not found: $PKGS_DIR"
 mkdir -p "$OUTPUT_DIR"
 _owner="${SUDO_USER:-$USER}"
 [ "$(id -u)" -eq 0 ] && chown "$_owner" "$OUTPUT_DIR" 2>/dev/null || true
 
 PKG_COUNT=$(ls "$PKGS_DIR"/*.deb 2>/dev/null | wc -l | tr -d ' ')
-log "Packages to include: $PKG_COUNT"
-[ "$PKG_COUNT" -gt 0 ] || die "No .deb files in packages/"
+iso_log "Packages to include: $PKG_COUNT"
+[ "$PKG_COUNT" -gt 0 ] || iso_die "No .deb files in packages/"
 
 if [ -d "${PKGS_DIR}/dkms-patches" ]; then
     if [ ! -f "${PKGS_DIR}/dkms-patches/series" ]; then
-        die "DKMS patches directory exists but series file is missing — patches won't be applied in order"
+        iso_die "DKMS patches directory exists but series file is missing — patches won't be applied in order"
     fi
     PATCH_COUNT=$(ls "${PKGS_DIR}/dkms-patches/"*.patch 2>/dev/null | wc -l | tr -d ' ')
     if [ "$PATCH_COUNT" -eq 0 ]; then
-        die "DKMS patches directory has series file but no .patch files — driver compilation will fail on kernel 6.8+"
+        iso_die "DKMS patches directory has series file but no .patch files — driver compilation will fail on kernel 6.8+"
     fi
     while IFS= read -r patch_name; do
         [[ -z "$patch_name" || "$patch_name" =~ ^[[:space:]]*# ]] && continue
         if [ ! -f "${PKGS_DIR}/dkms-patches/${patch_name}" ]; then
-            die "DKMS patch '${patch_name}' listed in series but file not found"
+            iso_die "DKMS patch '${patch_name}' listed in series but file not found"
         fi
     done < "${PKGS_DIR}/dkms-patches/series"
-    log "DKMS patches: $PATCH_COUNT patches validated for kernel 6.8+ compatibility"
+    iso_log "DKMS patches: $PATCH_COUNT patches validated for kernel 6.8+ compatibility"
 else
-    die "No DKMS patches found in ${PKGS_DIR}/dkms-patches/ — broadcom-sta will fail to compile on kernel 6.8+"
+    iso_die "No DKMS patches found in ${PKGS_DIR}/dkms-patches/ — broadcom-sta will fail to compile on kernel 6.8+"
 fi
 echo ""
-log "[1/5] Cleaning and preparing staging area..."
+iso_log "[1/5] Cleaning and preparing staging area..."
 dry_run_exec "Removing staging directory $STAGING" \
     rm -rf "$STAGING" 2>/dev/null || sudo rm -rf "$STAGING"
 mkdir -p "$STAGING/iso_root"
 
-log "[2/5] Extracting original ISO contents..."
+iso_log "[2/5] Extracting original ISO contents..."
 dry_run_exec "Extracting ISO contents from $BASE_ISO" \
     xorriso -osirrox on -indev "$BASE_ISO" -extract / "$STAGING/iso_root/"
 dry_run_exec "Setting write permissions on extracted files" \
     chmod -R u+w "$STAGING/iso_root"
 
-log "[3/5] Overlaying custom files..."
+iso_log "[3/5] Overlaying custom files..."
 
 mkdir -p "$STAGING/iso_root/cidata"
 mkdir -p "$STAGING/iso_root/macpro-pkgs"
@@ -114,7 +116,7 @@ mkdir -p "$STAGING/iso_root/macpro-pkgs"
 if [ "$VM_MODE" -eq 1 ]; then
     # Use dedicated VM autoinstall template (purpose-built for VM testing)
     cp "$LIB_DIR/autoinstall-vm.yaml" "$STAGING/iso_root/autoinstall.yaml" || \
-        die "VM autoinstall template not found: $LIB_DIR/autoinstall-vm.yaml"
+        iso_die "VM autoinstall template not found: $LIB_DIR/autoinstall-vm.yaml"
     VM_HOSTNAME="${VM_HOSTNAME:-macpro-vmtest}"
     VM_WHURL="${WHURL:-http://10.0.2.2:8081/webhook}"
     VM_PASSWORD_HASH="${PASSWORD_HASH:-$(openssl passwd -6 "ubuntu" 2>/dev/null || echo "*")}"
@@ -125,23 +127,23 @@ if [ "$VM_MODE" -eq 1 ]; then
         -e "/authorized-keys:/,/^[^ ]/ s|authorized-keys:.*|authorized-keys: []|" \
         -e "/^[[:space:]]*__SSH_KEYS__[[:space:]]*$/d" \
         -e "s|__SSH_KEYS_LIST__||g" \
-         "$STAGING/iso_root/autoinstall.yaml" || die "Failed to substitute VM placeholders"
+         "$STAGING/iso_root/autoinstall.yaml" || iso_die "Failed to substitute VM placeholders"
     rm -f "$STAGING/iso_root/autoinstall.yaml.bak"
     cp "$STAGING/iso_root/autoinstall.yaml" "$STAGING/iso_root/cidata/user-data"
     echo "instance-id: vmtest-i1" > "$STAGING/iso_root/cidata/meta-data"
-    cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || die "Failed to copy .deb packages"
+    cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || iso_die "Failed to copy .deb packages"
     mkdir -p "$STAGING/iso_root/macpro-pkgs/dkms-patches"
     cp "${PKGS_DIR}/dkms-patches/"*.patch "$STAGING/iso_root/macpro-pkgs/dkms-patches/" 2>/dev/null || true
     cp "${PKGS_DIR}/dkms-patches/series" "$STAGING/iso_root/macpro-pkgs/dkms-patches/" 2>/dev/null || true
 else
     cp "$AUTOINSTALL" "$STAGING/iso_root/autoinstall.yaml" || \
-        die "autoinstall.yaml not found: $AUTOINSTALL"
+    iso_die "autoinstall.yaml not found: $AUTOINSTALL"
     cp "$AUTOINSTALL" "$STAGING/iso_root/cidata/user-data"
     echo "instance-id: macpro-linux-i1" > "$STAGING/iso_root/cidata/meta-data"
-    cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || die "Failed to copy .deb packages"
+    cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || iso_die "Failed to copy .deb packages"
     mkdir -p "$STAGING/iso_root/macpro-pkgs/dkms-patches"
-    cp "${PKGS_DIR}/dkms-patches/"*.patch "$STAGING/iso_root/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS patches"
-    cp "${PKGS_DIR}/dkms-patches/series" "$STAGING/iso_root/macpro-pkgs/dkms-patches/" || die "Failed to copy DKMS series file"
+    cp "${PKGS_DIR}/dkms-patches/"*.patch "$STAGING/iso_root/macpro-pkgs/dkms-patches/" || iso_die "Failed to copy DKMS patches"
+    cp "${PKGS_DIR}/dkms-patches/series" "$STAGING/iso_root/macpro-pkgs/dkms-patches/" || iso_die "Failed to copy DKMS series file"
 fi
 touch "$STAGING/iso_root/cidata/vendor-data"
 
@@ -184,12 +186,12 @@ fi
 cp "$STAGING/grub.cfg" "$STAGING/iso_root/EFI/boot/grub.cfg"
 cp "$STAGING/grub.cfg" "$STAGING/iso_root/boot/grub/grub.cfg"
 
-log "[4/5] Extracting boot parameters and rebuilding ISO..."
+iso_log "[4/5] Extracting boot parameters and rebuilding ISO..."
 
 BOOT_PARAMS=$(xorriso -indev "$BASE_ISO" -report_el_torito as_mkisofs 2>/dev/null | tr '\n' ' ')
 
 if [ -z "$BOOT_PARAMS" ]; then
-    die "Failed to extract boot parameters from base ISO"
+    iso_die "Failed to extract boot parameters from base ISO"
 fi
 
 echo "Extracted boot parameters:"
@@ -199,7 +201,7 @@ echo "  ... (preserving original boot structure)"
 # BOOT_PARAMS comes from xorriso reading the trusted base ISO;
 # eval is required to properly expand its multi-word arguments as positional args to xorriso
 if echo "$BOOT_PARAMS" | grep -qE '[;&|`$(){}]'; then
-    die "Suspicious characters in boot parameters — possible injection"
+    iso_die "Suspicious characters in boot parameters — possible injection"
 fi
 dry_run_exec "Building ISO image ${OUTPUT_ISO}" \
     sh -c "eval \"xorriso -as mkisofs \
@@ -209,11 +211,11 @@ dry_run_exec "Building ISO image ${OUTPUT_ISO}" \
         '${STAGING}/iso_root'\""
 
 if [ ! -f "$OUTPUT_ISO" ]; then
-    die "ISO creation failed — output file not found"
+    iso_die "ISO creation failed — output file not found"
 fi
 
 echo ""
-log "[5/5] Verifying ISO contents and boot images..."
+iso_log "[5/5] Verifying ISO contents and boot images..."
 
 echo "Verifying files:"
 for file in /autoinstall.yaml /cidata/user-data /cidata/meta-data /macpro-pkgs/ /macpro-pkgs/dkms-patches/ /EFI/boot/grub.cfg /boot/grub/grub.cfg; do

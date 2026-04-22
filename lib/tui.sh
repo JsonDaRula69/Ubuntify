@@ -2,7 +2,7 @@
 #
 # lib/tui.sh - Text User Interface (TUI) module for deployment scripts
 #
-# Provides menu primitives that work with dialog, whiptail, or raw bash read.
+# Provides menu primitives that work with whiptail or raw bash read.
 # Auto-detects available backend at source time.
 #
 
@@ -16,23 +16,14 @@ readonly TUI_BACKTITLE="Ubuntify - Mac Pro Conversion Tool v${APP_VERSION:-dev}"
 
 ## Backend Detection
 
-# TUI_BACKEND is initially set at source time but NOT readonly —
-# check_tui_prerequisites() may install dialog and re-detect.
-# After prerequisites check, TUI_BACKEND_LOCKED=1 makes it effectively immutable.
+# TUI_BACKEND is initially set at source time but NOT readonly.
+# check_tui_prerequisites() locks it after detecting available backend.
 
 _tui_detect_backend() {
-    if command -v dialog >/dev/null 2>&1; then
-        TUI_BACKEND="dialog"
-        TUI_HAS_GAUGE=1
-        TUI_HAS_TAILBOX=1
-    elif command -v whiptail >/dev/null 2>&1; then
+    if command -v whiptail >/dev/null 2>&1; then
         TUI_BACKEND="whiptail"
-        TUI_HAS_GAUGE=0
-        TUI_HAS_TAILBOX=0
     else
         TUI_BACKEND="raw"
-        TUI_HAS_GAUGE=0
-        TUI_HAS_TAILBOX=0
     fi
 }
 
@@ -46,84 +37,91 @@ check_tui_prerequisites() {
         return 0
     fi
 
-    if [ "$TUI_BACKEND" = "dialog" ]; then
-        TUI_BACKEND_LOCKED=1
-        readonly TUI_BACKEND TUI_HAS_GAUGE TUI_HAS_TAILBOX TUI_BACKEND_LOCKED
-        return 0
-    fi
-
-    local _offer_install=1
-
     if [ "${AGENT_MODE:-0}" -eq 1 ]; then
         if [ "$TUI_BACKEND" = "raw" ]; then
-            log_warn "No dialog or whiptail available — falling back to raw TUI (limited UX)"
-        else
-            log_info "TUI backend: whiptail (dialog not available)"
+            log_warn "No whiptail available — falling back to raw TUI (limited UX)"
         fi
         TUI_BACKEND_LOCKED=1
-        readonly TUI_BACKEND TUI_HAS_GAUGE TUI_HAS_TAILBOX TUI_BACKEND_LOCKED
+        readonly TUI_BACKEND TUI_BACKEND_LOCKED
         return 0
-    fi
-
-    if ! command -v brew >/dev/null 2>&1; then
-        _offer_install=0
     fi
 
     if [ "$TUI_BACKEND" != "whiptail" ]; then
         echo "" >&2
-        echo "  ${YELLOW} Neither dialog nor whiptail is installed.${NC}" >&2
-        echo "  The raw text fallback provides a limited experience." >&2
+        echo "  ${YELLOW} No whiptail available — raw text fallback (limited menus, no progress bars).${NC}" >&2
         echo "" >&2
-    else
-        echo "" >&2
-        echo "  ${YELLOW} whiptail is available but dialog provides a better TUI experience.${NC}" >&2
-        echo "" >&2
+        echo "  Install whiptail via Homebrew for a better TUI experience: brew install newt${NC}" >&2
     fi
 
-    if [ "$_offer_install" -eq 1 ]; then
-        if [ "$TUI_BACKEND" = "whiptail" ]; then
-            printf '  Install dialog via Homebrew for a better experience? (yes/no): ' >&2
-        else
-            printf '  Install dialog via Homebrew? (yes/no): ' >&2
+    TUI_BACKEND_LOCKED=1
+    readonly TUI_BACKEND TUI_BACKEND_LOCKED
+    return 0
+}
+
+## Dependency Installation
+
+check_dependencies() {
+    local missing_cmds=""
+    local missing_brews=""
+    local core_cmds="xorriso sgdisk comm python3"
+
+    for cmd in $core_cmds; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_cmds="${missing_cmds}${missing_cmds:+ }$cmd"
+            case "$cmd" in
+                xorriso) missing_brews="${missing_brews}${missing_brews:+ }xorriso" ;;
+                sgdisk) missing_brews="${missing_brews}${missing_brews:+ }gptfdisk" ;;
+                comm) missing_brews="${missing_brews}${missing_brews:+ }coreutils" ;;
+                python3) missing_brews="${missing_brews}${missing_brews:+ }python3" ;;
+            esac
         fi
+    done
+
+    if [ -z "$missing_cmds" ]; then
+        return 0
+    fi
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        log_warn "Missing required commands: $missing_cmds"
+        log_warn "Install with: brew install $missing_brews"
+        if [ "${DRY_RUN:-0}" -eq 1 ]; then
+            log_info "[DRY-RUN] Would install: brew install $missing_brews"
+            return 0
+        fi
+        die "Missing required commands: $missing_cmds. Install with: brew install $missing_brews"
+    fi
+
+    if command -v brew >/dev/null 2>&1; then
+        printf '  Missing required commands: %s\n' "$missing_cmds" >&2
+        printf '  Install via Homebrew? (yes/no): ' >&2
         local response
         IFS= read -r response < /dev/tty
         case "$response" in
             yes|y|Y)
                 if [ "${DRY_RUN:-0}" -eq 1 ]; then
-                    echo "  ${YELLOW}[DRY-RUN]${NC} Would run: brew install dialog" >&2
+                    echo "  ${YELLOW}[DRY-RUN]${NC} Would run: brew install $missing_brews" >&2
                 else
-                    echo "  Installing dialog via Homebrew..." >&2
-                    if brew install dialog 2>&1; then
-                        _tui_detect_backend
-                        if [ "$TUI_BACKEND" = "dialog" ]; then
-                            echo "  ${GREEN} dialog installed successfully — TUI upgraded.${NC}" >&2
-                        else
-                            echo "  ${YELLOW} dialog installed but detection failed — using $TUI_BACKEND.${NC}" >&2
-                        fi
+                    echo "  Installing dependencies via Homebrew: $missing_brews..." >&2
+                    if brew install $missing_brews 2>&1; then
+                        echo "  ${GREEN}Dependencies installed successfully.${NC}" >&2
                     else
-                        echo "  ${YELLOW} brew install dialog failed — continuing with $TUI_BACKEND.${NC}" >&2
+                        die "Failed to install dependencies. Install manually: brew install $missing_brews"
                     fi
                 fi
                 ;;
             *)
-                if [ "$TUI_BACKEND" = "raw" ]; then
-                    echo "  ${YELLOW} Continuing with raw text fallback (limited menus, no progress bars).${NC}" >&2
-                fi
+                die "Missing required commands: $missing_cmds. Install with: brew install $missing_brews"
                 ;;
         esac
     else
-        if [ "$TUI_BACKEND" = "raw" ]; then
-            echo "  ${YELLOW} Install Homebrew (brew) and dialog for a better TUI experience.${NC}" >&2
-            echo "  Continuing with raw text fallback (limited menus, no progress bars).${NC}" >&2
-        else
-            echo "  ${YELLOW} Install dialog via Homebrew for a better TUI experience: brew install dialog${NC}" >&2
-        fi
+        die "Missing required commands: $missing_cmds. Install Homebrew first: https://brew.sh, then: brew install $missing_brews"
     fi
 
-    TUI_BACKEND_LOCKED=1
-    readonly TUI_BACKEND TUI_HAS_GAUGE TUI_HAS_TAILBOX TUI_BACKEND_LOCKED
-    return 0
+    for cmd in $core_cmds; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            die "Required command $cmd still not found after installation. Aborting."
+        fi
+    done
 }
 
 ## Helper Functions
@@ -151,7 +149,7 @@ _tui_mktemp() {
 }
 
 # Global result variable — used by tui_menu, tui_input, tui_password, tui_checklist
-# to pass results back to callers without using $() subshells (which break dialog).
+# to pass results back to callers without using $() subshells (which break whiptail).
 _TUI_RESULT=""
 
 ## Menu Primitives
@@ -200,21 +198,7 @@ tui_menu() {
     local tmpfile
     tmpfile=$(_tui_mktemp)
 
-    if [ "$TUI_BACKEND" = "dialog" ]; then
-        local items=()
-        while [ $# -ge 2 ]; do
-            items+=("$2" "$1")
-            shift 2
-        done
-        if dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --menu "$description" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
-            _TUI_RESULT=$(cat "$tmpfile")
-            rm -f "$tmpfile"
-            return 0
-        else
-            rm -f "$tmpfile"
-            return 1
-        fi
-    elif [ "$TUI_BACKEND" = "whiptail" ]; then
+    if [ "$TUI_BACKEND" = "whiptail" ]; then
         local items=()
         while [ $# -ge 2 ]; do
             items+=("$2" "$1" "OFF")
@@ -345,13 +329,7 @@ tui_confirm() {
     local width
     width=$(echo "$size" | cut -d' ' -f2)
 
-    if [ "$TUI_BACKEND" = "dialog" ]; then
-        if dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --yesno "$message" "$height" "$width" 2>/dev/null; then
-            return 0
-        else
-            return 1
-        fi
-    elif [ "$TUI_BACKEND" = "whiptail" ]; then
+    if [ "$TUI_BACKEND" = "whiptail" ]; then
         if whiptail --backtitle "$TUI_BACKTITLE" --title "$title" --yesno "$message" "$height" "$width" 2>/dev/null; then
             return 0
         else
@@ -383,7 +361,7 @@ tui_confirm() {
             return 1
         fi
 
-        # Arrow-key confirm dialog
+        # Arrow-key interactive confirm
         local selected=0
         local width=66
         while true; do
@@ -444,9 +422,7 @@ tui_msgbox() {
     local width
     width=$(echo "$size" | cut -d' ' -f2)
 
-    if [ "$TUI_BACKEND" = "dialog" ]; then
-        dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --msgbox "$message" "$height" "$width" 2>/dev/null || true
-    elif [ "$TUI_BACKEND" = "whiptail" ]; then
+    if [ "$TUI_BACKEND" = "whiptail" ]; then
         whiptail --backtitle "$TUI_BACKTITLE" --title "$title" --msgbox "$message" "$height" "$width" 2>/dev/null || true
     else
         local width=66
@@ -484,18 +460,7 @@ tui_input() {
     local tmpfile
     tmpfile=$(_tui_mktemp)
 
-    if [ "$TUI_BACKEND" = "dialog" ]; then
-        if dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --inputbox "$label" "$height" "$width" "$default_value" 2>"$tmpfile"; then
-            local result
-            result=$(cat "$tmpfile")
-            rm -f "$tmpfile"
-            _TUI_RESULT="$result"
-            return 0
-        else
-            rm -f "$tmpfile"
-            return 1
-        fi
-    elif [ "$TUI_BACKEND" = "whiptail" ]; then
+    if [ "$TUI_BACKEND" = "whiptail" ]; then
         if whiptail --backtitle "$TUI_BACKTITLE" --title "$title" --inputbox "$label" "$height" "$width" "$default_value" 2>"$tmpfile"; then
             local result
             result=$(cat "$tmpfile")
@@ -550,18 +515,7 @@ tui_password() {
     local tmpfile
     tmpfile=$(_tui_mktemp)
 
-    if [ "$TUI_BACKEND" = "dialog" ]; then
-        if dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --passwordbox "$label" "$height" "$width" 2>"$tmpfile"; then
-            local result
-            result=$(cat "$tmpfile")
-            rm -f "$tmpfile"
-            _TUI_RESULT="$result"
-            return 0
-        else
-            rm -f "$tmpfile"
-            return 1
-        fi
-    elif [ "$TUI_BACKEND" = "whiptail" ]; then
+    if [ "$TUI_BACKEND" = "whiptail" ]; then
         if whiptail --backtitle "$TUI_BACKTITLE" --title "$title" --passwordbox "$label" "$height" "$width" 2>"$tmpfile"; then
             local result
             result=$(cat "$tmpfile")
@@ -648,25 +602,14 @@ tui_progress() {
     local width
     width=$(echo "$size" | cut -d' ' -f2)
 
-    if [ "$TUI_BACKEND" = "dialog" ] && [ "$TUI_HAS_GAUGE" -eq 1 ]; then
-        local line
-        while IFS= read -r line; do
-            local percent
-            percent=$(echo "$line" | cut -d' ' -f1)
-            local message
-            message=$(echo "$line" | cut -d' ' -f2-)
-            echo "$percent" | dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --gauge "$message" "$height" "$width" 2>/dev/null || break
-        done
-    else
-        local line
-        while IFS= read -r line; do
-            local percent
-            percent=$(echo "$line" | cut -d' ' -f1)
-            local message
-            message=$(echo "$line" | cut -d' ' -f2-)
-            printf '    %b[%3s%%]%b %b%s%b\n' "$BRIGHT_PHOSPHOR" "$percent" "$NC" "$WHITE" "$message" "$NC"
-        done
-    fi
+    local line
+    while IFS= read -r line; do
+        local percent
+        percent=$(echo "$line" | cut -d' ' -f1)
+        local message
+        message=$(echo "$line" | cut -d' ' -f2-)
+        printf '    %b[%3s%%]%b %b%s%b\n' "$BRIGHT_PHOSPHOR" "$percent" "$NC" "$WHITE" "$message" "$NC"
+    done
 }
 
 tui_tailbox() {
@@ -685,17 +628,13 @@ tui_tailbox() {
     local width
     width=$(echo "$size" | cut -d' ' -f2)
 
-    if [ "$TUI_BACKEND" = "dialog" ] && [ "$TUI_HAS_TAILBOX" -eq 1 ]; then
-        dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --tailbox "$filepath" "$height" "$width" 2>/dev/null || true
-    else
-        local width=66
-        printf '\n' >&2
-        printf '    %b╔%s╗%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 "$width"))" "$NC" >&2
-        printf '    %b║%b  %b%s%b%*s%b║%b\n' "$PHOSPHOR" "$NC" "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) '' "$PHOSPHOR" "$NC" >&2
-        printf '    %b╚%s╝%b\n' "$PHOSPHOR" "$(printf '─%.0s' $(seq 1 "$width"))" "$NC" >&2
-        printf '    %b(refreshing, press q to exit)%b\n' "$DIM" "$NC" >&2
-        less +F "$filepath" 2>/dev/null || tail -f "$filepath"
-    fi
+    local width=66
+    printf '\n' >&2
+    printf '    %b╔%s╗%b\n' "$PHOSPHOR" "$(printf '═%.0s' $(seq 1 "$width"))" "$NC" >&2
+    printf '    %b║%b  %b%s%b%*s%b║%b\n' "$PHOSPHOR" "$NC" "$BOLD_WHITE" "$title" "$NC" $((width - ${#title} - 4)) '' "$PHOSPHOR" "$NC" >&2
+    printf '    %b╚%s╝%b\n' "$PHOSPHOR" "$(printf '─%.0s' $(seq 1 "$width"))" "$NC" >&2
+    printf '    %b(refreshing, press q to exit)%b\n' "$DIM" "$NC" >&2
+    less +F "$filepath" 2>/dev/null || tail -f "$filepath"
 }
 
 tui_checklist() {
@@ -711,25 +650,7 @@ tui_checklist() {
     local tmpfile
     tmpfile=$(_tui_mktemp)
 
-    if [ "$TUI_BACKEND" = "dialog" ]; then
-        local items=()
-        while [ $# -ge 3 ]; do
-            local state="$3"
-            [ "$state" = "ON" ] && state="on" || state="off"
-            items+=("$2" "$1" "$state")
-            shift 3
-        done
-        if dialog --clear --backtitle "$TUI_BACKTITLE" --title "$title" --checklist "$description" "$height" "$width" 10 "${items[@]}" 2>"$tmpfile"; then
-            local result
-            result=$(cat "$tmpfile")
-            rm -f "$tmpfile"
-            _TUI_RESULT="$result"
-            return 0
-        else
-            rm -f "$tmpfile"
-            return 1
-        fi
-    elif [ "$TUI_BACKEND" = "whiptail" ]; then
+    if [ "$TUI_BACKEND" = "whiptail" ]; then
         local items=()
         while [ $# -ge 3 ]; do
             items+=("$2" "$1" "$3")
@@ -908,7 +829,8 @@ tui_cool_header() {
     done <<< "$art"
     local sub_len=${#subtitle}
     [ "$sub_len" -gt "$max_width" ] && max_width=$sub_len
-    local bar=$(printf '%*s' $max_width '' | tr ' ' '─')
+    local bar
+    bar=$(printf '%*s' $max_width '' | tr ' ' '─')
     echo ""
     printf '  %b┌─%s─┐%b\n' "$PHOSPHOR" "$bar" "$NC"
     while IFS= read -r line; do
@@ -955,7 +877,7 @@ tui_checklist_box() {
     local width
     width=$(echo "$size" | cut -d' ' -f2)
 
-    if [ "$TUI_BACKEND" = "dialog" ] || [ "$TUI_BACKEND" = "whiptail" ]; then
+    if [ "$TUI_BACKEND" = "whiptail" ]; then
         tui_checklist "$title" "$description" "$@"
         return $?
     fi
@@ -1093,7 +1015,7 @@ tui_grid_checklist() {
     local col2_width=30
     local total_width=$((col1_width + col2_width + 20))
 
-    if [ "$TUI_BACKEND" = "dialog" ] || [ "$TUI_BACKEND" = "whiptail" ]; then
+    if [ "$TUI_BACKEND" = "whiptail" ]; then
         return 0
     fi
 
@@ -1103,16 +1025,19 @@ tui_grid_checklist() {
     printf '    %b╟%s╢%b\n' "$PHOSPHOR" "$(printf '─%.0s' $(seq 1 $((total_width - 4))))" "$NC"
 
     local idx=1
+    _TUI_GRID_TAGS=""
     while [ $# -ge 2 ]; do
         local left_label="$1"
         local left_tag="$2"
         shift 2
+        _TUI_GRID_TAGS="${_TUI_GRID_TAGS}${_TUI_GRID_TAGS:+ }${left_tag}"
         local right_label=""
         local right_tag=""
         if [ $# -ge 2 ]; then
             right_label="$1"
             right_tag="$2"
             shift 2
+            _TUI_GRID_TAGS="${_TUI_GRID_TAGS}${_TUI_GRID_TAGS:+ }${right_tag}"
         fi
 
         printf '    %b║%b  [ ] %d. %s' "$PHOSPHOR" "$NC" "$idx" "$left_label"

@@ -3,6 +3,7 @@
 All notable changes to the Mac Pro 2013 Ubuntu Autoinstall project are documented in this file. Each version corresponds to a git tag. For the full commit history, see `git log`.
 
 ## v0.2.x — TUI Architecture, Agent Mode, and Config System
+- refactor: remove dialog TUI backend, simplify to whiptail > raw detection
 
 ### v0.2.66 — Remote deployment mode (DEPLOY_MODE=remote)
 - feat: add DEPLOY_MODE config key (local/remote) to deploy.conf, parse_conf, and CLI flags (--deploy-mode, --target-host, --remote-password)

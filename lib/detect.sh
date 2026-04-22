@@ -5,7 +5,7 @@
 # Provides detect_iso to find Ubuntu ISO files and detect_usb_devices/
 # select_usb_device for USB device discovery and selection.
 #
-# Dependencies: lib/colors.sh, lib/logging.sh
+# Dependencies: lib/colors.sh, lib/logging.sh, lib/disk.sh (for _validate_varname)
 #
 
 [ "${_DETECT_SH_SOURCED:-0}" -eq 1 ] && return 0
@@ -15,6 +15,7 @@ source "${LIB_DIR:-./lib}/colors.sh"
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/tui.sh"
 source "${LIB_DIR:-./lib}/remote_mac.sh"
+source "${LIB_DIR:-./lib}/disk.sh"
 
 : "${SCRIPT_DIR:=$(cd "$(dirname "$0")" && pwd)}"
 

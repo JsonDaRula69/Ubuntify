@@ -195,10 +195,12 @@ autoinstall:
       wh '{"progress":20,"stage":"prep-wifi","status":"detecting","message":"Detecting WiFi interface"}'
       log "Detecting WiFi interface..."
       WIFI_IFACE=""
-      for i in $(seq 1 60); do
+      i=1
+      while [ $i -le 60 ]; do
         WIFI_IFACE=$(ip link show 2>/dev/null | grep -oE 'wl[^:]+' | head -1)
         [ -n "$WIFI_IFACE" ] && break
         sleep 1
+        i=$((i + 1))
       done
       log "WiFi interface: ${WIFI_IFACE:-not found}"
       if [ -n "$WIFI_IFACE" ]; then
@@ -260,36 +262,42 @@ autoinstall:
 
       # Verify WiFi is associated (scan check for faster feedback)
       WIFI_ASSOC=0
-      for _i in $(seq 1 6); do
+      _i=1
+      while [ $_i -le 6 ]; do
         _essid=$(iwconfig "$WIFI_IFACE" 2>/dev/null | grep -oE 'ESSID:"[^"]+"' | head -1)
         if [ -n "$_essid" ]; then
           WIFI_ASSOC=1
           break
         fi
         sleep 5
+        _i=$((_i + 1))
       done
       if [ "$WIFI_ASSOC" -ne 1 ]; then
         iwlist "$WIFI_IFACE" scan 2>/dev/null | head -20 >> "$LOG" || true
         log "WARN: WiFi not associated after 30s — check SSID/password"
       fi
       # Check for DHCP lease (exclude link-local 169.254.x.x which indicates DHCP failure)
-      for _i in $(seq 1 6); do
+      _i=1
+      while [ $_i -le 6 ]; do
         if ip addr show "$WIFI_IFACE" 2>/dev/null | grep -q "inet " && ! ip addr show "$WIFI_IFACE" 2>/dev/null | grep -q "inet 169\.254\."; then
           break
         fi
         sleep 5
+        _i=$((_i + 1))
       done
 
       # Verify WiFi connectivity before storage proceeds
       wh '{"progress":26,"stage":"prep-netcheck","status":"verifying","message":"Verifying WiFi connectivity before storage"}'
       log "Verifying WiFi network connectivity..."
       NET_OK=0
-      for i in $(seq 1 12); do
+      i=1
+      while [ $i -le 12 ]; do
         if curl -s -m 5 -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":27,"stage":"prep-netcheck","status":"testing","message":"Network connectivity test"}' > /dev/null 2>&1; then
           NET_OK=1
           break
         fi
         sleep 5
+        i=$((i + 1))
       done
       if [ "$NET_OK" -eq 1 ]; then
         log "Network connectivity verified"
@@ -301,12 +309,14 @@ autoinstall:
         modprobe wl 2>>"$LOG" || true
         sleep 5
         NET_RETRY=0
-        for i in $(seq 1 6); do
+        i=1
+        while [ $i -le 6 ]; do
           if curl -s -m 5 -X POST "$WHURL" -H "Content-Type: application/json" -d '{"progress":29,"stage":"prep-reconnect","status":"retrying","message":"WiFi reconnect attempt"}' > /dev/null 2>&1; then
             NET_RETRY=1
             break
           fi
           sleep 10
+          i=$((i + 1))
         done
         if [ "$NET_RETRY" -eq 1 ]; then
           log "Network connectivity restored after reconnect"
@@ -409,13 +419,15 @@ autoinstall:
           for drv in b43 ssb bcma brcmsmac wl; do rmmod $drv 2>/dev/null || true; done
           sleep 2
           modprobe wl 2>>"$LOG" || true
-          for _i in $(seq 1 12); do
+          _i=1
+          while [ $_i -le 12 ]; do
             WIFI_IFACE_LATE=$(ip link show 2>/dev/null | grep -oE 'wl[^:]+' | head -1)
             if [ -n "$WIFI_IFACE_LATE" ] && ip addr show "$WIFI_IFACE_LATE" 2>/dev/null | grep -q "inet " && ! ip addr show "$WIFI_IFACE_LATE" 2>/dev/null | grep -q "inet 169\.254\."; then
               log "WiFi reconnected on $WIFI_IFACE_LATE"
               break
             fi
             sleep 5
+            _i=$((_i + 1))
           done
           if [ -z "$WIFI_IFACE_LATE" ]; then
             log "FATAL: WiFi reconnect failed — no interface found"

@@ -55,7 +55,7 @@ Execute a systematic, multi-phase review and testing cycle. Do not stop at stati
   - [0.6 Bug Class Taxonomy and Custom Check Generation](#06-bug-class-taxonomy-and-custom-check-generation)
 - [Phase 1: Static Code Analysis](#phase-1-static-code-analysis)
   - [1.1.1 TUI Module Raw Fallback Audit](#111-tui-module-raw-fallback-audit)
-  - [1.1.2 TUI Dialog Subshell and Trap Audit](#112-tui-dialog-subshell-and-trap-audit)
+  - [1.1.2 TUI Whiptail Subshell and Trap Audit](#112-tui-whiptail-subshell-and-trap-audit)
   - [1.1.3 Logging Output Destination Audit](#113-logging-output-destination-audit)
   - [1.7 Systematic Execution Path Walkthrough](#17-systematic-execution-path-walkthrough)
 - [Phase 2: Functional Behavior Testing](#phase-2-functional-behavior-testing)
@@ -176,7 +176,7 @@ For EACH bug found since the last review cycle:
 | Unsafe variable indirection | Variable indirection via eval without validating the variable name contains only safe characters | Audit all eval calls: any that interpolate a variable name must validate it against `^[a-zA-Z_][a-zA-Z0-9_]*$` |
 | Duplicate definition overwrite | Two definitions of the same name in the same file where the second silently overwrites the first | Check for duplicate function/variable definitions within single files |
 | Eval-with-user-input | `eval` is used with a string containing user-controllable input (filenames, config values) without proper quoting or sanitization | Audit all `eval` calls: verify the expanded string does not incorporate unsanitized external input; prefer global-variable patterns over `eval` for return values |
-| Command substitution with TUI | TUI result-returning functions are called inside `$(...)` which creates a subshell that breaks dialog/whiptail on macOS (hangs) and mixes stdout channels | Grep for `$(tui_menu`, `$(tui_input`, etc. — all result-returning TUI functions must use `_TUI_RESULT` global, never stdout capture |
+| Command substitution with TUI | TUI result-returning functions are called inside `$(...)` which creates a subshell that breaks whiptail on macOS (hangs) and mixes stdout channels | Grep for `$(tui_menu`, `$(tui_input`, etc. — all result-returning TUI functions must use `_TUI_RESULT` global, never stdout capture |
 | Dry-run journal skip | In dry-run mode, phase-tracking journal entries are not recorded, so journal-based skip-on-resume logic cannot work after dry-run | Verify dry-run paths either record journal phases with a dry-run marker or explicitly document that dry-run state is not resumable |
 | Sh-c-subshell function call | A bash function is called inside a `sh -c` string; the subshell doesn't inherit bash functions from the parent, causing "command not found" | Grep for `sh -c` strings that reference bash-defined functions; verify all functions called within `sh -c` are either system commands or defined in the target shell |
 | Awk field mismatch | Awk field references don't match the actual column layout of the command output being parsed, causing silent empty results | For every `cmd | awk '{print $N}'`, verify `$N` matches the actual column in command output by testing with representative data; cross-reference command man page for field descriptions |
@@ -231,7 +231,7 @@ Document EVERY warning, error, and suggestion — do not filter
 Classify each finding as P0/P1/P2/P3
 
 ### 1.1.1 TUI Module Raw Fallback Audit
-lib/tui.sh contains multi-backend TUI functions (dialog, whiptail, raw). The raw fallback is the most error-prone — it is the code path executed when neither dialog nor whiptail is available. Copy-paste contamination between function fallbacks has caused P1 bugs. For each function, verify:
+lib/tui.sh contains multi-backend TUI functions (whiptail, raw). The raw fallback is the most error-prone — it is the code path executed when neither whiptail is available. Copy-paste contamination between function fallbacks has caused P1 bugs. For each function, verify:
 
 **Contamination check** — grep for function-crossing patterns that should NOT appear outside their respective fallbacks:
 - `grep -n "Proceed\?" lib/tui.sh` — "Proceed?" should ONLY appear in tui_confirm raw fallback
@@ -239,7 +239,7 @@ lib/tui.sh contains multi-backend TUI functions (dialog, whiptail, raw). The raw
 - `grep -n "Press Enter" lib/tui.sh` — "Press Enter to continue" should ONLY appear in tui_msgbox raw fallback
 - `grep -n '\$message' lib/tui.sh` — `$message` is a tui_confirm parameter; `$description` is a tui_menu parameter; verify each usage is in the correct function
 
-**Variable scope check** — for each raw fallback branch (else branch after dialog/whiptail checks):
+**Variable scope check** — for each raw fallback branch (else branch after whiptail checks):
 - tui_menu: uses `$description` (NOT `$message`)
 - tui_confirm: uses `$message` (NOT `$description`)
 - tui_input: uses `$label`, `$default_value`
@@ -275,7 +275,7 @@ This is a COMPLETE audit — a command that hangs in agent mode is a P0 bug.
 ### 1.1.2 TUI Dialog Subshell and Trap Audit
 
 **Dialog command substitution audit (P0 — hangs on macOS):**
-Dialog (`dialog`, `whiptail`) CANNOT run inside `$(...)` command substitution on macOS. The `$(...)` creates a subshell where dialog's ncurses cannot properly access `/dev/tty` for terminal rendering and keyboard input, causing an invisible hang.
+Whiptail CANNOT run inside `$(...)` command substitution on macOS. The `$(...)` creates a subshell where Whiptail's ncurses cannot properly access `/dev/tty` for terminal rendering and keyboard input, causing an invisible hang.
 
 - `grep -n '\$(tui_menu\|\$(tui_input\|\$(tui_password\|\$(tui_checklist' prepare-deployment.sh lib/*.sh` — ALL must be zero matches
 - ALL TUI result-returning functions (tui_menu, tui_input, tui_password, tui_checklist, tui_checkbox, tui_grid_checklist) MUST use a global result variable (e.g., `_TUI_RESULT`) instead of `echo`/stdout
@@ -291,15 +291,15 @@ TUI functions that set `trap ... EXIT` inside their body overwrite the main scri
 - The main script's EXIT trap (`trap 'cleanup_on_error' EXIT`) must remain active for the entire script lifecycle
 
 **Dialog/whiptail menu column audit (P1 — duplicate/blank entries):**
-- `dialog --menu` items are pairs: `tag label` (2 columns per item)
-- `dialog --checklist` items are triples: `tag label state` (3 columns per item)
+- `whiptail --menu` items are pairs: `tag label` (2 columns per item)
+- `whiptail --checklist` items are triples: `tag label state` (3 columns per item)
 - `whiptail --radiolist` items are triples: `tag label ON/OFF` (3 columns per item)
 - Verify each TUI function constructs its items array with the correct column count for the backend:
-  - tui_menu dialog path: `items+=(tag label)` — exactly 2 elements per item
+  - tui_menu whiptail path: `items+=(tag label)` — exactly 2 elements per item
   - tui_menu whiptail path: `items+=(tag label state)` — exactly 3 elements per item
-  - tui_checklist dialog path: `items+=(tag label state)` — exactly 3 elements per item
   - tui_checklist whiptail path: `items+=(tag label state)` — exactly 3 elements per item
-- A trailing empty column (e.g., `items+=(tag label "")`) in menu mode causes dialog to render blank/duplicate entries — this is a P1 bug
+  - tui_checklist whiptail path: `items+=(tag label state)` — exactly 3 elements per item
+- A trailing empty column (e.g., `items+=(tag label "")`) in menu mode causes whiptail to render blank/duplicate entries — this is a P1 bug
 
 ### 1.1.3 Logging Output Destination Audit
 
@@ -637,7 +637,7 @@ Test agent mode with --agent flag
 Test --agent --yes confirms destructive operations automatically
 Test --agent WITHOUT --yes denies destructive operations (CONFIRM_YES=0)
 Test --json flag produces valid JSON output (validate with `python3 -m json.tool`)
-Test TUI fallback when dialog/whiptail are unavailable (TUI_BACKEND="raw")
+Test TUI fallback when whiptail is unavailable (TUI_BACKEND="raw")
 
 ### 2.3 Normal Execution Path Testing
 Execute all primary workflows that can be safely executed:
@@ -668,7 +668,7 @@ Test network failures and timeouts (unreachable webhook host)
 Test dependency failures:
 - Missing xorriso, sgdisk, python3, comm, diskutil
 - Wrong versions of dependencies
-- Missing dialog and whiptail (TUI_BACKEND="raw")
+- Missing whiptail (TUI_BACKEND="raw")
 
 Remote mode error paths:
 - What happens when remote_mac_preflight can't SSH to target?
@@ -730,7 +730,7 @@ Test the WiFi connectivity verification circuit breaker that prevents disk wipe 
 - Verify POSIX `if ! cmd1 || cmd2` correctly means `(!cmd1) || cmd2` — both failure modes caught
 
 ### 2.8 TUI Interactive Prompt Testing
-Test TUI functions with actual interactive input (requires keyboard, cannot be piped). The raw TUI backend (`TUI_BACKEND=raw`) is the fallback when dialog/whiptail are unavailable and is the most bug-prone code path.
+Test TUI functions with actual interactive input (requires keyboard, cannot be piped). The raw TUI backend (`TUI_BACKEND=raw`) is the fallback when whiptail is unavailable and is the most bug-prone code path.
 
 **Menu option selection test** (tui_menu raw fallback):
 ```
@@ -856,7 +856,7 @@ grep -n 'tui_menu\|tui_confirm\|tui_input\|tui_password\|tui_checklist\|tui_msgb
 **Key invariants to verify for every flow**:
 - Menu tag values in `tui_menu` calls match the `case` statements that consume them
 - All destructive operations (APFS resize, ESP create, kernel pin/unpin/update, macOS erase) are gated by `tui_confirm`
-- All tui_menu/tui_input/tui_password callers use the global result variable pattern: `tui_X ...; VAR="$_TUI_RESULT"` — NOT `VAR=$(tui_X ...)` which hangs dialog
+- All tui_menu/tui_input/tui_password callers use the global result variable pattern: `tui_X ...; VAR="$_TUI_RESULT"` — NOT `VAR=$(tui_X ...)` which hangs whiptail
 - All tui_confirm callers use it as `if tui_confirm ...` or `||` — NOT capturing output
 - tui_input and tui_password results are checked for emptiness before use
 - Back/exit choices always return from the function or exit the script, never fall through
@@ -2475,7 +2475,7 @@ This section documents meta-findings from the review process itself — patterns
 | Bug Class | Abstract Pattern | Custom Check |
 |-----------|-----------------|--------------|
 | Eval-with-user-input | `eval` is used with a string containing user-controllable input (filenames, config values) without proper quoting or sanitization | Audit all `eval` calls: verify the expanded string does not incorporate unsanitized external input; prefer global-variable patterns over `eval` for return values |
-| Command substitution with TUI | TUI result-returning functions are called inside `$(...)` which creates a subshell that breaks dialog/whiptail on macOS (hangs) and mixes stdout channels | Grep for `$(tui_menu`, `$(tui_input`, etc. — all result-returning TUI functions must use `_TUI_RESULT` global, never stdout capture |
+| Command substitution with TUI | TUI result-returning functions are called inside `$(...)` which creates a subshell that breaks whiptail on macOS (hangs) and mixes stdout channels | Grep for `$(tui_menu`, `$(tui_input`, etc. — all result-returning TUI functions must use `_TUI_RESULT` global, never stdout capture |
 | Dry-run journal skip | In dry-run mode, phase-tracking journal entries are not recorded, so journal-based skip-on-resume logic cannot work after dry-run | Verify dry-run paths either record journal phases with a dry-run marker or explicitly document that dry-run state is not resumable |
 
 ### 7.3 Findings Summary for This Cycle
@@ -2483,7 +2483,7 @@ This section documents meta-findings from the review process itself — patterns
 **P1 Findings (Critical):**
 
 1. **P1-001: `$(eval "tui_menu ... $menu_args")` in prompt_ssh_key_selection (prepare-deployment.sh:563)**
-   - Uses command substitution with tui_menu — can hang on macOS when dialog backend is active
+   - Uses command substitution with tui_menu — can hang on macOS when whiptail backend is active
    - Uses `eval` with `$menu_args` containing SSH key filenames (user-controllable from `~/.ssh/*.pub`)
    - All other TUI calls in prepare-deployment.sh correctly use `_TUI_RESULT` pattern
    - Fix: Replace `$(eval "tui_menu ... $menu_args")` with direct `tui_menu` call using `_TUI_RESULT` pattern

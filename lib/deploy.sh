@@ -316,10 +316,14 @@ preflight_checks() {
             verify_headless_readiness || warn "Headless readiness issues detected on target — deployment may require manual intervention"
         fi
     else
-        command -v xorriso >/dev/null 2>&1 || die "xorriso not found. Install with: brew install xorriso"
-        command -v sgdisk >/dev/null 2>&1 || die "sgdisk not found. Install with: brew install gptfdisk"
-        command -v comm >/dev/null 2>&1 || die "comm not found. Install with: brew install coreutils"
-        command -v python3 >/dev/null 2>&1 || die "python3 not found. Install with: brew install python3"
+        local _still_missing=""
+        command -v xorriso >/dev/null 2>&1 || _still_missing="${_still_missing}${_still_missing:+ }xorriso"
+        command -v sgdisk >/dev/null 2>&1 || _still_missing="${_still_missing}${_still_missing:+ }sgdisk"
+        command -v comm >/dev/null 2>&1 || _still_missing="${_still_missing}${_still_missing:+ }comm"
+        command -v python3 >/dev/null 2>&1 || _still_missing="${_still_missing}${_still_missing:+ }python3"
+        if [ -n "$_still_missing" ]; then
+            die "Required commands still missing: $_still_missing. Install with: brew install xorriso gptfdisk coreutils python3"
+        fi
 
         log "Running on: $(sw_vers -productName) $(sw_vers -productVersion)"
 

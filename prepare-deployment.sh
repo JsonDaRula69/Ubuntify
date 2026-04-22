@@ -2091,6 +2091,9 @@ main() {
     check_tui_prerequisites
     log_info "TUI backend after prerequisites: $TUI_BACKEND"
 
+    check_dependencies
+    log_info "Dependencies verified"
+
     # Handle --revert: defer from argument parsing to ensure logging/traps are active
     if [ "${_REVERT_REQUESTED:-0}" -eq 1 ]; then
         if [ "${DEPLOY_MODE:-local}" != "remote" ] && [ "$(id -u)" -ne 0 ]; then

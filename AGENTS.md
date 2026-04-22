@@ -7,7 +7,7 @@
 
 ## Project Overview
 
-Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPro6,1) with Broadcom BCM4360 WiFi. Two deployment modes: **Local** (run directly on Mac Pro with sudo) and **Remote** (control Mac Pro via SSH from another machine). Two functional modes: **Deploy** (build ISO, deploy to ESP/USB/VM, monitor installation) and **Manage** (remote: SSH into installed instance for kernel management, driver rebuilds, macOS erasure, system updates). TUI interface using dialog/whiptail with raw bash fallback. Multi-target logging (serial + file + webhook). Published on GitHub for other Mac Pro owners.
+Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPro6,1) with Broadcom BCM4360 WiFi. Two deployment modes: **Local** (run directly on Mac Pro with sudo) and **Remote** (control Mac Pro via SSH from another machine). Two functional modes: **Deploy** (build ISO, deploy to ESP/USB/VM, monitor installation) and **Manage** (remote: SSH into installed instance for kernel management, driver rebuilds, macOS erasure, system updates). TUI interface using whiptail with raw bash fallback. Multi-target logging (serial + file + webhook). Published on GitHub for other Mac Pro owners.
 
 ## Hardware Specifications
 
@@ -34,7 +34,7 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 │   ├── autoinstall-schema.json      # Subiquity YAML validation schema
 │   ├── colors.sh                    # Color constants (RED, GREEN, YELLOW, NC) with guard
 │   ├── logging.sh                   # Multi-target logger (serial+file+webhook) with level control
-│   ├── tui.sh                       # TUI primitives (dialog/whiptail/raw) + agent mode bypass
+│   ├── tui.sh                       # TUI primitives (whiptail/raw) + agent mode bypass
 │   ├── dryrun.sh                    # Dry-run wrapper, agent output, exit codes, JSON helpers
 │   ├── retry.sh                     # Exponential backoff retry wrappers (diskutil, ssh, xorriso)
 │   ├── verify.sh                    # Post-operation verification with self-healing
@@ -277,11 +277,11 @@ local var="value"
 Use `RED`, `GREEN`, `NC` color constants. Log to file with `tee`.
 
 ### TUI Module (lib/tui.sh)
-- Auto-detects `dialog` > `whiptail` > `raw` at source time
+- Auto-detects `whiptail` > `raw` at source time
 - All menus use `tui_menu`, `tui_confirm`, `tui_input`, `tui_password`
 - Progress uses `tui_progress` (reads `PERCENT MESSAGE` from stdin)
 - Log tailing uses `tui_tailbox`
-- Never call `dialog` or `whiptail` directly — always via tui_* functions
+- Never call `whiptail` directly — always via tui_* functions
 - When `AGENT_MODE=1`, all tui_* functions bypass interactive prompts and emit JSON/log output
 
 ### Dry-Run and Agent Module (lib/dryrun.sh)
