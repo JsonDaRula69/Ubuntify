@@ -606,7 +606,7 @@ Trace all deployment mode routing paths:
 Test EVERY command-line flag in prepare-deployment.sh:
 - --dry-run, --verbose, --agent, --yes, --json
 - --method (1|2|3|4), --storage (1|2), --network (1|2)
-- --deploy-mode (local|remote), --target-host, --remote-password
+- --target-host, --remote-password
 - --host, --operation, --wifi-ssid, --wifi-password
 - --webhook-host, --webhook-port
 - --username, --hostname, --vm, --revert, --help

@@ -7,7 +7,7 @@
 
 ## Project Overview
 
-Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPro6,1) with Broadcom BCM4360 WiFi. Two deployment modes: **Local** (run directly on Mac Pro with sudo) and **Remote** (control Mac Pro via SSH from another machine). Two functional modes: **Deploy** (build ISO, deploy to ESP/USB/VM, monitor installation) and **Manage** (remote: SSH into installed instance for kernel management, driver rebuilds, macOS erasure, system updates). TUI interface using whiptail with raw bash fallback. Multi-target logging (serial + file + webhook). Published on GitHub for other Mac Pro owners.
+Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPro6,1) with Broadcom BCM4360 WiFi. Remote deployment mode (control Mac Pro via SSH from another machine). Two functional modes: **Deploy** (build ISO, deploy to ESP/USB/VM, monitor installation) and **Manage** (remote: SSH into installed instance for kernel management, driver rebuilds, macOS erasure, system updates). TUI interface using raw bash with arrow-key navigation. Multi-target logging (serial + file + webhook). Published on GitHub for other Mac Pro owners.
 
 ## Hardware Specifications
 
@@ -34,7 +34,7 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 │   ├── autoinstall-schema.json      # Subiquity YAML validation schema
 │   ├── colors.sh                    # Color constants (RED, GREEN, YELLOW, NC) with guard
 │   ├── logging.sh                   # Multi-target logger (serial+file+webhook) with level control
-│   ├── tui.sh                       # TUI primitives (whiptail/raw) + agent mode bypass
+│   ├── tui.sh                       # TUI primitives (raw bash with arrow keys) + agent mode bypass
 │   ├── dryrun.sh                    # Dry-run wrapper, agent output, exit codes, JSON helpers
 │   ├── retry.sh                     # Exponential backoff retry wrappers (diskutil, ssh, xorriso)
 │   ├── verify.sh                    # Post-operation verification with self-healing
@@ -44,7 +44,7 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 │   ├── disk.sh                      # analyze_disk_layout, shrink_apfs_if_needed, create_esp_partition
 │   ├── bless.sh                     # verify_esp_contents, attempt_bless
 │   ├── deploy.sh                    # 7-phase checkpointed deployment with journal state
-│   ├── remote_mac.sh                # Remote execution wrapper (SSH/local routing based on DEPLOY_MODE)
+│   ├── remote_mac.sh                # Remote execution wrapper (SSH routing to Mac Pro)
 │   └── revert.sh                    # revert_changes, handle_revert_flag, journal-aware rollback
 │   ├── discover.sh                  # Bonjour/mDNS host discovery, hostname resolution
 ├── packages/                        # .deb files for driver compilation (36 debs)
@@ -76,7 +76,7 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 │   └── logs/
 └── prereqs/                         # Stock Ubuntu ISO (*.iso gitignored)
 
-# Runtime output: ~/.Ubuntu_Deployment/    # Generated files (ISO, autoinstall.yaml, deploy.conf, staging)
+# Runtime output: ~/.Ubuntify/    # Generated files (ISO, autoinstall.yaml, deploy.conf, staging)
 ```
 
 ## Build/Lint/Test Commands
@@ -161,21 +161,14 @@ And two network configurations:
 
 Method 4 (VM test) uses fixed Ethernet and single disk — no storage or network selection needed.
 
-## Deployment Modes
+## Deployment Mode
 
-The script operates in two deployment modes, controlled by `DEPLOY_MODE` in `deploy.conf` or `--deploy-mode` CLI flag:
+The script operates in remote deployment mode only, controlled via SSH to the target Mac Pro. All macOS-specific operations (diskutil, sgdisk, bless, xorriso) execute on the target via SSH. The local machine only generates configuration files and transfers them via SCP.
 
-| Mode | Description | Requires sudo? | Runs commands |
-|------|-------------|----------------|----------------|
-| `local` (default) | Run directly on the Mac Pro | Yes (local sudo) | Locally on this machine |
-| `remote` | Control the Mac Pro via SSH from another machine | No (remote sudo) | Via SSH on TARGET_HOST |
-
-### Remote Mode Architecture
-
-In remote mode, all macOS-specific operations (diskutil, sgdisk, bless, xorriso) execute on the target Mac Pro via SSH. The local machine only generates configuration files and transfers them via SCP.
+The `--deploy-mode` CLI flag is accepted but ignored (for backward compatibility). DEPLOY_MODE is always "remote".
 
 **Command routing** (`lib/remote_mac.sh`):
-- `remote_mac_exec <command>` — runs locally or via SSH based on DEPLOY_MODE
+- `remote_mac_exec <command>` — runs command via SSH on target
 - `remote_mac_sudo <command>` — same with sudo prefix (uses REMOTE_SUDO_PASSWORD)
 - `remote_mac_cp <local> <remote>` — copies file to target via scp
 - `remote_mac_cp_dir <local> <remote>` — copies directory recursively
@@ -189,19 +182,16 @@ In remote mode, all macOS-specific operations (diskutil, sgdisk, bless, xorriso)
 - ISO is SCP'd to `/tmp` on target, then extracted remotely via `xorriso`
 - Configuration is generated locally in `${OUTPUT_DIR}/staging`, validated, then SCP'd to target
 - Preflight checks run on the target host (xorriso, sgdisk, python3, diskutil, bless)
-- Root/sudo check is skipped on the local machine
+- No local sudo required — all elevated operations run on the target
 - Revert can also operate remotely
 
 **CLI flags for remote mode**:
 ```bash
 # Interactive remote deployment
-sudo ./prepare-deployment.sh --deploy-mode remote --target-host macpro
+./prepare-deployment.sh --target-host macpro
 
 # Agent mode remote deployment
-sudo ./prepare-deployment.sh --agent --deploy-mode remote --target-host macpro --remote-password XXX --method 1 --storage 1 --network 1 --json
-
-# No local sudo needed in remote mode
-./prepare-deployment.sh --deploy-mode remote --target-host macpro
+./prepare-deployment.sh --agent --target-host macpro --remote-password XXX --method 1 --storage 1 --network 1 --json
 ```
 
 ## Boot Methods
@@ -247,7 +237,7 @@ sudo ./prepare-deployment.sh --agent --operation kernel_status --host macpro-lin
 sudo ./prepare-deployment.sh --agent --revert --json
 ```
 
-Flags: `--agent`, `--yes`, `--verbose`, `--dry-run`, `--json`, `--method N`, `--storage N`, `--network N`, `--deploy-mode MODE`, `--target-host HOST`, `--remote-password PWD`, `--operation OP`, `--host HOST`, `--wifi-ssid`, `--wifi-password`, `--webhook-host`, `--webhook-port`, `--output-dir DIR`, `--revert`, `--username USER`, `--hostname HOST`, `--vm`
+Flags: `--agent`, `--yes`, `--verbose`, `--dry-run`, `--json`, `--method N`, `--storage N`, `--network N`, `--target-host HOST`, `--remote-password PWD`, `--operation OP`, `--host HOST`, `--wifi-ssid`, `--wifi-password`, `--webhook-host`, `--webhook-port`, `--output-dir DIR`, `--revert`, `--username USER`, `--hostname HOST`, `--vm`
 
 Exit codes: 0=success, 1=general, 2=usage, 3=config, 4=check, 5=partial, 6=dependency, 7=network, 8=disk, 9=timeout, 10=auth, 11=dry-run-ok, 12=agent-param, 13=agent-denied
 
@@ -277,11 +267,10 @@ local var="value"
 Use `RED`, `GREEN`, `NC` color constants. Log to file with `tee`.
 
 ### TUI Module (lib/tui.sh)
-- Auto-detects `whiptail` > `raw` at source time
+- Raw bash TUI with arrow-key navigation (no whiptail dependency)
 - All menus use `tui_menu`, `tui_confirm`, `tui_input`, `tui_password`
 - Progress uses `tui_progress` (reads `PERCENT MESSAGE` from stdin)
 - Log tailing uses `tui_tailbox`
-- Never call `whiptail` directly — always via tui_* functions
 - When `AGENT_MODE=1`, all tui_* functions bypass interactive prompts and emit JSON/log output
 
 ### Dry-Run and Agent Module (lib/dryrun.sh)
@@ -353,7 +342,7 @@ const MAX_UPDATES = 200;
 
 ## deploy.conf Configuration
 
-Runtime configuration file (KEY=VALUE format). Lives in `~/.Ubuntu_Deployment/deploy.conf` (created on first run). Template at `lib/deploy.conf.example`.
+Runtime configuration file (KEY=VALUE format). Lives in `~/.Ubuntify/deploy.conf` (created on first run). Template at `lib/deploy.conf.example`.
 
 ### Config File Format
 ```
@@ -372,10 +361,10 @@ SSH_KEYS_FILE=/path/to/file  # Load keys from external file
 | `SSH_KEY` | SSH public key (repeat for multiple keys) |
 | `SSH_KEYS_FILE` | Path to file containing SSH public keys |
 | `ENCRYPTION` | Password encryption mode (see below) |
-| `OUTPUT_DIR` | Override runtime output directory (default: ~/.Ubuntu_Deployment/) |
-| `DEPLOY_MODE` | Deployment mode: `local` (run on Mac Pro) or `remote` (SSH control from another machine) |
-| `TARGET_HOST` | SSH hostname/IP for Mac Pro's macOS partition (required when DEPLOY_MODE=remote) |
-| `REMOTE_SUDO_PASSWORD` | Sudo password for target Mac Pro (only used when DEPLOY_MODE=remote, stored encrypted) |
+| `OUTPUT_DIR` | Override runtime output directory (default: ~/.Ubuntify/) |
+| `DEPLOY_MODE` | Deployment mode (always `remote`, accepted for backward compatibility) |
+| `TARGET_HOST` | SSH hostname/IP for Mac Pro's macOS partition |
+| `REMOTE_SUDO_PASSWORD` | Sudo password for target Mac Pro (stored encrypted if encryption enabled) |
 
 ### Encryption Modes
 | Mode | Description |
@@ -384,11 +373,23 @@ SSH_KEYS_FILE=/path/to/file  # Load keys from external file
 | `aes256` | Password encrypted with `openssl aes-256-cbc -salt` |
 | `keychain` | Password retrieved from macOS Keychain via `security find-generic-password` |
 
+### Config File Lifecycle
+
+| Event | Behavior |
+|-------|----------|
+| Launch with no config | Create from template (`deploy.conf.example`), prompt user through each field |
+| Launch with valid config | Offer: Load existing / Overwrite (re-create) / Delete and exit |
+| Launch with invalid config | Alert user, delete invalid config, walk through new config creation |
+| Exit before deployment (valid config) | Ask user: Keep or Delete |
+| Exit before deployment (invalid config) | Auto-delete |
+| Each prompt saves immediately | Each validated field is written to `deploy.conf` via `save_config_key()` |
+
+Progressive save: after each prompt validates a value, `save_config_key()` writes it to `deploy.conf` immediately. If the program exits mid-configuration, the partially-filled config is either kept (if valid) or auto-deleted (if invalid).
+
 ### First-Run Prompts
 If `deploy.conf` is missing or keys are empty, `prepare-deployment.sh` prompts for:
-- Deployment mode (local or remote) — local runs on Mac Pro directly, remote controls via SSH
-- Target host (if remote mode) — hostname/IP of Mac Pro's macOS partition
-- Remote sudo password (if remote mode) — for elevated operations on target
+- Target host — hostname/IP of Mac Pro's macOS partition
+- Remote sudo password — for elevated operations on target
 - Username, real name, password (with encryption mode selection)
 - SSH key configuration (interactive menu):
   - **Provide existing key**: scans `~/.ssh/*.pub` for keys to select, or paste manually
@@ -770,7 +771,7 @@ The `remote_toggle_apt_sources(host, action)` function (line 234 in lib/remote.s
 
 ## Runtime Output Directory
 
-All generated files (ISO, autoinstall.yaml, deploy.conf) go to `~/.Ubuntu_Deployment/` by default. Override via `OUTPUT_DIR` in `deploy.conf` or `--output-dir` CLI flag.
+All generated files (ISO, autoinstall.yaml, deploy.conf) go to `~/.Ubuntify/` by default. Override via `OUTPUT_DIR` in `deploy.conf` or `--output-dir` CLI flag.
 
 ## Context Management Rules
 
