@@ -28,10 +28,9 @@ detect_remote_hosts() {
         return 0
     fi
 
-    # dns-sd browses the local network; skip in remote mode (wrong network)
-    if [ "${DEPLOY_MODE:-local}" != "local" ]; then
-        return 0
-    fi
+    # dns-sd browses the local network; in remote mode we're on a different
+    # network than the Mac Pro, so Bonjour discovery won't find it
+    return 0
 
     if ! command -v dns-sd >/dev/null 2>&1; then
         log_info "dns-sd not available, skipping Bonjour discovery"

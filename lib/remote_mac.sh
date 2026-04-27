@@ -1,8 +1,6 @@
 #!/bin/bash
 # lib/remote_mac.sh — Remote execution wrapper for macOS-side commands
-# Routes commands to local execution or SSH based on DEPLOY_MODE.
-# When DEPLOY_MODE=local, commands run directly on this machine.
-# When DEPLOY_MODE=remote, commands run via SSH on TARGET_HOST.
+# Routes commands to the remote Mac Pro via SSH.
 set -e
 set -o pipefail
 
@@ -12,42 +10,41 @@ _REMOTE_MAC_SH_SOURCED=1
 # ── SSH Options ──
 _REMOTE_MAC_SSH_OPTS="-o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no"
 
+# Non-interactive SSH doesn't include /usr/local/bin or /opt/homebrew/bin in PATH.
+# This prefix ensures brew and brew-installed tools are findable on every remote command.
+_REMOTE_MAC_PATH_PREFIX='export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"'
+
 # ── Core Execution Wrapper ──
 
-# Runs a command locally or remotely based on DEPLOY_MODE.
+# Runs a command on the remote Mac Pro via SSH.
 # Two calling patterns:
 #   1. Multi-arg simple command:  remote_mac_exec diskutil list "$DISK"
 #      — each arg escaped individually for safe SSH transport
 #   2. Single-string pipeline:   remote_mac_exec "csrutil status 2>/dev/null | grep ..."
 #      — passed verbatim to remote shell (pipe/redirect operators preserved)
 remote_mac_exec() {
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        "$@"
-    elif [ $# -eq 1 ]; then
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "$1"
+    if [ $# -eq 1 ]; then
+        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "${_REMOTE_MAC_PATH_PREFIX}; $1"
     else
         local cmd
         cmd=$(printf '%q ' "$@")
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "$cmd"
+        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "${_REMOTE_MAC_PATH_PREFIX}; $cmd"
     fi
 }
 
 # ── Remote Command with sudo ──
-# Runs a command with sudo on the remote host.
-# In local mode, assumes already running as root (via sudo).
-# In remote mode, uses the stored REMOTE_SUDO_PASSWORD.
+# Runs a command with sudo on the remote host via SSH.
+# Uses the stored REMOTE_SUDO_PASSWORD if available, otherwise passwordless sudo.
 # Same dual-pattern as remote_mac_exec: single-string or multi-arg.
 remote_mac_sudo() {
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        "$@"
-    elif [ $# -eq 1 ]; then
+    if [ $# -eq 1 ]; then
         if [ -n "${REMOTE_SUDO_PASSWORD:-}" ]; then
             printf '%s\n' "$REMOTE_SUDO_PASSWORD" | \
                 ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
-                "sudo -S -p '' $1"
+                "${_REMOTE_MAC_PATH_PREFIX}; sudo -S -p '' $1"
         else
             ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
-                "sudo -n $1"
+                "${_REMOTE_MAC_PATH_PREFIX}; sudo -n $1"
         fi
     else
         local cmd
@@ -55,85 +52,111 @@ remote_mac_sudo() {
         if [ -n "${REMOTE_SUDO_PASSWORD:-}" ]; then
             printf '%s\n' "$REMOTE_SUDO_PASSWORD" | \
                 ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
-                "sudo -S -p '' $cmd"
+                "${_REMOTE_MAC_PATH_PREFIX}; sudo -S -p '' $cmd"
         else
             ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
-                "sudo -n $cmd"
+                "${_REMOTE_MAC_PATH_PREFIX}; sudo -n $cmd"
         fi
     fi
+}
+
+# ── Remote diskutil with retry ──
+# Wraps remote_mac_sudo diskutil with exponential backoff for transient errors.
+# "Resource busy" and IOKit errors are retried up to max_attempts times.
+remote_mac_retry_diskutil() {
+    local max_attempts=5
+    local base_delay=2
+    local attempt=1
+    local delay="$base_delay"
+    local exit_code=0
+    local stderr_file
+    stderr_file="$(mktemp)"
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if [ "$attempt" -gt 1 ]; then
+            warn "remote diskutil attempt $attempt/$max_attempts"
+        fi
+
+        remote_mac_sudo diskutil "$@" 2>"$stderr_file" && exit_code=0 || exit_code=$?
+
+        if [ "$exit_code" -eq 0 ]; then
+            rm -f "$stderr_file"
+            return 0
+        fi
+
+        local stderr_content
+        stderr_content="$(cat "$stderr_file" 2>/dev/null || true)"
+
+        if echo "$stderr_content" | grep -q "Resource busy\|busy" 2>/dev/null; then
+            warn "remote diskutil: resource busy, retrying"
+            remote_mac_sudo diskutil unmount "$@" 2>/dev/null || true
+            sleep 3
+            attempt=$((attempt + 1))
+            continue
+        fi
+
+        if echo "$stderr_content" | grep -q "IOKit\|Disk object not found" 2>/dev/null; then
+            warn "remote diskutil: transient IOKit error, retrying"
+        elif ! is_transient_error "$exit_code"; then
+            rm -f "$stderr_file"
+            return "$exit_code"
+        fi
+
+        sleep "$delay"
+        delay=$((delay * 2))
+        attempt=$((attempt + 1))
+    done
+
+    rm -f "$stderr_file"
+    return "$exit_code"
 }
 
 # ── File Copy ──
-# Copies a single file to the target.
-# Local: cp. Remote: scp.
+# Copies a single file to the target via scp.
 remote_mac_cp() {
     local src="$1"
     local dst="$2"
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        cp "$src" "$dst"
+    local host="${TARGET_HOST:-macpro}"
+    local remote_dst
+    if echo "$dst" | grep -q ':'; then
+        remote_dst="$dst"
     else
-        local host="${TARGET_HOST:-macpro}"
-        local remote_dst
-        if echo "$dst" | grep -q ':'; then
-            remote_dst="$dst"
-        else
-            remote_dst="${host}:${dst}"
-        fi
-        scp $_REMOTE_MAC_SSH_OPTS "$src" "$remote_dst"
+        remote_dst="${host}:${dst}"
     fi
+    scp $_REMOTE_MAC_SSH_OPTS "$src" "$remote_dst"
 }
 
 # ── Directory Copy ──
-# Copies a directory tree to the target.
-# Local: cp -r. Remote: scp -r.
+# Copies a directory tree to the target via scp -r.
 remote_mac_cp_dir() {
     local src="$1"
     local dst="$2"
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        cp -r "$src" "$dst"
+    local host="${TARGET_HOST:-macpro}"
+    local remote_dst
+    if echo "$dst" | grep -q ':'; then
+        remote_dst="$dst"
     else
-        local host="${TARGET_HOST:-macpro}"
-        local remote_dst
-        if echo "$dst" | grep -q ':'; then
-            remote_dst="$dst"
-        else
-            remote_dst="${host}:${dst}"
-        fi
-        scp -r $_REMOTE_MAC_SSH_OPTS "$src" "$remote_dst"
+        remote_dst="${host}:${dst}"
     fi
+    scp -r $_REMOTE_MAC_SSH_OPTS "$src" "$remote_dst"
 }
 
 # ── Remote Path Prefix ──
-# Returns the path prefix for accessing files on the target.
-# Local: empty string (paths are local).
-# Remote: host: prefix for scp, or empty for ssh commands.
+# Returns the path prefix for scp operations on the target.
 remote_mac_path() {
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        echo ""
-    else
-        echo "${TARGET_HOST:-macpro}:"
-    fi
+    echo "${TARGET_HOST:-macpro}:"
 }
 
 # ── Connectivity Test ──
-# Returns 0 if the target is reachable, 1 otherwise.
+# Returns 0 if the target is reachable via SSH, 1 otherwise.
 remote_mac_test() {
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        return 0
-    fi
     local host="${TARGET_HOST:-macpro}"
-    ssh $_REMOTE_MAC_SSH_OPTS "$host" 'echo ok' >/dev/null 2>&1
+    ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; echo ok" >/dev/null 2>&1
 }
 
 # ── Remote Preflight Checks ──
-# Verifies the target has all required tools for deployment.
-# In local mode, returns 0 (assumes running on Mac Pro).
-# In remote mode, checks SSH connectivity and required commands.
+# Verifies the remote target has all required tools for deployment via SSH.
 remote_mac_preflight() {
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        return 0
-    fi
-
     local host="${TARGET_HOST:-macpro}"
     local errors=0
     local missing=""
@@ -146,16 +169,18 @@ remote_mac_preflight() {
     log_info "SSH connection to $host: OK"
 
     local required_cmds="diskutil bless sgdisk python3"
+
     for cmd in $required_cmds; do
-        if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" "command -v $cmd >/dev/null 2>&1"; then
+        if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; command -v $cmd >/dev/null 2>&1"; then
             missing="${missing}${missing:+ }$cmd"
             errors=$((errors + 1))
         fi
     done
 
     local deploy_cmds="xorriso newfs_msdos"
+
     for cmd in $deploy_cmds; do
-        if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" "command -v $cmd >/dev/null 2>&1"; then
+        if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; command -v $cmd >/dev/null 2>&1"; then
             missing="${missing}${missing:+ }$cmd"
             errors=$((errors + 1))
         fi
@@ -180,18 +205,46 @@ remote_mac_preflight() {
         case "$answer" in
             install)
                 log_info "Installing missing prerequisites on $host via Homebrew..."
-                if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" "command -v brew >/dev/null 2>&1"; then
-                    die "Homebrew is not installed on $host. Install it first: https://brew.sh"
+                if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; command -v brew >/dev/null 2>&1"; then
+                    tui_confirm "Install Homebrew" "Homebrew is not installed on $host.\n\nInstall Homebrew now? (requires user interaction on the remote host)"
+                    if [ "$?" -ne 0 ]; then
+                        log_warn "Homebrew installation declined — cannot install prerequisites"
+                        return 1
+                    fi
+                    log_info "Installing Homebrew on $host..."
+                    if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'; then
+                        log_error "Failed to install Homebrew on $host"
+                        tui_menu "Homebrew Install Failed" \
+                            "Homebrew installation failed on $host." \
+                            "Retry Homebrew install" "retry" \
+                            "Abort deployment" "abort" || true
+                        local hb_answer="${_TUI_RESULT:-abort}"
+                        case "$hb_answer" in
+                            retry)
+                                if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'; then
+                                    log_error "Homebrew install failed again"
+                                    return 1
+                                fi
+                                ;;
+                            *) return 1 ;;
+                        esac
+                    fi
+                    # Add brew to PATH for Apple Silicon Macs
+                    ssh $_REMOTE_MAC_SSH_OPTS "$host" 'grep -q "homebrew" ~/.zprofile 2>/dev/null || echo "eval \"$(/opt/homebrew/bin/brew shellenv)\"" >> ~/.zprofile; eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)" 2>/dev/null || true'
+                fi
+                if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" 'export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"; command -v brew >/dev/null 2>&1'; then
+                    log_error "Homebrew still not found after installation. PATH may need updating."
+                    return 1
                 fi
                 for cmd in $missing; do
                     case "$cmd" in
                         xorriso)
                             log_info "Installing xorriso on $host..."
-                            ssh $_REMOTE_MAC_SSH_OPTS "$host" "brew install xorriso" || die "Failed to install xorriso on $host"
+                            ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; brew install xorriso" || die "Failed to install xorriso on $host"
                             ;;
                         sgdisk)
                             log_info "Installing gptfdisk (sgdisk) on $host..."
-                            ssh $_REMOTE_MAC_SSH_OPTS "$host" "brew install gptfdisk" || die "Failed to install gptfdisk on $host"
+                            ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; brew install gptfdisk" || die "Failed to install gptfdisk on $host"
                             ;;
                         *)
                             log_error "Cannot auto-install $cmd"
@@ -234,50 +287,34 @@ remote_mac_preflight() {
 }
 
 # ── Remote File Operations ──
-# Check if a file exists on the target.
+# Check if a file exists on the target via SSH.
 remote_mac_file_exists() {
     local path="$1"
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        [ -f "$path" ]
-    else
-        local escaped_path
-        escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "test -f '${escaped_path}'" 2>/dev/null
-    fi
+    local escaped_path
+    escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
+    ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "test -f '${escaped_path}'" 2>/dev/null
 }
 
-# Check if a directory exists on the target.
+# Check if a directory exists on the target via SSH.
 remote_mac_dir_exists() {
     local path="$1"
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        [ -d "$path" ]
-    else
-        local escaped_path
-        escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "test -d '${escaped_path}'" 2>/dev/null
-    fi
+    local escaped_path
+    escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
+    ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "test -d '${escaped_path}'" 2>/dev/null
 }
 
-# Create a directory on the target.
+# Create a directory on the target via SSH.
 remote_mac_mkdir() {
     local path="$1"
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        mkdir -p "$path"
-    else
-        local escaped_path
-        escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "mkdir -p '${escaped_path}'"
-    fi
+    local escaped_path
+    escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
+    ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "mkdir -p '${escaped_path}'"
 }
 
-# Remove a file on the target.
+# Remove a file on the target via SSH.
 remote_mac_rm() {
     local path="$1"
-    if [ "${DEPLOY_MODE:-local}" = "local" ]; then
-        rm -f "$path"
-    else
-        local escaped_path
-        escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "rm -f '${escaped_path}'"
-    fi
+    local escaped_path
+    escaped_path=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
+    ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "rm -f '${escaped_path}'"
 }

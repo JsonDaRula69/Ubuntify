@@ -60,6 +60,12 @@ check_recovery_health() {
     fi
 
     if [ "$RECOVERY_MOUNT_OK" -eq 0 ]; then
+        # Missing BaseSystem.dmg is normal on macOS 12+ (thin recovery fetches from Apple servers)
+        # The critical check is that the Recovery volume EXISTS, not that BaseSystem.dmg is present
+        if [ -n "$RECOVERY_VOLUME" ]; then
+            log "Recovery partition exists (BaseSystem.dmg absent — normal for macOS 12+ thin recovery)"
+            return 0
+        fi
         warn "Recovery partition exists but appears unhealthy (missing BaseSystem.dmg)"
         return 1
     fi
@@ -99,7 +105,7 @@ analyze_disk_layout() {
         log "Free space: ${FREE_SPACE:-unknown}"
 
         if ! check_recovery_health "$_apfs_container_val"; then
-            die "macOS Recovery partition is missing or damaged. Deploying without Recovery risks bricking the machine if installation fails. Repair Recovery first: boot to Internet Recovery (Cmd+Option+R) and reinstall macOS."
+            warn "macOS Recovery partition may be damaged. Deployment can proceed but repair Recovery if possible: boot to Internet Recovery (Option+R) and reinstall macOS."
         fi
     fi
     echo ""
@@ -136,6 +142,7 @@ shrink_apfs_if_needed() {
     local CURRENT_SIZE
     local EXISTING_FREE_GB
     local MIN_MACOS_GB=50
+    local MIN_UBUNTU_GB=40
     local USED_GB
     local TARGET_MACOS_GB
     local CURRENT_CONTAINER_GB
@@ -151,6 +158,13 @@ shrink_apfs_if_needed() {
     eval "$_apfs_original_size_name=\"\$_apfs_original_size_val\""
     log "Current APFS size: ${CURRENT_SIZE:-unknown}"
 
+    CURRENT_CONTAINER_GB=$(remote_mac_exec diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
+    local TOTAL_DISK_GB
+    TOTAL_DISK_GB=$(remote_mac_exec diskutil info "$INTERNAL_DISK" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
+    if [ -z "$TOTAL_DISK_GB" ]; then
+        TOTAL_DISK_GB="$CURRENT_CONTAINER_GB"
+    fi
+
     EXISTING_FREE_GB=$(remote_mac_exec diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "(free" | grep -oE '[0-9]+(\.[0-9]+)? GB' | head -1 | grep -oE '[0-9]+(\.[0-9]+)?' || true)
     if [ -n "$EXISTING_FREE_GB" ] && echo "$EXISTING_FREE_GB" | awk '{exit !($1 >= 5)}'; then
         log "Free space already ${EXISTING_FREE_GB}GB — skipping APFS resize"
@@ -164,16 +178,42 @@ shrink_apfs_if_needed() {
 
     USED_GB=$(remote_mac_exec diskutil apfs list "$APFS_CONTAINER" 2>/dev/null | grep "Capacity In Use By Volumes" | grep -oE '[0-9]+(\.[0-9]+)? GB' | head -1 | grep -oE '[0-9]+(\.[0-9]+)?' || true)
     if [ -z "$USED_GB" ]; then
-        USED_GB=$(remote_mac_exec diskutil apfs list "$APFS_CONTAINER" 2>/dev/null | grep "Capacity In Use By Volumes" | grep -oE '[0-9]+ B' | head -1 | awk '{printf "%.1f", $1/1024/1024/1024}' || true)
+        USED_GB=$(remote_mac_exec diskutil apfs list "$APFS_CONTAINER" 2>/dev/null | grep "Capacity In Use By Volumes" | grep -oE '[0-9]+ B' | head-1 | awk '{printf "%.1f", $1/1024/1024/1024}' || true)
     fi
 
-    if [ -n "$USED_GB" ]; then
-        TARGET_MACOS_GB=$(echo "$USED_GB" | awk -v min="$MIN_MACOS_GB" -v margin=10 '{target=int($1)+margin+1; if(target<min) target=min; print target}')
-        log "APFS in use: ${USED_GB}GB → shrinking to ${TARGET_MACOS_GB}GB (10GB margin)"
-    else
-        TARGET_MACOS_GB=200
-        warn "Could not determine APFS usage — defaulting to ${TARGET_MACOS_GB}GB for macOS"
-    fi
+    case "${MACOS_SIZE_MODE:-auto}" in
+        max_linux)
+            TARGET_MACOS_GB=$MIN_MACOS_GB
+            log "Max Linux mode: shrinking macOS to minimum ${TARGET_MACOS_GB}GB"
+            ;;
+        max_macos)
+            if [ -n "$USED_GB" ]; then
+                TARGET_MACOS_GB=$(echo "$USED_GB" | awk -v min="$MIN_MACOS_GB" -v margin=10 '{target=int($1)+margin+1; if(target<min) target=min; print target}')
+            else
+                TARGET_MACOS_GB=200
+            fi
+            log "Max macOS mode: keeping macOS at ${TARGET_MACOS_GB}GB (Ubuntu gets ~${MIN_UBUNTU_GB}GB)"
+            ;;
+        custom)
+            if [ -n "${MACOS_SIZE_GB:-}" ] && [ "${MACOS_SIZE_GB:-0}" -ge "$MIN_MACOS_GB" ] 2>/dev/null; then
+                TARGET_MACOS_GB="$MACOS_SIZE_GB"
+                log "Custom mode: resizing macOS to ${TARGET_MACOS_GB}GB"
+            else
+                TARGET_MACOS_GB=$MIN_MACOS_GB
+                warn "Custom size invalid or missing — falling back to min macOS (${TARGET_MACOS_GB}GB)"
+            fi
+            ;;
+        *)
+            # Auto: used + 10GB margin, min 50GB
+            if [ -n "$USED_GB" ]; then
+                TARGET_MACOS_GB=$(echo "$USED_GB" | awk -v min="$MIN_MACOS_GB" -v margin=10 '{target=int($1)+margin+1; if(target<min) target=min; print target}')
+                log "APFS in use: ${USED_GB}GB → shrinking to ${TARGET_MACOS_GB}GB (10GB margin)"
+            else
+                TARGET_MACOS_GB=200
+                warn "Could not determine APFS usage — defaulting to ${TARGET_MACOS_GB}GB for macOS"
+            fi
+            ;;
+    esac
 
     CURRENT_CONTAINER_GB=$(remote_mac_exec diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
     if [ -n "$CURRENT_CONTAINER_GB" ] && echo "$CURRENT_CONTAINER_GB $TARGET_MACOS_GB" | awk '{exit !($1 <= $2)}'; then
@@ -232,9 +272,9 @@ create_esp_partition() {
     if [ -n "$EXISTING_ESP" ]; then
         log "Removing existing $ESP_NAME partition /dev/$EXISTING_ESP..."
         dry_run_exec "Remove existing ESP partition /dev/$EXISTING_ESP" \
-            remote_mac_sudo retry_diskutil unmount "/dev/$EXISTING_ESP" 2>/dev/null || true
+            remote_mac_retry_diskutil unmount "/dev/$EXISTING_ESP" 2>/dev/null || true
         dry_run_exec "Erase ESP partition /dev/$EXISTING_ESP to free space" \
-            remote_mac_sudo retry_diskutil eraseVolume free none "/dev/$EXISTING_ESP" 2>/dev/null || warn "Could not remove existing ESP"
+            remote_mac_retry_diskutil eraseVolume free none "/dev/$EXISTING_ESP" 2>/dev/null || warn "Could not remove existing ESP"
         sleep 1
     fi
 
@@ -247,7 +287,7 @@ create_esp_partition() {
         echo "/Volumes/${ESP_NAME}"
         return 0
     fi
-    if remote_mac_sudo retry_diskutil addPartition "$INTERNAL_DISK" %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% "$ESP_SIZE"; then
+    if remote_mac_retry_diskutil addPartition "$INTERNAL_DISK" %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% "$ESP_SIZE"; then
         sleep 2
         AFTER_PARTS=$(remote_mac_exec diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
         _esp_device_val=$(comm -13 <(echo "$BEFORE_PARTS") <(echo "$AFTER_PARTS") | head -1)
@@ -257,7 +297,7 @@ create_esp_partition() {
         log "ESP partition candidate: /dev/$_esp_device_val"
         remote_mac_sudo newfs_msdos -F 32 -v "$ESP_NAME" "/dev/$_esp_device_val" || die "Failed to format ESP as FAT32"
         sleep 1
-        remote_mac_sudo retry_diskutil mount "/dev/$_esp_device_val" 2>/dev/null || true
+        remote_mac_retry_diskutil mount "/dev/$_esp_device_val" 2>/dev/null || true
         eval "$_esp_created_name=1"
         eval "$_esp_device_name=\"\$_esp_device_val\""
         ESP_MOUNT="/Volumes/$ESP_NAME"

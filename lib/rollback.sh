@@ -398,7 +398,7 @@ rollback_internal() {
 
         # Erase to free space
         if dry_run_exec "Erasing ESP partition ${esp_device} to free space" \
-            retry_diskutil eraseVolume free none "/dev/${esp_device}" 2>/dev/null; then
+            remote_mac_retry_diskutil eraseVolume free none "/dev/${esp_device}" 2>/dev/null; then
             rollback_status="${rollback_status}esp_removed "
             log_info "ESP partition removed"
         else
@@ -416,7 +416,7 @@ rollback_internal() {
         if [ -n "$original_size" ]; then
             log_info "Restoring APFS container to ${original_size}GB"
             if dry_run_exec "Restoring APFS container to ${original_size}GB" \
-                retry_diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null; then
+                remote_mac_retry_diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null; then
                 rollback_status="${rollback_status}apfs_restored "
                 log_info "APFS container restored"
             else
@@ -428,7 +428,7 @@ rollback_internal() {
         # Expand to fill any freed space (best effort)
         log_info "Expanding APFS to fill available space"
         dry_run_exec "Expanding APFS to fill available space" \
-            retry_diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || true
+            remote_mac_retry_diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || true
     fi
 
     log_info "Internal partition rollback completed (status: ${rollback_status:-none})"
