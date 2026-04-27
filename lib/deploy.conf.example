@@ -1,75 +1,35 @@
-# deploy.conf — Deployment configuration
-# Copy to deploy.conf and customize, or run prepare-deployment.sh
-# to be prompted for values on first run.
-#
-# Security: This file contains sensitive credentials.
-# - Plaintext mode: chmod 600 deploy.conf
-# - AES-256-CBC mode: openssl enc -aes-256-cbc -pbkdf2 -salt -in deploy.conf -out deploy.conf.enc
-# - macOS Keychain mode: credentials stored via 'security' CLI
-#
-# All fields with __REPLACE__ must be customized before deployment.
+# deploy.conf — Template for Ubuntify configuration
+# Values marked __REPLACE__ will be prompted on first run.
+# This file is created automatically from this template.
 
-# ── Identity ──
-# Username for the installed Ubuntu system
 USERNAME="__REPLACE__"
-# Full name (GECOS field)
-REALNAME="__REPLACE__"
-# Password hash for the user account.
-# Generate with: openssl passwd -6 'yourpassword'
-# Or run prepare-deployment.sh to be prompted for a password.
+REALNAME=""
 PASSWORD_HASH="__REPLACE__"
-# Hostname for the installed system (default: macpro-linux)
-HOSTNAME="macpro-linux"
+HOSTNAME="__REPLACE__"
 
-# ── SSH authorized keys ──
-# One key per line. Multiple SSH_KEY entries are accumulated.
-# Example:
-#   SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@host"
-#   SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... another@host"
-# Alternatively, point to an authorized_keys file:
-#   SSH_KEYS_FILE="$HOME/.ssh/authorized_keys"
-# If SSH_KEYS_FILE is set, keys from that file are included first,
-# followed by any SSH_KEY entries.
-SSH_KEY="__REPLACE__"
+# SSH public keys (one per line, or use SSH_KEYS_FILE below)
+SSH_KEY=""
 SSH_KEYS_FILE=""
 
-# ── WiFi credentials ──
-# Used in autoinstall.yaml netplan generation
+# WiFi credentials
 WIFI_SSID="__REPLACE__"
 WIFI_PASSWORD="__REPLACE__"
 
-# ── Monitoring ──
-# Webhook endpoint for installation progress (macpro-monitor)
-WEBHOOK_HOST="192.168.1.X"
+# Webhook monitoring (host is auto-detected from this machine's IP on first run)
+WEBHOOK_HOST=""
 WEBHOOK_PORT="8080"
 
-# ── Encryption ──
-# How to store deploy.conf credentials:
-#   plaintext  — chmod 600, no encryption (default, agent mode compatible)
-#   aes256     — encrypt with openssl aes-256-cbc -pbkdf2 (passphrase required each run)
-#   keychain   — macOS Keychain via 'security' CLI (macOS only, no passphrase needed)
+# Password storage: plaintext, aes256, keychain
 ENCRYPTION="plaintext"
 
-# ── Deployment Mode ──
-# How this script accesses the Mac Pro's disk and system:
-#   local   — Run directly on the Mac Pro (requires sudo, current behavior)
-#   remote  — Control the Mac Pro via SSH from another machine (no local sudo needed)
-DEPLOY_MODE="local"
+# Deployment mode (always remote)
+DEPLOY_MODE="remote"
 
-# ── Remote Target ──
-# SSH hostname or IP for the Mac Pro's macOS partition.
-# Only used when DEPLOY_MODE=remote.
-# Must be reachable via: ssh -o ConnectTimeout=10 -o BatchMode=yes TARGET_HOST
-# Examples: "macpro", "192.168.1.124"
-TARGET_HOST=""
+# Target Mac Pro SSH hostname/IP
+TARGET_HOST="__REPLACE__"
 
-# ── Remote Sudo Password ──
-# Password for sudo on the TARGET_HOST (macOS side).
-# Stored encrypted (same as PASSWORD_HASH). Only used when DEPLOY_MODE=remote.
-# Leave empty to be prompted each time a remote sudo command is needed.
-REMOTE_SUDO_PASSWORD=""
+# Remote sudo password (stored encrypted if encryption is enabled)
+REMOTE_SUDO_PASSWORD="__REPLACE__"
 
-# ── Output directory ──
-# Where to store generated files (ISO, autoinstall.yaml, staging)
-# Default: ~/.Ubuntu_Deployment/
+# Output directory (default: ~/.Ubuntify/)
 OUTPUT_DIR=""

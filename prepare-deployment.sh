@@ -55,26 +55,28 @@ export CONFIRM_YES
 
 # Resolve config file: try OUTPUT_DIR first (env var override), then default.
 # After parse_conf we re-resolve if OUTPUT_DIR was set in the config.
-OUTPUT_DIR="${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
+OUTPUT_DIR="${OUTPUT_DIR:-$HOME/.Ubuntify}"
 OUTPUT_DIR_INITIAL="$OUTPUT_DIR"
 CONF_FILE="${OUTPUT_DIR}/deploy.conf"
 # Track whether config was loaded from user's deploy.conf or the example template
 _USING_EXAMPLE_CONF=0
 if [ ! -f "$CONF_FILE" ]; then
     warn "deploy.conf not found — using defaults from deploy.conf.example"
-    CONF_FILE="${LIB_DIR}/deploy.conf.example"
     _USING_EXAMPLE_CONF=1
+    mkdir -p "$OUTPUT_DIR"
+    cp "${LIB_DIR}/deploy.conf.example" "$CONF_FILE"
+    chmod 600 "$CONF_FILE"
 fi
 
 # Default values for config keys
 USERNAME=""
 REALNAME=""
 PASSWORD_HASH=""
-HOSTNAME="macpro-linux"
+HOSTNAME=""
 SSH_KEYS=""
 SSH_KEYS_FILE=""
 ENCRYPTION="plaintext"
-DEPLOY_MODE="local"
+DEPLOY_MODE="remote"
 TARGET_HOST=""
 REMOTE_SUDO_PASSWORD=""
 WHURL=""
@@ -176,13 +178,27 @@ validate_wifi_password() {
 validate_inputs() {
     local errors=0
 
-    case "$DEPLOY_MODE" in
-        local|remote) ;;
-        *) log_error "DEPLOY_MODE must be 'local' or 'remote' (got: '$DEPLOY_MODE')"; errors=$((errors + 1)) ;;
-    esac
-    if [ "$DEPLOY_MODE" = "remote" ] && [ -z "$TARGET_HOST" ]; then
-        log_error "TARGET_HOST is required when DEPLOY_MODE=remote"
+    if [ -z "${TARGET_HOST:-}" ]; then
+        log_error "TARGET_HOST is required (remote-only mode)"
         errors=$((errors + 1))
+    fi
+
+    if ! validate_username "${USERNAME:-}"; then
+        errors=$((errors + 1))
+    fi
+    if ! validate_hostname "${HOSTNAME:-}"; then
+        errors=$((errors + 1))
+    fi
+    if ! validate_realname "${REALNAME:-}"; then
+        errors=$((errors + 1))
+    fi
+    if [ "${NETWORK_TYPE:-1}" = "1" ] || [ "${NETWORK_TYPE:-}" = "wifi" ]; then
+        if ! validate_wifi_ssid "${WIFI_SSID:-}"; then
+            errors=$((errors + 1))
+        fi
+        if ! validate_wifi_password "${WIFI_PASSWORD:-}"; then
+            errors=$((errors + 1))
+        fi
     fi
 
     if ! validate_username "$USERNAME"; then
@@ -250,8 +266,10 @@ parse_conf() {
             DEPLOY_MODE)    DEPLOY_MODE="$value" ;;
             TARGET_HOST)    TARGET_HOST="$value" ;;
             REMOTE_SUDO_PASSWORD) REMOTE_SUDO_PASSWORD="$value" ;;
+            MACOS_SIZE_MODE) MACOS_SIZE_MODE="$value" ;;
+            MACOS_SIZE_GB)  MACOS_SIZE_GB="$value" ;;
             # Output directory
-            OUTPUT_DIR)     OUTPUT_DIR="$value" ;;
+            OUTPUT_DIR)     OUTPUT_DIR="${value:-$HOME/.Ubuntify}" ;;
             *)              warn "Unknown config key: $key" ;;
         esac
     done < "$conf"
@@ -261,12 +279,11 @@ parse_conf "$CONF_FILE" || die "Failed to load $CONF_FILE"
 # When using the example template, strip __REPLACE__ placeholder values
 # so prompt_config() correctly sees them as empty and prompts the user
 if [ "$_USING_EXAMPLE_CONF" -eq 1 ]; then
-    for var in USERNAME REALNAME PASSWORD_HASH WIFI_SSID WIFI_PASSWORD; do
+    for var in USERNAME REALNAME PASSWORD_HASH HOSTNAME TARGET_HOST REMOTE_SUDO_PASSWORD WIFI_SSID WIFI_PASSWORD; do
         case "${!var}" in
             __REPLACE__|'') eval "$var=\"\"" ;;
         esac
     done
-    # SSH_KEYS may contain __REPLACE__ (accumulated from SSH_KEY lines)
     case "$SSH_KEYS" in
         *__REPLACE__*) SSH_KEYS="" ;;
     esac
@@ -331,6 +348,8 @@ export _CLEANUP_DONE=0
 export DEPLOY_METHOD=""
 export STORAGE_LAYOUT=""
 export NETWORK_TYPE=""
+export MACOS_SIZE_MODE=""
+export MACOS_SIZE_GB=""
 
 generate_password_hash() {
     local password="$1"
@@ -340,152 +359,291 @@ generate_password_hash() {
 prompt_config() {
     local missing=0
 
-    if [ -z "$USERNAME" ]; then
-        if [ "$AGENT_MODE" -eq 1 ]; then
-            agent_error "USERNAME required in deploy.conf or --agent mode"
-            missing=1
-        else
-            tui_input "Username" "Enter username for the Ubuntu system:" ""
-            USERNAME="$_TUI_RESULT"
-            [ -z "$USERNAME" ] && { die "Username is required"; }
-        fi
-    fi
-    if [ -z "$REALNAME" ]; then
-        if [ "$AGENT_MODE" -eq 1 ]; then
-            REALNAME="$USERNAME"
-        else
-            tui_input "Full Name" "Enter full name (GECOS):" "$USERNAME"
-            REALNAME="$_TUI_RESULT"
-        fi
-    fi
-    if [ -z "$PASSWORD_HASH" ]; then
-        if [ "$AGENT_MODE" -eq 1 ]; then
-            agent_error "PASSWORD_HASH required in deploy.conf or --agent mode"
-            missing=1
-        else
-            local password password2
-            tui_password "Password" "Enter password for $USERNAME:"
-            password="$_TUI_RESULT"
-            tui_password "Confirm Password" "Confirm password:"
-            password2="$_TUI_RESULT"
-            if [ "$password" != "$password2" ]; then
-                die "Passwords do not match"
-            fi
-            PASSWORD_HASH=$(generate_password_hash "$password") || die "Failed to generate password hash"
-        fi
-    else
-        # Validate PASSWORD_HASH format (crypt(3): $id$salt$hash)
-        if ! echo "$PASSWORD_HASH" | grep -qE '^\$[0-9a-z]+\$[^$]+\$[^$]+$'; then
-            warn "PASSWORD_HASH does not appear to be a valid crypt(3) hash"
-            if [ "$AGENT_MODE" -eq 1 ]; then
-                agent_error "PASSWORD_HASH must be a valid crypt(3) hash (e.g., from 'openssl passwd -6')"
-                missing=1
-            else
-                warn "Regenerating password hash..."
-                local password password2
-                tui_password "Password" "PASSWORD_HASH invalid. Enter password for $USERNAME:"
-                password="$_TUI_RESULT"
-                tui_password "Confirm Password" "Confirm password:"
-                password2="$_TUI_RESULT"
-                if [ "$password" != "$password2" ]; then
-                    die "Passwords do not match"
-                fi
-                PASSWORD_HASH=$(generate_password_hash "$password") || die "Failed to generate password hash"
-            fi
-        fi
-    fi
-    if [ -z "$SSH_KEYS" ] && [ -z "$SSH_KEYS_FILE" ]; then
-        if [ "$AGENT_MODE" -eq 1 ]; then
-            agent_error "SSH_KEY or SSH_KEYS_FILE required in deploy.conf"
-            missing=1
-        else
-            local ssh_choice
-            ssh_choice=$(prompt_ssh_key_menu) || { ssh_choice="skip"; }
-            case "$ssh_choice" in
-                existing)
-                    local selected_key
-                    selected_key=$(prompt_ssh_key_selection)
-                    if [ "$selected_key" = "SKIP" ]; then
-                        warn "SSH keys skipped by user"
-                    elif [ "$selected_key" = "MANUAL" ]; then
-                        local manual_key
-                        tui_input "SSH Public Key" "Paste your SSH public key:" ""
-                        manual_key="$_TUI_RESULT"
-                        if [ -n "$manual_key" ]; then
-                            SSH_KEYS="$manual_key"
-                        fi
-                    elif [ -n "$selected_key" ]; then
-                        SSH_KEYS="$selected_key"
-                    fi
-                    ;;
-                generate)
-                    local generated_key
-                    generated_key=$(prompt_generate_key)
-                    if [ -n "$generated_key" ]; then
-                        SSH_KEYS="$generated_key"
-                    fi
-                    ;;
-                skip)
-                    warn "No SSH keys configured. You will need console access to the Mac Pro."
-                    ;;
-            esac
-        fi
-    elif [ "$AGENT_MODE" -ne 1 ]; then
-        log_info "SSH keys already configured from deploy.conf (${#SSH_KEYS} bytes)"
-    fi
-    if [ -z "$WIFI_SSID" ]; then
-        if [ "$AGENT_MODE" -eq 1 ]; then
-            agent_error "WIFI_SSID required in deploy.conf or --agent mode"
-            missing=1
-        else
-            tui_input "WiFi SSID" "Enter WiFi network name:" ""
-            WIFI_SSID="$_TUI_RESULT"
-        fi
-    fi
-    if [ -z "$WIFI_PASSWORD" ]; then
-        if [ "$AGENT_MODE" -eq 1 ]; then
-            agent_error "WIFI_PASSWORD required in deploy.conf or --agent mode"
-            missing=1
-        else
-            tui_password "WiFi Password" "Enter WiFi password:"
-            WIFI_PASSWORD="$_TUI_RESULT"
-        fi
-    fi
-    if [ -z "$WEBHOOK_HOST" ]; then
-        if [ "$AGENT_MODE" -eq 1 ]; then
-            WEBHOOK_HOST="localhost"
-        else
-            local webhook_default="localhost"
-            if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
-                local detected_ip
-                detected_ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || ipconfig getifaddr en2 2>/dev/null || echo "")
-                if [ -n "$detected_ip" ]; then
-                    webhook_default="$detected_ip"
-                fi
-            fi
-            tui_input "Webhook Host" "Enter monitoring host IP (webhook server):" "$webhook_default"
-            WEBHOOK_HOST="$_TUI_RESULT"
-        fi
-    fi
-    if [ -z "$WEBHOOK_PORT" ]; then
-        WEBHOOK_PORT="${WEBHOOK_PORT:-8080}"
+    if [ "$AGENT_MODE" -eq 1 ]; then
+        [ -z "$USERNAME" ] && { agent_error "USERNAME required in deploy.conf or --agent mode"; missing=1; }
+        [ -z "$HOSTNAME" ] && { agent_error "HOSTNAME required in deploy.conf or --agent mode"; missing=1; }
+        [ -z "$PASSWORD_HASH" ] && { agent_error "PASSWORD_HASH required in deploy.conf or --agent mode"; missing=1; }
+        [ -z "$SSH_KEYS" ] && [ -z "$SSH_KEYS_FILE" ] && { agent_error "SSH_KEY or SSH_KEYS_FILE required in deploy.conf"; missing=1; }
+        [ -z "$WIFI_SSID" ] && { agent_error "WIFI_SSID required in deploy.conf or --agent mode"; missing=1; }
+        [ -z "$WIFI_PASSWORD" ] && { agent_error "WIFI_PASSWORD required in deploy.conf or --agent mode"; missing=1; }
+        [ -z "$WEBHOOK_HOST" ] && WEBHOOK_HOST="localhost"
+        [ "$missing" -eq 1 ] && return 1
+        return 0
     fi
 
-    if [ "$AGENT_MODE" -ne 1 ]; then
-        prompt_deploy_mode
-        prompt_encryption_mode
-        configure_ssh_config
-    fi
+    _prompt_username
+    _prompt_realname
+    _prompt_password
+    _prompt_ssh_keys
+    _prompt_wifi_ssid
+    _prompt_wifi_password
+    _prompt_webhook
+    _prompt_hostname
+    prompt_deploy_mode
+    prompt_encryption_mode
+    configure_ssh_config
 
-    if [ "$missing" -eq 1 ]; then
-        return 1
-    fi
+    _show_config_menu
+}
+
+_show_config_menu() {
+    while true; do
+        local ssh_key_display="0 key(s)"
+        if [ -n "$SSH_KEYS" ]; then
+            local ssh_key_count=0
+            while IFS= read -r key; do
+                [ -n "$key" ] && ssh_key_count=$((ssh_key_count + 1))
+            done <<EOF
+$SSH_KEYS
+EOF
+            ssh_key_display="$ssh_key_count key(s)"
+        fi
+        local pass_display="(set)"
+        [ -z "$PASSWORD_HASH" ] && pass_display="(not set)"
+        local sudo_pass_display="(set)"
+        [ -z "$REMOTE_SUDO_PASSWORD" ] && sudo_pass_display="(not set)"
+        local wifi_pass_display="(set)"
+        [ -z "$WIFI_PASSWORD" ] && wifi_pass_display="(not set)"
+
+        local sudo_pass_display="(set)"
+        [ -z "$REMOTE_SUDO_PASSWORD" ] && sudo_pass_display="(not set)"
+
+        tui_menu "Configuration" "Review and edit settings:" \
+            "Username:        $USERNAME" "username" \
+            "Full Name:       ${REALNAME:-(not set)}" "realname" \
+            "Password:        $pass_display" "password" \
+            "Sudo Password:   $sudo_pass_display" "sudo_password" \
+            "SSH Keys:        $ssh_key_display" "ssh" \
+            "WiFi SSID:       ${WIFI_SSID:-(not set)}" "wifi_ssid" \
+            "WiFi Password:   $wifi_pass_display" "wifi_password" \
+            "Webhook:         ${WEBHOOK_HOST}:${WEBHOOK_PORT}" "webhook" \
+            "Hostname:        ${HOSTNAME:-(not set)}" "hostname" \
+            "Target Host:     ${TARGET_HOST:-(not set)}" "target_host" \
+            "Encryption:      ${ENCRYPTION:-plaintext}" "encryption" \
+            "▸ Done — proceed" "done" || return 1
+        local choice="$_TUI_RESULT"
+
+        case "$choice" in
+            username)      _prompt_username ;;
+            realname)      _prompt_realname ;;
+            password)      _prompt_password ;;
+            sudo_password) _prompt_sudo_password ;;
+            ssh)           _prompt_ssh_keys ;;
+            wifi_ssid)     _prompt_wifi_ssid ;;
+            wifi_password) _prompt_wifi_password ;;
+            webhook)       _prompt_webhook ;;
+            hostname)      _prompt_hostname ;;
+            target_host)
+                _DEPLOY_MODE_PROMPTED=0
+                prompt_deploy_mode
+                ;;
+            encryption)    prompt_encryption_mode ;;
+            done)          break ;;
+        esac
+    done
 
     WHURL="http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/webhook"
     export USERNAME REALNAME PASSWORD_HASH HOSTNAME SSH_KEYS SSH_KEYS_FILE
     export WIFI_SSID WIFI_PASSWORD WEBHOOK_HOST WEBHOOK_PORT WHURL
     export DEPLOY_MODE TARGET_HOST REMOTE_SUDO_PASSWORD
     return 0
+}
+
+_prompt_username() {
+    while true; do
+        tui_input "Username" "Enter username for the Ubuntu system (lowercase letters, digits, hyphens, underscores):" "${USERNAME:-}"
+        USERNAME="$_TUI_RESULT"
+        if [ -z "$USERNAME" ]; then
+            tui_msgbox "Username Required" "A username is required for the Ubuntu system.\n\nPress Enter to try again."
+            continue
+        fi
+        if validate_username "$USERNAME"; then
+            save_config_key "USERNAME" "$USERNAME"
+            break
+        else
+            tui_msgbox "Invalid Username" "Username must start with a lowercase letter or underscore and contain only lowercase letters, digits, hyphens, and underscores.\n\nGot: '$USERNAME'\n\nPress Enter to try again."
+            USERNAME=""
+        fi
+    done
+}
+
+_prompt_realname() {
+    tui_input "Full Name" "Enter full name (GECOS, press Enter to use username):" "${REALNAME:-}"
+    REALNAME="$_TUI_RESULT"
+    [ -z "$REALNAME" ] && REALNAME="$USERNAME"
+    save_config_key "REALNAME" "$REALNAME"
+}
+
+_prompt_password() {
+    local password password2
+    if [ -n "$PASSWORD_HASH" ]; then
+        tui_menu "Password" "Ubuntu password is set (hashed).\n\nWhat would you like to do?" \
+            "Change password" "change" \
+            "Keep current password" "keep" || return 0
+        [ "$_TUI_RESULT" = "keep" ] && return 0
+    fi
+    while true; do
+        tui_password "Password" "Enter password for $USERNAME:"
+        password="$_TUI_RESULT"
+        [ -z "$password" ] && { tui_msgbox "Password Required" "A password is required.\n\nPress Enter to try again."; continue; }
+        tui_password "Confirm Password" "Confirm password:"
+        password2="$_TUI_RESULT"
+        if [ "$password" != "$password2" ]; then
+            tui_msgbox "Passwords Do Not Match" "The passwords you entered do not match.\n\nPress Enter to try again."
+            continue
+        fi
+        break
+    done
+}
+
+_prompt_sudo_password() {
+    if [ -n "$REMOTE_SUDO_PASSWORD" ]; then
+        local host_display="${TARGET_HOST:-macpro}"
+        tui_menu "Remote Sudo Password" "Current sudo password for $host_display is set.\n\nWhat would you like to do?" \
+            "Show current password" "show" \
+            "Change password" "change" \
+            "Keep current password" "keep" || return 0
+        case "$_TUI_RESULT" in
+            show)
+                tui_msgbox "Remote Sudo Password" "Current sudo password for $host_display:\n\n$REMOTE_SUDO_PASSWORD"
+                return 0
+                ;;
+            keep) return 0 ;;
+        esac
+    fi
+    while true; do
+        tui_password "Remote Sudo Password" "Enter sudo password for $TARGET_HOST:"
+        REMOTE_SUDO_PASSWORD="$_TUI_RESULT"
+        if [ -z "$REMOTE_SUDO_PASSWORD" ]; then
+            tui_msgbox "Password Required" "A sudo password is required for remote operations.\n\nPress Enter to try again."
+            continue
+        fi
+        log_info "Verifying sudo access on $TARGET_HOST..."
+        if remote_mac_sudo echo "sudo ok" >/dev/null 2>&1; then
+            save_config_key "REMOTE_SUDO_PASSWORD" "$REMOTE_SUDO_PASSWORD"
+            tui_msgbox "Sudo Verified" "Sudo password accepted for $TARGET_HOST."
+            break
+        else
+            tui_msgbox "Sudo Password Failed" "The sudo password for $TARGET_HOST was not accepted.\n\nPress Enter to try again."
+            REMOTE_SUDO_PASSWORD=""
+        fi
+    done
+}
+
+_prompt_ssh_keys() {
+    if [ -n "$SSH_KEYS" ] || [ -n "$SSH_KEYS_FILE" ]; then
+        log_info "SSH keys already configured from deploy.conf (${#SSH_KEYS} bytes)"
+        tui_confirm "SSH Keys" "SSH keys are already configured.\n\nKeep existing keys?"
+        if [ "$?" -eq 0 ]; then
+            return 0
+        fi
+    fi
+    local ssh_choice
+    ssh_choice=$(prompt_ssh_key_menu) || { ssh_choice="skip"; }
+    case "$ssh_choice" in
+        existing)
+            local selected_key
+            selected_key=$(prompt_ssh_key_selection)
+            if [ "$selected_key" = "SKIP" ]; then
+                warn "SSH keys skipped by user"
+            elif [ "$selected_key" = "MANUAL" ]; then
+                local manual_key
+                tui_input "SSH Public Key" "Paste your SSH public key:" ""
+                manual_key="$_TUI_RESULT"
+                if [ -n "$manual_key" ]; then
+                    SSH_KEYS="$manual_key"
+                    save_config_key "SSH_KEY" "$SSH_KEYS"
+                fi
+            elif [ -n "$selected_key" ]; then
+                SSH_KEYS="$selected_key"
+                save_config_key "SSH_KEY" "$SSH_KEYS"
+            fi
+            ;;
+        generate)
+            local generated_key
+            generated_key=$(prompt_generate_key)
+            if [ -n "$generated_key" ]; then
+                SSH_KEYS="$generated_key"
+                save_config_key "SSH_KEY" "$SSH_KEYS"
+            fi
+            ;;
+        skip)
+            warn "No SSH keys configured. You will need console access to the Mac Pro."
+            ;;
+    esac
+}
+
+_prompt_wifi_ssid() {
+    while true; do
+        tui_input "WiFi SSID" "Enter WiFi network name:" "${WIFI_SSID:-}"
+        WIFI_SSID="$_TUI_RESULT"
+        if [ -z "$WIFI_SSID" ]; then
+            tui_msgbox "WiFi SSID Required" "A WiFi network name is required.\n\nPress Enter to try again."
+            continue
+        fi
+        save_config_key "WIFI_SSID" "$WIFI_SSID"
+        break
+    done
+}
+
+_prompt_wifi_password() {
+    if [ -n "$WIFI_PASSWORD" ]; then
+        tui_menu "WiFi Password" "Current WiFi password is set.\n\nWhat would you like to do?" \
+            "Show current password" "show" \
+            "Change password" "change" \
+            "Keep current password" "keep" || return 0
+        case "$_TUI_RESULT" in
+            show)
+                tui_msgbox "WiFi Password" "Current WiFi password:\n\n$WIFI_PASSWORD"
+                return 0
+                ;;
+            keep) return 0 ;;
+        esac
+    fi
+    while true; do
+        tui_password "WiFi Password" "Enter WiFi password:"
+        WIFI_PASSWORD="$_TUI_RESULT"
+        if [ -z "$WIFI_PASSWORD" ]; then
+            tui_msgbox "WiFi Password Required" "A WiFi password is required.\n\nPress Enter to try again."
+            continue
+        fi
+        save_config_key "WIFI_PASSWORD" "$WIFI_PASSWORD"
+        break
+    done
+}
+
+_prompt_webhook() {
+    local webhook_default="localhost"
+    local detected_ip
+    detected_ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || ipconfig getifaddr en2 2>/dev/null || echo "")
+    [ -n "$detected_ip" ] && webhook_default="$detected_ip"
+    tui_input "Webhook Host" "Enter monitoring host IP (webhook server):" "${WEBHOOK_HOST:-$webhook_default}"
+    WEBHOOK_HOST="$_TUI_RESULT"
+    [ -z "$WEBHOOK_HOST" ] && WEBHOOK_HOST="$webhook_default"
+    save_config_key "WEBHOOK_HOST" "$WEBHOOK_HOST"
+
+    tui_input "Webhook Port" "Enter webhook port:" "${WEBHOOK_PORT:-8080}"
+    WEBHOOK_PORT="$_TUI_RESULT"
+    [ -z "$WEBHOOK_PORT" ] && WEBHOOK_PORT="8080"
+    save_config_key "WEBHOOK_PORT" "$WEBHOOK_PORT"
+}
+
+_prompt_hostname() {
+    while true; do
+        tui_input "Hostname" "Enter hostname for the Ubuntu system (lowercase letters, digits, hyphens, dots):" "${HOSTNAME:-}"
+        HOSTNAME="$_TUI_RESULT"
+        if [ -z "$HOSTNAME" ]; then
+            tui_msgbox "Hostname Required" "A hostname is required for the Ubuntu system.\n\nPress Enter to try again."
+            continue
+        fi
+        if validate_hostname "$HOSTNAME"; then
+            save_config_key "HOSTNAME" "$HOSTNAME"
+            break
+        else
+            tui_msgbox "Invalid Hostname" "Hostname must be 1-63 characters, start/end with a letter or digit, and contain only lowercase letters, digits, hyphens, and dots.\n\nGot: '$HOSTNAME'\n\nPress Enter to try again."
+            HOSTNAME=""
+        fi
+    done
 }
 
 # ── SSH Key Management Functions ──
@@ -770,12 +928,19 @@ EOF
     summary="${summary}Webhook:     ${WEBHOOK_HOST:-(not set)}:${WEBHOOK_PORT:-8080}\n"
     summary="${summary}SSH Keys:    ${ssh_key_count} key(s)\n"
     summary="${summary}\n"
-    summary="${summary}Deployment Mode:  ${DEPLOY_MODE:-local}\n"
-    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
-        summary="${summary}Target Host:      ${TARGET_HOST:-macpro}\n"
-    fi
+    summary="${summary}Target Host:      ${TARGET_HOST:-macpro}\n"
     summary="${summary}Deployment Method: ${method_name}\n"
     summary="${summary}Storage Layout:      ${storage_name}\n"
+    if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
+        local split_desc="auto"
+        case "${MACOS_SIZE_MODE:-auto}" in
+            max_linux) split_desc="Max Linux (min macOS)" ;;
+            max_macos) split_desc="Max macOS (min Ubuntu)" ;;
+            custom)   split_desc="Custom (macOS: ${MACOS_SIZE_GB:-?}GB)" ;;
+            *)        split_desc="Auto" ;;
+        esac
+        summary="${summary}Disk Split:          ${split_desc}\n"
+    fi
     summary="${summary}Network Type:        ${network_name}\n"
     summary="${summary}\n"
     summary="${summary}Proceed with deployment?"
@@ -785,6 +950,79 @@ EOF
 
 _conf_escape() {
     printf '%s' "$1" | awk '{gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); print}'
+}
+
+save_config_key() {
+    local key="$1"
+    local value="$2"
+    local conf="${3:-$CONF_FILE}"
+    [ ! -f "$conf" ] && return 1
+    local escaped_value
+    escaped_value="$(_conf_escape "$value")"
+    if grep -q "^${key}=" "$conf" 2>/dev/null; then
+        local tmpfile
+        tmpfile=$(mktemp)
+        awk -v k="$key" -v v="$escaped_value" '
+            $0 ~ "^" k "=" { print k "=\"" v "\""; next }
+            { print }
+        ' "$conf" > "$tmpfile" && mv "$tmpfile" "$conf"
+    else
+        printf '%s="%s"\n' "$key" "$escaped_value" >> "$conf"
+    fi
+}
+
+is_config_valid() {
+    if [ -z "${USERNAME:-}" ] || [ "$USERNAME" = "__REPLACE__" ]; then return 1; fi
+    if [ -z "${HOSTNAME:-}" ] || [ "$HOSTNAME" = "__REPLACE__" ]; then return 1; fi
+    if [ -z "${TARGET_HOST:-}" ] || [ "$TARGET_HOST" = "__REPLACE__" ]; then return 1; fi
+    if [ -z "${PASSWORD_HASH:-}" ] || [ "$PASSWORD_HASH" = "__REPLACE__" ]; then return 1; fi
+    if { [ -z "${WIFI_SSID:-}" ] || [ "$WIFI_SSID" = "__REPLACE__" ]; } && [ "${NETWORK_TYPE:-1}" = "1" ]; then return 1; fi
+    return 0
+}
+
+handle_existing_config() {
+    decrypt_config "$CONF_FILE"
+    parse_conf "$CONF_FILE"
+    if is_config_valid; then
+        if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+            log_info "Valid config found, loading"
+            _CONFIG_LOADED=1
+            return 0
+        fi
+        tui_menu "Configuration Found" \
+            "A valid deploy.conf was found." \
+            "Load existing configuration" "load" \
+            "Overwrite (create new)" "overwrite" \
+            "Delete and exit" "delete" || return 1
+        local choice="$_TUI_RESULT"
+        case "$choice" in
+            load)
+                log_info "Loading existing configuration"
+                _CONFIG_LOADED=1
+                return 0
+                ;;
+            overwrite)
+                rm -f "$CONF_FILE"
+                cp "${LIB_DIR}/deploy.conf.example" "$CONF_FILE"
+                chmod 600 "$CONF_FILE"
+                ;;
+            delete)
+                rm -f "$CONF_FILE"
+                log_info "Config deleted, exiting"
+                exit 0
+                ;;
+        esac
+    else
+        if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+            log_warn "Existing config is invalid"
+            return 1
+        fi
+        tui_msgbox "Invalid Config" \
+            "The existing deploy.conf is incomplete or invalid.\n\nYou will be guided through creating a new configuration."
+        rm -f "$CONF_FILE"
+        cp "${LIB_DIR}/deploy.conf.example" "$CONF_FILE"
+        chmod 600 "$CONF_FILE"
+    fi
 }
 
 save_config() {
@@ -821,6 +1059,8 @@ EOF
         printf 'DEPLOY_MODE="%s"\n' "$(_conf_escape "$DEPLOY_MODE")"
         printf 'TARGET_HOST="%s"\n' "$(_conf_escape "$TARGET_HOST")"
         printf 'REMOTE_SUDO_PASSWORD="%s"\n' "$(_conf_escape "$REMOTE_SUDO_PASSWORD")"
+        printf 'MACOS_SIZE_MODE="%s"\n' "$(_conf_escape "${MACOS_SIZE_MODE:-}")"
+        printf 'MACOS_SIZE_GB="%s"\n' "$(_conf_escape "${MACOS_SIZE_GB:-}")"
         printf 'OUTPUT_DIR="%s"\n' "$(_conf_escape "$OUTPUT_DIR")"
     } >> "$conf"
     chmod 600 "$conf"
@@ -837,19 +1077,13 @@ EOF
 
 prompt_deploy_mode() {
     [ "${_DEPLOY_MODE_PROMPTED:-0}" -eq 1 ] && return 0
-    log_info "prompt_deploy_mode: prompting for deployment mode"
+    log_info "prompt_deploy_mode: prompting for target host"
 
-    if [ -z "$DEPLOY_MODE" ] || [ "$DEPLOY_MODE" = "__REPLACE__" ] || [ "${_USING_EXAMPLE_CONF:-0}" -eq 1 ]; then
-        tui_menu "Deployment Mode" \
-            "Select how to deploy to the Mac Pro:" \
-            "Local (running on Mac Pro directly)" "local" \
-                    "Remote (SSH to Mac Pro from this machine)" "remote" || return 1
-        DEPLOY_MODE="$_TUI_RESULT"
-        log_info "prompt_deploy_mode: user selected DEPLOY_MODE=$DEPLOY_MODE"
-    fi
+    DEPLOY_MODE="remote"
+    save_config_key "DEPLOY_MODE" "remote"
 
-    if [ "$DEPLOY_MODE" = "remote" ]; then
-        if [ -z "$TARGET_HOST" ] || [ "$TARGET_HOST" = "__REPLACE__" ]; then
+    if [ -z "${TARGET_HOST:-}" ] || [ "${TARGET_HOST:-}" = "__REPLACE__" ]; then
+        while true; do
             local discovered_hosts
             discovered_hosts="$(detect_remote_hosts)" || true
 
@@ -874,102 +1108,123 @@ prompt_deploy_mode() {
 
                 if [ "$selection" = "manual" ]; then
                     tui_input "Target Host" \
-                                            "Enter SSH hostname or IP for the Mac Pro (macOS):" "macpro" || return 1
+                        "Enter SSH hostname or IP for the Mac Pro (macOS):" "" || return 1
                     TARGET_HOST="$_TUI_RESULT"
                 else
                     TARGET_HOST="$selection"
                 fi
             else
                 tui_input "Target Host" \
-                                    "Enter SSH hostname or IP for the Mac Pro (macOS):" "macpro" || return 1
+                    "Enter SSH hostname or IP for the Mac Pro (macOS):" "" || return 1
                 TARGET_HOST="$_TUI_RESULT"
             fi
-        fi
 
-        local resolved_host
-        resolved_host="$(resolve_hostname "$TARGET_HOST")"
-        local resolve_rc=$?
-        if [ "$resolved_host" != "$TARGET_HOST" ]; then
-            log_info "Hostname resolved: $TARGET_HOST -> $resolved_host"
-            if [ "$AGENT_MODE" -ne 1 ]; then
-                tui_msgbox "Host Resolved" "Hostname resolved:\n\n  $TARGET_HOST -> $resolved_host\n\nUsing $resolved_host for SSH connection."
-            else
-                agent_output "info" "Host Resolved" "$TARGET_HOST -> $resolved_host"
+    if [ -z "${TARGET_HOST:-}" ]; then
+                tui_msgbox "Target Host Required" "An SSH hostname or IP is required for remote deployment.\n\nPress Enter to try again."
+                continue
             fi
-            TARGET_HOST="$resolved_host"
-        elif [ $resolve_rc -ne 0 ]; then
-            if [ "$AGENT_MODE" -eq 1 ]; then
-                log_warn "Could not verify SSH connectivity to $TARGET_HOST via any hostname format"
-                agent_output "warning" "SSH Connectivity" "Could not verify SSH connectivity to $TARGET_HOST"
-            else
-                local ssh_resolved=0
-                while [ "$ssh_resolved" -eq 0 ]; do
-                    local retry_choice
-                    tui_menu "SSH Connection Failed" \
-                        "Cannot connect to $TARGET_HOST via SSH.\n\nChoose an option:" \
-                        "Try $TARGET_HOST.local" "local" \
-                        "Try $TARGET_HOST.lan" "lan" \
-                        "Enter different hostname" "manual" \
-                                            "Abort" "abort" || { retry_choice="abort"; }
-                    retry_choice="$_TUI_RESULT"
+            save_config_key "TARGET_HOST" "$TARGET_HOST"
+            break
+        done
+    fi
 
-                    case "$retry_choice" in
-                        local)
-                            TARGET_HOST="${TARGET_HOST%%.*}.local"
-                            if remote_mac_test; then
-                                ssh_resolved=1
-                                tui_msgbox "Connected" "Successfully connected to $TARGET_HOST"
-                            fi
-                            ;;
-                        lan)
-                            TARGET_HOST="${TARGET_HOST%%.*}.lan"
-                            if remote_mac_test; then
-                                ssh_resolved=1
-                                tui_msgbox "Connected" "Successfully connected to $TARGET_HOST"
-                            fi
-                            ;;
-                        manual)
-                            tui_input "Target Host" \
-                                                            "Enter SSH hostname or IP for the Mac Pro (macOS):" "" || continue
-                            TARGET_HOST="$_TUI_RESULT"
-                            resolved_host="$(resolve_hostname "$TARGET_HOST")"
-                            if [ "$resolved_host" != "$TARGET_HOST" ]; then
-                                TARGET_HOST="$resolved_host"
-                            fi
-                            if remote_mac_test; then
-                                ssh_resolved=1
-                                tui_msgbox "Connected" "Successfully connected to $TARGET_HOST"
-                            fi
-                            ;;
-                        abort|*)
-                            return 1
-                            ;;
-                    esac
-                done
-            fi
-        fi
-
+    local resolved_host
+    resolved_host="$(resolve_hostname "$TARGET_HOST")"
+    local resolve_rc=$?
+    if [ "$resolved_host" != "$TARGET_HOST" ]; then
+        log_info "Hostname resolved: $TARGET_HOST -> $resolved_host"
         if [ "$AGENT_MODE" -ne 1 ]; then
-            if ! remote_mac_test; then
-                warn "Cannot connect to $TARGET_HOST via SSH. Ensure SSH is enabled and key authentication is set up."
-            fi
+            tui_msgbox "Host Resolved" "Hostname resolved:\n\n  $TARGET_HOST -> $resolved_host\n\nUsing $resolved_host for SSH connection."
+        else
+            agent_output "info" "Host Resolved" "$TARGET_HOST -> $resolved_host"
         fi
+        TARGET_HOST="$resolved_host"
+        save_config_key "TARGET_HOST" "$TARGET_HOST"
+    elif [ $resolve_rc -ne 0 ]; then
+        if [ "$AGENT_MODE" -eq 1 ]; then
+            log_warn "Could not verify SSH connectivity to $TARGET_HOST via any hostname format"
+            agent_output "warning" "SSH Connectivity" "Could not verify SSH connectivity to $TARGET_HOST"
+        else
+            local ssh_resolved=0
+            while [ "$ssh_resolved" -eq 0 ]; do
+                local retry_choice
+                tui_menu "SSH Connection Failed" \
+                    "Cannot connect to $TARGET_HOST via SSH.\n\nChoose an option:" \
+                    "Try $TARGET_HOST.local" "local" \
+                    "Try $TARGET_HOST.lan" "lan" \
+                    "Enter different hostname" "manual" \
+                    "Abort" "abort" || { retry_choice="abort"; }
+                retry_choice="$_TUI_RESULT"
 
-        if [ "$AGENT_MODE" -ne 1 ]; then
-            local remote_sudo_warning
-            remote_sudo_warning="The remote sudo password will be stored in deploy.conf (encrypted if"
-            remote_sudo_warning="${remote_sudo_warning} encryption is enabled).\n\nFor security, backup your Mac Pro, use a dedicated user account,"
-            remote_sudo_warning="${remote_sudo_warning} and remove any sensitive data."
-            tui_msgbox "Security Notice" "$remote_sudo_warning"
+                case "$retry_choice" in
+                    local)
+                        TARGET_HOST="${TARGET_HOST%%.*}.local"
+                        save_config_key "TARGET_HOST" "$TARGET_HOST"
+                        if remote_mac_test; then
+                            ssh_resolved=1
+                            tui_msgbox "Connected" "Successfully connected to $TARGET_HOST"
+                        fi
+                        ;;
+                    lan)
+                        TARGET_HOST="${TARGET_HOST%%.*}.lan"
+                        save_config_key "TARGET_HOST" "$TARGET_HOST"
+                        if remote_mac_test; then
+                            ssh_resolved=1
+                            tui_msgbox "Connected" "Successfully connected to $TARGET_HOST"
+                        fi
+                        ;;
+                    manual)
+                        tui_input "Target Host" \
+                            "Enter SSH hostname or IP for the Mac Pro (macOS):" "" || continue
+                        TARGET_HOST="$_TUI_RESULT"
+                        resolved_host="$(resolve_hostname "$TARGET_HOST")"
+                        if [ "$resolved_host" != "$TARGET_HOST" ]; then
+                            TARGET_HOST="$resolved_host"
+                        fi
+                        save_config_key "TARGET_HOST" "$TARGET_HOST"
+                        if remote_mac_test; then
+                            ssh_resolved=1
+                            tui_msgbox "Connected" "Successfully connected to $TARGET_HOST"
+                        fi
+                        ;;
+                    abort|*)
+                        return 1
+                        ;;
+                esac
+            done
+        fi
+    fi
 
+    if [ "$AGENT_MODE" -ne 1 ]; then
+        if ! remote_mac_test; then
+            warn "Cannot connect to $TARGET_HOST via SSH. Ensure SSH is enabled and key authentication is set up."
+        fi
+    fi
+
+    if [ "$AGENT_MODE" -ne 1 ]; then
+        local remote_sudo_warning
+        remote_sudo_warning="The remote sudo password will be stored in deploy.conf (encrypted if"
+        remote_sudo_warning="${remote_sudo_warning} encryption is enabled).\n\nFor security, backup your Mac Pro, use a dedicated user account,"
+        remote_sudo_warning="${remote_sudo_warning} and remove any sensitive data."
+        tui_msgbox "Security Notice" "$remote_sudo_warning"
+
+        while true; do
             if [ -z "$REMOTE_SUDO_PASSWORD" ]; then
                 tui_password "Remote Sudo Password" \
-                                    "Enter sudo password for $TARGET_HOST:" || return 1
+                    "Enter sudo password for $TARGET_HOST:" || return 1
                 REMOTE_SUDO_PASSWORD="$_TUI_RESULT"
             fi
-        fi
-    elif [ "$DEPLOY_MODE" != "local" ]; then
-        die "Invalid DEPLOY_MODE: '$DEPLOY_MODE' (must be 'local' or 'remote')"
+
+            log_info "Verifying sudo access on $TARGET_HOST..."
+            if remote_mac_sudo echo "sudo ok" >/dev/null 2>&1; then
+                log_info "Sudo access on $TARGET_HOST: OK"
+                save_config_key "REMOTE_SUDO_PASSWORD" "$REMOTE_SUDO_PASSWORD"
+                break
+            else
+                tui_msgbox "Sudo Password Failed" "The sudo password for $TARGET_HOST was not accepted.\n\nPlease try again."
+                REMOTE_SUDO_PASSWORD=""
+            fi
+        done
     fi
 
     _DEPLOY_MODE_PROMPTED=1
@@ -989,6 +1244,7 @@ prompt_encryption_mode() {
     choice="$_TUI_RESULT"
 
     ENCRYPTION="$choice"
+    save_config_key "ENCRYPTION" "$ENCRYPTION"
     export ENCRYPTION
 }
 
@@ -1084,16 +1340,15 @@ show_help() {
     echo "  --webhook-host HOST   Override webhook host from deploy.conf"
     echo "  --webhook-port PORT   Override webhook port from deploy.conf"
     echo "  --encryption MODE     Password storage: plaintext, aes256, keychain (default: plaintext)"
-    echo "  --deploy-mode MODE   Deployment mode: local or remote (default: local)"
-    echo "  --target-host HOST    Mac Pro SSH hostname/IP for remote mode (e.g., macpro)"
+    echo "  --target-host HOST    Mac Pro SSH hostname/IP (e.g., macpro)"
     echo "  --remote-password PWD Remote sudo password (Warning: visible in ps; prefer deploy.conf)"
     echo "  --username USER       Override username from deploy.conf"
     echo "  --hostname HOST       Override hostname from deploy.conf"
     echo "  --vm                  Use VM test mode (autoinstall-vm.yaml)"
-    echo "  --output-dir DIR      Override runtime output directory (default: ~/.Ubuntu_Deployment/)"
+    echo "  --output-dir DIR      Override runtime output directory (default: ~/.Ubuntify/)"
     echo ""
     echo "Modes:"
-    echo "  Deploy   - Build ISO, deploy to Mac Pro (local or remote)"
+    echo "  Deploy   - Build ISO, deploy to Mac Pro via SSH"
     echo "  Manage   - Remote SSH operations (requires lib/remote.sh)"
     echo ""
     echo "Without flags, the TUI menu will start."
@@ -1129,6 +1384,10 @@ while [ $# -gt 0 ]; do
         --storage=*)         STORAGE_LAYOUT="${1#*=}"; shift ;;
         --network)           NETWORK_TYPE="$2"; shift 2 ;;
         --network=*)         NETWORK_TYPE="${1#*=}"; shift ;;
+        --macos-size)        MACOS_SIZE_MODE="$2"; shift 2 ;;
+        --macos-size=*)      MACOS_SIZE_MODE="${1#*=}"; shift ;;
+        --macos-gb)          MACOS_SIZE_GB="$2"; shift 2 ;;
+        --macos-gb=*)        MACOS_SIZE_GB="${1#*=}"; shift ;;
         --host)              REMOTE_HOST="$2"; shift 2 ;;
         --host=*)            REMOTE_HOST="${1#*=}"; shift ;;
         --operation)         REMOTE_OPERATION="$2"; shift 2 ;;
@@ -1143,8 +1402,8 @@ while [ $# -gt 0 ]; do
         --webhook-port=*)    WEBHOOK_PORT="${1#*=}"; shift ;;
         --encryption)        ENCRYPTION="$2"; shift 2 ;;
         --encryption=*)        ENCRYPTION="${1#*=}"; shift ;;
-        --deploy-mode)          DEPLOY_MODE="$2"; shift 2 ;;
-        --deploy-mode=*)        DEPLOY_MODE="${1#*=}"; shift ;;
+        --deploy-mode)          : ;; # ignored — remote-only mode
+        --deploy-mode=*)       : ;; # ignored — remote-only mode
         --target-host)          TARGET_HOST="$2"; shift 2 ;;
         --target-host=*)        TARGET_HOST="${1#*=}"; shift ;;
         --remote-password)      REMOTE_SUDO_PASSWORD="$2"; shift 2 ;;
@@ -1169,40 +1428,12 @@ fi
 # ── Mode Selection ──
 
 select_mode() {
-    tui_ascii_header "Ubuntu 24.04 LTS · Mac Pro 2013 · v${APP_VERSION}"
-
-    if [ "$TUI_BACKEND" = "raw" ]; then
-        local width=76
-        printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-        printf '    ║  \033[1mSELECT OPERATION\033[0m%*s║\n' $((width - 20)) ''
-        printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-        printf '    ║%*s║\n' $((width + 1)) ''
-        printf '    ║    [ ]  1. Deploy Ubuntu         Install Ubuntu on Mac Pro SSD        ║\n'
-        printf '    ║    [ ]  2. Manage System         Kernel · WiFi · Storage · Updates    ║\n'
-        printf '    ║    [ ]  3. Revert Failed Deploy  Rollback interrupted installation     ║\n'
-        printf '    ║    [ ]  4. Exit                  Quit                                  ║\n'
-        printf '    ║%*s║\n' $((width + 1)) ''
-        printf '    ╚%s╝\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-        printf '\n'
-        printf '    \033[2mKeys: SPACE Toggle  │  ENTER Execute\033[0m\n'
-        printf '\n'
-        printf '    > '
-
-        local choice_num
-        read -r choice_num < /dev/tty
-        case "$choice_num" in
-            1) echo "deploy" ;;
-            2) echo "manage" ;;
-            3) echo "revert" ;;
-            4) echo "exit" ;;
-            *) echo "exit" ;;
-        esac
-    else
-        local choice
-        tui_menu "Ubuntify" "Select operation mode:" "Deploy" "deploy" "Manage" "manage" "Revert Failed Deploy" "revert" "Exit" "exit" || exit 0
-        choice="$_TUI_RESULT"
-        echo "$choice"
-    fi
+    tui_menu "Ubuntify ${APP_VERSION}" "Select operation:" \
+        "Deploy Ubuntu" "deploy" \
+        "Manage System (Kernel · WiFi · Storage · Updates)" "manage" \
+        "Revert Failed Deploy" "revert" \
+        "Exit" "exit" || { echo "exit"; return; }
+    echo "$_TUI_RESULT"
 }
 
 # ── Deploy Mode Sub-menus ──
@@ -1242,7 +1473,7 @@ menu_build_iso() {
         tui_msgbox "Build Failed" "ISO build failed (exit $build_rc).\n\nCheck log: $log_path"
     else
         echo "[ OK ] ISO build complete" >&2
-        tui_msgbox "Build Complete" "ISO built successfully.\n\nOutput: ${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}/ubuntu-macpro.iso"
+        tui_msgbox "Build Complete" "ISO built successfully.\n\nOutput: ${OUTPUT_DIR}/ubuntu-macpro.iso"
     fi
 }
 
@@ -1273,6 +1504,44 @@ menu_deploy_select() {
         storage="$_TUI_RESULT"
         [ "$storage" = "cancel" ] && return 1
         STORAGE_LAYOUT="$storage"
+
+        if [ "$STORAGE_LAYOUT" = "1" ]; then
+            tui_menu "Disk Space Allocation" "How should disk space be split between macOS and Ubuntu?" \
+                "Max Linux (min macOS)" "max_linux" \
+                "Max macOS (min Ubuntu)" "max_macos" \
+                "Custom sizes" "custom" \
+                "Cancel" "cancel" || return 1
+            local split_choice="$_TUI_RESULT"
+            [ "$split_choice" = "cancel" ] && return 1
+            MACOS_SIZE_MODE="$split_choice"
+
+            if [ "$MACOS_SIZE_MODE" = "custom" ]; then
+                local macos_gb=""
+                while true; do
+                    tui_input "macOS Partition Size" "Enter size for macOS partition (GB, min 50):" ""
+                    macos_gb="$_TUI_RESULT"
+                    if [ -z "$macos_gb" ] || ! echo "$macos_gb" | grep -qE '^[0-9]+$'; then
+                        tui_msgbox "Invalid Size" "Please enter a positive whole number in GB."
+                        continue
+                    fi
+                    if [ "$macos_gb" -lt 50 ]; then
+                        tui_msgbox "Too Small" "macOS needs at least 50GB to function.\n\nYou entered: ${macos_gb}GB"
+                        continue
+                    fi
+                    MACOS_SIZE_GB="$macos_gb"
+                    break
+                done
+                save_config_key "MACOS_SIZE_GB" "$MACOS_SIZE_GB"
+                tui_msgbox "Custom Partition" "macOS: ${MACOS_SIZE_GB}GB\nUbuntu: remaining disk space"
+            elif [ "$MACOS_SIZE_MODE" = "max_linux" ]; then
+                MACOS_SIZE_GB=""
+                tui_msgbox "Max Linux" "macOS will be shrunk to minimum (~50GB).\nUbuntu gets the remaining disk space."
+            else
+                MACOS_SIZE_GB="max_macos"
+                tui_msgbox "Max macOS" "macOS keeps its current size plus margin.\nUbuntu gets ~40GB (minimum viable install)."
+            fi
+            save_config_key "MACOS_SIZE_MODE" "$MACOS_SIZE_MODE"
+        fi
 
         tui_menu "Select Network Type" "Choose network configuration:" \
             "WiFi only (Broadcom BCM4360)" "1" \
@@ -1305,6 +1574,7 @@ menu_deploy() {
     fi
 
     log_info "Starting deployment with method $DEPLOY_METHOD..."
+    _DEPLOY_STARTED=1
     local deploy_rc=0
     _run_deploy_method || deploy_rc=$?
 
@@ -1482,54 +1752,15 @@ run_deploy_mode() {
 # ── Manage Mode Sub-menus ──
 
 manage_menu() {
-    tui_ascii_header "Mac Pro Management · v${APP_VERSION}"
-
-    if [ "$TUI_BACKEND" = "raw" ]; then
-        local width=76
-        printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-        printf '    ║  \033[1mSYSTEM MANAGEMENT\033[0m%*s║\n' $((width - 22)) ''
-        printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-        printf '    ║%*s║\n' $((width + 1)) ''
-        printf '    ║    [ ]  1. System Info         View kernel, WiFi, disk, DKMS status   ║\n'
-        printf '    ║    [ ]  2. Kernel Management    Status, Pin, Update, Security          ║\n'
-        printf '    ║    [ ]  3. WiFi / Driver        Status, Rebuild driver                ║\n'
-        printf '    ║    [ ]  4. Storage              Disk usage, Erase macOS                ║\n'
-        printf '    ║    [ ]  5. APT Sources          Enable, Disable updates                ║\n'
-        printf '    ║    [ ]  6. Reboot               Reboot, Boot to macOS                  ║\n'
-        printf '    ║    [ ]  7. Back to Main Menu                                     ║\n'
-        printf '    ║%*s║\n' $((width + 1)) ''
-        printf '    ╚%s╝\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-        printf '\n'
-        printf '    \033[2mKeys: SPACE Toggle  │  ENTER Execute\033[0m\n'
-        printf '\n'
-        printf '    > '
-
-        local choice_num
-        read -r choice_num < /dev/tty
-        case "$choice_num" in
-            1) echo "sysinfo" ;;
-            2) echo "kernel" ;;
-            3) echo "wifi" ;;
-            4) echo "storage" ;;
-            5) echo "apt" ;;
-            6) echo "reboot" ;;
-            7|"") echo "back" ;;
-            *) echo "back" ;;
-        esac
-    else
-        local choice
-        tui_menu "Manage Mode" "Select management operation:" \
-            "System Info" "sysinfo" \
-            "Kernel Management" "kernel" \
-            "WiFi/Driver" "wifi" \
-            "Storage" "storage" \
-            "APT Sources" "apt" \
-            "Headless Verify" "headless" \
-            "Reboot" "reboot" \
-                    "Back to Main Menu" "back" || return 1
-        choice="$_TUI_RESULT"
-        echo "$choice"
-    fi
+    tui_menu "Mac Pro Management" "Select operation:" \
+        "System Info (kernel · WiFi · disk · DKMS)" "sysinfo" \
+        "Kernel Management (status, pin, update)" "kernel" \
+        "WiFi / Driver (status, rebuild)" "wifi" \
+        "Storage (disk usage, erase macOS)" "storage" \
+        "APT Sources (enable, disable)" "apt" \
+        "Reboot (reboot, boot to macOS)" "reboot" \
+        "Back to Main Menu" "back" || { echo "back"; return; }
+    echo "$_TUI_RESULT"
 }
 
 menu_system_info() {
@@ -1547,93 +1778,13 @@ menu_system_info() {
 }
 
 menu_kernel() {
-    if [ "$TUI_BACKEND" = "raw" ]; then
-        local width=76
-        printf '\n'
-        printf '    ╔%s╗\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-        printf '    ║  \033[1mKERNEL MANAGEMENT\033[0m%*s║\n' $((width - 21)) ''
-        printf '    ╠%s╣\n' "$(printf '═%.0s' $(seq 1 "$width"))"
-        printf '    ║  \033[2mSelect multiple operations to execute:\033[0m%*s║\n' $((width - 48)) ''
-        printf '    ╟%s╢\n' "$(printf '─%.0s' $(seq 1 "$width"))"
-        printf '    ║  [ ]  Status             View current kernel and pin state          ║\n'
-        printf '    ║  [ ]  Pin Kernel         Lock to current kernel, block updates     ║\n'
-        printf '    ║  [ ]  Unpin Kernel      Allow kernel updates                      ║\n'
-        printf '    ║  [ ]  Update Kernel     Full 7-phase kernel update (⚠ risky)     ║\n'
-        printf '    ║  [ ]  Security Only     Non-kernel security patches only          ║\n'
-        printf '    ╟%s╢\n' "$(printf '─%.0s' $(seq 1 "$width"))"
-        printf '    ║  [ ]  Back              Return to management menu                 ║\n'
-        printf '    ╚%s╝\n' "$(printf '─%.0s' $(seq 1 "$width"))"
-        printf '\n'
-        printf '    \033[2mKeys: SPACE Toggle  │  ENTER Execute  │  Q Cancel\033[0m\n'
-        printf '\n'
-        printf '    > '
-
-        local choices
-        read -r choices < /dev/tty
-        if [ -z "$choices" ]; then
-            return 1
-        fi
-
-        echo "$choices"
-    else
-        local choice
-        tui_menu "Kernel Management" "Select kernel operation:" \
-            "Status" "status" \
-            "Pin kernel" "pin" \
-            "Unpin kernel" "unpin" \
-            "Update kernel" "update" \
-            "Security updates only" "security" \
-                    "Back" "back" || return 1
-        choice="$_TUI_RESULT"
-
-        echo "$choice"
-    fi
-}
-
-run_kernel_operations() {
-    local choices="$1"
-    local num
-    for num in $choices; do
-        case "$num" in
-            1)
-                if command -v remote_kernel_status >/dev/null 2>&1; then
-                    local status
-                    status=$(remote_kernel_status)
-                    tui_msgbox "Kernel Status" "$status"
-                fi
-                ;;
-            2)
-                if command -v remote_kernel_repin >/dev/null 2>&1; then
-                    if tui_confirm "Pin Kernel" "This will pin the current kernel.\n\nProceed?"; then
-                        remote_kernel_repin
-                        tui_msgbox "Kernel Pinned" "Kernel has been pinned."
-                    fi
-                fi
-                ;;
-            3)
-                if command -v remote_kernel_unpin >/dev/null 2>&1; then
-                    if tui_confirm "Unpin Kernel" "This will unpin the kernel.\n\nProceed?"; then
-                        remote_kernel_unpin
-                        tui_msgbox "Kernel Unpinned" "Kernel has been unpinned."
-                    fi
-                fi
-                ;;
-            4)
-                if tui_confirm "Update Kernel" "This will run the full kernel update process per AGENTS.md.\n\nThis is a complex operation with potential to brick the system if WiFi breaks.\n\nProceed?"; then
-                    if command -v remote_kernel_update >/dev/null 2>&1; then
-                        remote_kernel_update
-                    fi
-                fi
-                ;;
-            5)
-                if tui_confirm "Security Updates" "This will apply security updates excluding kernel packages.\n\nProceed?"; then
-                    if command -v remote_non_kernel_update >/dev/null 2>&1; then
-                        remote_non_kernel_update
-                    fi
-                fi
-                ;;
-        esac
-    done
+    tui_checklist "Kernel Management" "Select operations:" \
+        "Status" "1" "View current kernel and pin state" off \
+        "Pin Kernel" "2" "Lock to current kernel, block updates" off \
+        "Unpin Kernel" "3" "Allow kernel updates" off \
+        "Update Kernel" "4" "Full 7-phase kernel update (risky)" off \
+        "Security Only" "5" "Non-kernel security patches only" off || return 1
+    echo "$_TUI_RESULT"
 }
 
 kernel_handle_choice() {
@@ -1852,32 +2003,27 @@ _validate_agent_deploy() {
             *) agent_error "Invalid --network: $NETWORK_TYPE (must be 1 or 2)" "$E_USAGE" ;;
         esac
     fi
-    case "${DEPLOY_MODE:-local}" in
-        local|remote) ;;
-        *) agent_error "Invalid --deploy-mode: $DEPLOY_MODE (must be 'local' or 'remote')" "$E_USAGE" ;;
-    esac
-    if [ "${DEPLOY_MODE:-local}" = "remote" ] && [ -z "${TARGET_HOST:-}" ]; then
-        agent_error "Missing --target-host (required when --deploy-mode=remote)" "$E_AGENT_PARAM"
+    if [ -z "${TARGET_HOST:-}" ]; then
+        agent_error "Missing --target-host (required for remote deployment)" "$E_AGENT_PARAM"
     fi
 }
 
 _agent_deploy() {
     _validate_agent_deploy
+    _DEPLOY_STARTED=1
     agent_output "settings" "Deploy Configuration" "" \
         "method" "$DEPLOY_METHOD" \
         "storage" "${STORAGE_LAYOUT:-N/A}" \
         "network" "${NETWORK_TYPE:-N/A}" \
-        "deployMode" "${DEPLOY_MODE:-local}" \
+        "deployMode" "remote" \
         "targetHost" "${TARGET_HOST:-N/A}" \
         "wifiSsid" "${WIFI_SSID:-}" \
         "dryRun" "${DRY_RUN:-0}"
 
-    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
-        if ! remote_mac_preflight; then
-            agent_error "Remote preflight checks failed for ${TARGET_HOST:-macpro}" "$E_CHECK"
+    if ! remote_mac_preflight; then
+        agent_error "Remote preflight checks failed for ${TARGET_HOST:-macpro}" "$E_CHECK"
             return 1
         fi
-    fi
 
     local deploy_rc=0
     case "$DEPLOY_METHOD" in
@@ -1980,35 +2126,34 @@ run_agent_mode() {
 
 # ── Environment Exploration ──
 explore_environment() {
-    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
-        local sip_status
-        sip_status=$(remote_mac_exec "csrutil status 2>/dev/null | grep -o 'enabled\\|disabled' | head -1 || echo unknown")
-        sip_status=$(echo "$sip_status" | tr '[:lower:]' '[:upper:]')
+    local sip_status
+    sip_status=$(remote_mac_exec "csrutil status 2>/dev/null | grep -o 'enabled\\|disabled' | head -1 || echo unknown")
+    sip_status=$(echo "$sip_status" | tr '[:lower:]' '[:upper:]')
 
-        local boot_device
-        boot_device=$(remote_mac_exec "bless --info --getboot 2>/dev/null | head -1 || echo 'Unable to determine'")
+    local boot_device
+    boot_device=$(remote_mac_exec "bless --info --getboot 2>/dev/null | head -1 || echo 'Unable to determine'")
 
-        local startup_disk
-        startup_disk=$(remote_mac_exec "systemsetup -getstartupdisk" 2>/dev/null | awk -F': ' '{print $2}' || echo "Unable to determine")
+    local startup_disk
+    startup_disk=$(remote_mac_exec "systemsetup -getstartupdisk" 2>/dev/null | awk -F': ' '{print $2}' || echo "Unable to determine")
 
-        local disk_info
-        disk_info=$(remote_mac_exec "df -h /")
+    local disk_info
+    disk_info=$(remote_mac_exec "df -h /")
 
-        local part_info
-        part_info=$(remote_mac_exec "diskutil list 2>/dev/null || echo 'Unable to read partition map'")
+    local part_info
+    part_info=$(remote_mac_exec "diskutil list 2>/dev/null || echo 'Unable to read partition map'")
 
-        local refind_status="Not found"
-        remote_mac_exec "test -d /Volumes/EFI/EFI/refind -o -d /EFI/refind" 2>/dev/null && refind_status="Detected"
+    local refind_status="Not found"
+    remote_mac_exec "test -d /Volumes/EFI/EFI/refind -o -d /EFI/refind" 2>/dev/null && refind_status="Detected"
 
-        local macos_name
-        macos_name=$(remote_mac_exec "sw_vers -productName")
-        local macos_ver
-        macos_ver=$(remote_mac_exec "sw_vers -productVersion")
-        local macos_build
-        macos_build=$(remote_mac_exec "sw_vers -buildVersion")
+    local macos_name
+    macos_name=$(remote_mac_exec "sw_vers -productName")
+    local macos_ver
+    macos_ver=$(remote_mac_exec "sw_vers -productVersion")
+    local macos_build
+    macos_build=$(remote_mac_exec "sw_vers -buildVersion")
 
-        local info
-        info="=== System Information (Remote: ${TARGET_HOST:-macpro}) ===
+    local info
+    info="=== System Information (Remote: ${TARGET_HOST:-macpro}) ===
 
 macOS Version: ${macos_name} ${macos_ver}
 Build: ${macos_build}
@@ -2026,139 +2171,98 @@ ${disk_info}
 === Partition Map ===
 ${part_info}"
 
-        tui_msgbox "Environment Exploration (Remote: ${TARGET_HOST:-macpro})" "$info"
-    else
-        local sip_status
-        sip_status=$(csrutil status 2>/dev/null | grep -o 'enabled\|disabled' | head -1 || echo "unknown")
-        sip_status=$(echo "$sip_status" | tr '[:lower:]' '[:upper:]')
+    tui_msgbox "Environment Exploration (Remote: ${TARGET_HOST:-macpro})" "$info"
+}
 
-        local boot_device
-        boot_device=$(bless --info --getboot 2>/dev/null | head -1 || echo "Unable to determine")
-
-        local startup_disk
-        startup_disk=$(systemsetup -getstartupdisk 2>/dev/null | awk -F': ' '{print $2}' || echo "Unable to determine")
-
-        local disk_info
-        disk_info=$(df -h /)
-
-        local part_info
-        part_info=$(diskutil list 2>/dev/null || echo "Unable to read partition map")
-
-        local refind_status="Not found"
-        [ -d "/Volumes/EFI/EFI/refind" ] || [ -d "/EFI/refind" ] && refind_status="Detected"
-
-        local info
-        info="=== System Information ===
-
-macOS Version: $(sw_vers -productName) $(sw_vers -productVersion)
-Build: $(sw_vers -buildVersion)
-
-SIP Status: ${sip_status}
-
-=== Bootloader Information ===
-rEFInd: ${refind_status}
-Current Boot Device (bless): ${boot_device}
-Startup Disk (systemsetup): ${startup_disk}
-
-=== Disk Space ===
-${disk_info}
-
-=== Partition Map ===
-${part_info}"
-
-        tui_msgbox "Environment Exploration Results" "$info"
+_CONFIG_CLEANUP_DONE=0
+_DEPLOY_STARTED=0
+cleanup_config_on_exit() {
+    [ "$_CONFIG_CLEANUP_DONE" -eq 1 ] && return 0
+    _CONFIG_CLEANUP_DONE=1
+    if [ -f "$CONF_FILE" ]; then
+        # If deployment was attempted, always keep the config
+        if [ "${_DEPLOY_STARTED:-0}" -eq 1 ]; then
+            log_info "Deployment was attempted — keeping config at $CONF_FILE"
+            return 0
+        fi
+        parse_conf "$CONF_FILE" 2>/dev/null || true
+        if ! is_config_valid; then
+            log_info "Incomplete config detected, removing $CONF_FILE"
+            rm -f "$CONF_FILE"
+        elif [ "${AGENT_MODE:-0}" -ne 1 ]; then
+            if tui_confirm "Keep Configuration?" \
+                "A valid deploy.conf exists.\n\nKeep it for future use?"; then
+                log_info "Keeping config at $CONF_FILE"
+            else
+                rm -f "$CONF_FILE"
+                log_info "Config deleted per user request"
+            fi
+        fi
     fi
 }
 
 # ── Main Entry Point ──
 main() {
-    # Check for root/sudo — deployment operations require elevated privileges
-    # Initialize logging
     log_init
 
-    # Set up error handling traps
     if ! command -v cleanup_on_error >/dev/null 2>&1; then
         cleanup_on_error() { true; }
     fi
-    trap 'cleanup_on_error' EXIT
-    trap 'cleanup_on_error; exit 130' SIGINT
-    trap 'cleanup_on_error; exit 143' SIGTERM
+    trap 'cleanup_on_error; cleanup_config_on_exit' EXIT
+    trap 'cleanup_on_error; cleanup_config_on_exit; exit 130' SIGINT
+    trap 'cleanup_on_error; cleanup_config_on_exit; exit 143' SIGTERM
 
     log_info "Ubuntify v${APP_VERSION} starting..."
     log_info "Log file: $(log_get_file_path)"
-    log_info "TUI backend: $TUI_BACKEND"
 
-    check_tui_prerequisites
-    log_info "TUI backend after prerequisites: $TUI_BACKEND"
+    SPLASH_STEP_COUNT=3
+    _tui_set_default_terminal_size
+    tui_splash_init "Mac Pro Conversion and Management Tool v${APP_VERSION}"
 
+
+    tui_splash_step "Verifying dependencies"
     check_dependencies
     log_info "Dependencies verified"
+    tui_splash_step_done "Verifying dependencies"
+
+    tui_splash_step "Preparing output directory"
+    mkdir -p "${OUTPUT_DIR}"
+    _owner="${SUDO_USER:-$USER}"
+    if [ "$_owner" != "$USER" ] || [ "$(id -u)" -eq 0 ]; then
+        chown "$_owner" "${OUTPUT_DIR}" 2>/dev/null || true
+    fi
+    tui_splash_step_done "Preparing output directory"
+
+    tui_splash_hold
 
     # Handle --revert: defer from argument parsing to ensure logging/traps are active
     if [ "${_REVERT_REQUESTED:-0}" -eq 1 ]; then
-        if [ "${DEPLOY_MODE:-local}" != "remote" ] && [ "$(id -u)" -ne 0 ]; then
-            die "Revert requires root (use sudo)"
-        fi
         handle_revert_flag "--revert"
         exit $?
     fi
 
-    if [ "$TUI_BACKEND" = "raw" ]; then
-        tui_ascii_header "Mac Pro Conversion and Management Tool v${APP_VERSION}"
-    else
-        tui_ascii_header "Mac Pro Conversion and Management Tool v${APP_VERSION}" >&2
-    fi
-
-    mkdir -p "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}"
-    _owner="${SUDO_USER:-$USER}"
-    if [ "$_owner" != "$USER" ] || [ "$(id -u)" -eq 0 ]; then
-        chown "$_owner" "${OUTPUT_DIR:-$HOME/.Ubuntu_Deployment}" 2>/dev/null || true
-    fi
-
-    # _USING_EXAMPLE_CONF tracks whether user has a real config (CONF_FILE is redirected to example at source time)
-    if [ "${AGENT_MODE:-0}" -ne 1 ] && [ "${_USING_EXAMPLE_CONF:-0}" -eq 1 ]; then
-        if ! tui_confirm "No existing configuration found." "Configure a new device?"; then
-            exit 0
+    if [ -f "$CONF_FILE" ] && [ "${_USING_EXAMPLE_CONF:-0}" -ne 1 ]; then
+        if ! handle_existing_config; then
+            die "Configuration setup cancelled"
         fi
-        log_info "First-run: User confirmed new device configuration"
-        # Ask deployment mode before exploring environment — remote mode runs commands via SSH
-        if ! prompt_deploy_mode; then
-            die "Deployment mode selection required"
-        fi
-        log_info "First-run: Deploy mode=$DEPLOY_MODE, target=$TARGET_HOST"
-        explore_environment
-        log_info "First-run: Environment exploration complete"
-        if ! menu_deploy_select; then
-            exit 0
-        fi
-        log_info "First-run: Deploy method=$DEPLOY_METHOD, storage=$STORAGE_LAYOUT, network=$NETWORK_TYPE"
-        if ! prompt_config; then
-            die "Missing required configuration"
-        fi
-        if ! validate_inputs; then
-            die "Invalid configuration — see errors above"
-        fi
-        if ! show_pre_execution_summary "$STORAGE_LAYOUT" "$NETWORK_TYPE"; then
-            die "Deployment cancelled"
-        fi
-        save_config
-        local deploy_rc=0
-        _run_deploy_method || deploy_rc=$?
-        exit "$deploy_rc"
+    elif [ ! -f "$CONF_FILE" ]; then
+        # Should not happen (copied at boot), but just in case
+        mkdir -p "$(dirname "$CONF_FILE")"
+        cp "${LIB_DIR}/deploy.conf.example" "$CONF_FILE"
+        chmod 600 "$CONF_FILE"
+        local _owner="${SUDO_USER:-$USER}"
+        [ "$(id -u)" -eq 0 ] && chown "$_owner" "$CONF_FILE" 2>/dev/null || true
     fi
 
     decrypt_config "$CONF_FILE"
 
-    # Root check: local deploy/ISO build needs root. Remote mode and agent remote ops don't.
-    local _needs_root=1
-    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
-        _needs_root=0
-    fi
-    if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
-        _needs_root=0
+    # Root check: remote mode doesn't need local root
+    local _needs_root=0
+    if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -z "${REMOTE_OPERATION:-}" ]; then
+        _needs_root=1
     fi
     if [ "$_needs_root" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then
-        die "Local deployment requires root (use sudo). Use --deploy-mode remote for remote control."
+        die "Deployment requires root (use sudo)."
     fi
 
     # Skip prompt_config for agent remote operations (--operation) - no local config needed.
@@ -2167,17 +2271,15 @@ main() {
     if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
         _needs_config=0
     fi
-    if [ "$_needs_config" -eq 1 ] && ! prompt_config; then
+    if [ "$_needs_config" -eq 1 ] && [ "${_CONFIG_LOADED:-0}" -ne 1 ] && ! prompt_config; then
         die "Missing required configuration — check deploy.conf or provide values via CLI flags"
     fi
     if [ "$_needs_config" -eq 1 ] && ! validate_inputs; then
         die "Invalid configuration — see errors above"
     fi
 
-    if [ "${DEPLOY_MODE:-local}" = "remote" ]; then
-        if ! remote_mac_preflight; then
-            die "Remote preflight checks failed for ${TARGET_HOST:-macpro}. See errors above."
-        fi
+    if ! remote_mac_preflight; then
+        die "Remote preflight checks failed for ${TARGET_HOST:-macpro}. See errors above."
     fi
 
     if [ "${AGENT_MODE:-0}" -eq 1 ]; then
