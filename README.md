@@ -47,7 +47,7 @@ Mac Pro has no Ethernet. Broadcom BCM4360 WiFi requires a proprietary `wl` drive
 | `lib/autoinstall.yaml` | Autoinstall config template — all credentials are `__PLACEHOLDER__` markers |
 | `lib/autoinstall.sh` | Template engine: substitutes placeholders from `deploy.conf` into `autoinstall.yaml` |
 | `lib/build-iso.sh` | Builds modified ISO: extract, overlay, repack preserving EFI boot (`--vm` for VM test) |
-| `lib/deploy.conf.example` | Config template: copy to `~/.Ubuntu_Deployment/deploy.conf` and customize |
+| `lib/deploy.conf.example` | Config template: copied to `~/.Ubuntify/deploy.conf` on first run |
 | `packages/` | .deb files for driver compilation (36 packages) |
 | `packages/dkms-patches/` | 6 DKMS patches for kernel 6.8+ compatibility (series file + *.patch) |
 | `tests/` | Unit tests (`run_tests.sh`) and VM test environment |
@@ -83,20 +83,18 @@ sudo ./lib/build-iso.sh
 ### Deploy (interactive menu)
 
 ```bash
-# Local mode (run directly on Mac Pro)
-sudo ./prepare-deployment.sh
-
-# Remote mode (control Mac Pro from another machine)
-./prepare-deployment.sh --deploy-mode remote --target-host macpro
+# Run from any machine — deploys to Mac Pro via SSH
+./prepare-deployment.sh
 ```
 
-Select deployment method:
-1. **Internal partition** — copies installer to CIDATA ESP on internal disk (requires APFS shrink for dual-boot)
-2. **USB drive** — creates bootable USB with autoinstall
-3. **Full manual** — creates standard Ubuntu USB (no autoinstall)
-4. **VM test** — validates autoinstall flow in VirtualBox (no Mac Pro hardware needed)
-
-Then select storage layout (dual-boot or full-disk) and network type (WiFi or Ethernet).
+The script will prompt for:
+1. **Target host** — SSH hostname of the Mac Pro (e.g., `macpro`)
+2. **Sudo password** — for elevated operations on the Mac Pro
+3. **Config values** — username, password, WiFi credentials, etc.
+4. **Deployment method**: internal ESP partition, USB drive, full manual, or VM test
+5. **Storage layout**: dual-boot (preserve macOS) or full-disk (replace macOS)
+6. **Network type**: WiFi-only or Ethernet
+7. **Disk allocation** (dual-boot only): max Linux, max macOS, or custom sizes
 
 ### Boot Selection
 
@@ -949,7 +947,7 @@ The `macpro-monitor/` server provides a real-time 3-pane dashboard (Subiquity Ev
 
 ### Security: WiFi Credentials
 
-WiFi SSID and password are in plain text in the generated `autoinstall.yaml` (on the FAT32 ESP during install). Mitigations: UFW firewall denies all incoming except SSH, ESP is only accessible during install. Credentials come from `~/.Ubuntu_Deployment/deploy.conf` (encrypted at rest) and are substituted into the template at build time.
+WiFi SSID and password are in plain text in the generated `autoinstall.yaml` (on the FAT32 ESP during install). Mitigations: UFW firewall denies all incoming except SSH, ESP is only accessible during install. Credentials come from `~/.Ubuntify/deploy.conf` (encrypted at rest) and are substituted into the template at build time.
 
 ## VM Test Environment
 
@@ -985,64 +983,23 @@ sudo ./prepare-deployment.sh --agent --yes [OPERATION FLAGS]
 | `--dry-run` | Print what would happen without executing |
 | `--verbose` | Enable DEBUG-level logging |
 
-### Deploy Mode (Local Operations)
+### Deploy Mode
 
-To build the ISO in agent mode, call `lib/build-iso.sh` directly (there is no `--build-iso` flag in `prepare-deployment.sh`). The deploy methods (1-4) below assume the ISO is already built.
+The tool operates in remote mode only — all macOS disk operations run on the target Mac Pro via SSH. To build the ISO, call `lib/build-iso.sh` directly (there is no `--build-iso` flag).
 
 ```bash
 # Build the ISO
 sudo ./lib/build-iso.sh
 
-# Deploy to internal ESP partition (dual-boot, WiFi)  
-sudo ./prepare-deployment.sh --agent --yes --method 1 --storage 1 --network 1
-
-# Deploy to USB (full-disk, Ethernet)
-sudo ./prepare-deployment.sh --agent --yes --method 2 --storage 2 --network 2
-
-# Dry-run deploy (show what would happen)
+# Dry-run to verify
 sudo ./prepare-deployment.sh --agent --dry-run --method 1 --storage 1 --network 1
 
-# VM test
-sudo ./prepare-deployment.sh --agent --yes --method 4
+# Deploy
+sudo ./prepare-deployment.sh --agent --yes --method 1 --storage 1 --network 1
+
+# Check system after install
+sudo ./prepare-deployment.sh --agent --operation sysinfo --host macpro-linux
 ```
-
-### Remote Deployment Mode
-
-In remote mode, you control the Mac Pro from another machine (e.g., a MacBook) via SSH. No local `sudo` is needed — all macOS-specific commands run on the target Mac Pro through SSH. Configuration files are generated locally and transferred via SCP.
-
-```bash
-# Interactive remote deployment (prompts for SSH password, config values)
-./prepare-deployment.sh --deploy-mode remote --target-host macpro
-
-# Agent mode remote deployment (non-interactive)
-./prepare-deployment.sh --agent --yes --deploy-mode remote --target-host macpro \
-  --remote-password XXX --method 1 --storage 1 --network 1 --json
-
-# Remote revert (no local sudo needed)
-./prepare-deployment.sh --deploy-mode remote --revert
-```
-
-**Prerequisites for remote mode:**
-1. SSH key authentication to the Mac Pro's macOS partition (set up `ssh/config.example`)
-2. `xorriso`, `gptfdisk` (`sgdisk`), and `python3` installed on the Mac Pro — the script can auto-install via Homebrew during preflight
-3. Sudo access on the Mac Pro (passwordless recommended, or provide via `--remote-password`)
-
-**How it works:**
-- ISO and configuration files are generated locally on your machine
-- Disk operations (`diskutil`, `bless`, `sgdisk`, `xorriso`) run on the Mac Pro via SSH
-- Files are transferred to the Mac Pro via SCP
-- Preflight checks verify the Mac Pro has all required tools before starting
-
-| Flag | Values | Description |
-|------|--------|-------------|
-| `--method` | `1` | Internal partition (ESP) |
-| | `2` | USB drive |
-| | `3` | Full manual (standard ISO to USB) |
-| | `4` | VM test (VirtualBox) |
-| `--storage` | `1` | Dual-boot (preserve macOS) |
-| | `2` | Full disk (replace macOS) |
-| `--network` | `1` | WiFi only (Broadcom BCM4360) |
-| | `2` | Ethernet available |
 
 ### Manage Mode (Remote SSH Operations)
 
@@ -1079,6 +1036,9 @@ sudo ./prepare-deployment.sh --agent --yes --operation reboot
 
 # Boot to macOS
 sudo ./prepare-deployment.sh --agent --yes --operation boot_macos
+
+# Erase macOS (irreversible!)
+sudo ./prepare-deployment.sh --agent --yes --operation erase_macos
 ```
 
 | Operation | Description | Destructive? |
@@ -1099,7 +1059,7 @@ sudo ./prepare-deployment.sh --agent --yes --operation boot_macos
 | `erase_macos` | Delete macOS partitions, expand Ubuntu to full disk | Yes |
 | `apt_enable` / `apt_disable` | Enable/disable APT package sources | Yes |
 
-**Note**: macOS erasure is a manual process documented in the [Erasing macOS and Expanding to Full Disk](#erasing-macos-and-expanding-to-full-disk) section above. It is not available as an agent `--operation` flag.
+**Warning**: `erase_macos` is irreversible. Once macOS partitions are deleted, they cannot be recovered.
 
 ### Configuration Overrides
 
@@ -1107,7 +1067,7 @@ CLI flags override `deploy.conf` settings:
 
 | Flag | Overrides |
 |------|-----------|
-| `--deploy-mode MODE` | `DEPLOY_MODE` — `local` (on Mac Pro) or `remote` (via SSH) |
+| `--deploy-mode MODE` | Accepted for backward compatibility only — always remote |
 | `--target-host HOST` | `TARGET_HOST` — SSH hostname/IP for Mac Pro's macOS |
 | `--remote-password PWD` | `REMOTE_SUDO_PASSWORD` — sudo password for target |
 | `--username USER` | `USERNAME` |
@@ -1118,67 +1078,10 @@ CLI flags override `deploy.conf` settings:
 | `--webhook-port PORT` | `WEBHOOK_PORT` |
 | `--host HOST` | Remote SSH host (default: `macpro-linux`) |
 | `--output-dir DIR` | `OUTPUT_DIR` |
+| `--macos-size-mode MODE` | Disk allocation for dual-boot: `max_linux`, `max_macos`, or `custom` |
+| `--macos-size-gb N` | Custom macOS partition size in GB (with `--macos-size-mode custom`) |
 
 ### JSON Output Format
-
-In agent mode, output is newline-delimited JSON (NDJSON) to stdout:
-
-```json
-{"type":"confirm","title":"Pin Kernel","value":"yes"}
-{"type":"settings","title":"Deploy Configuration","value":"","method":"1","storage":"1","network":"1"}
-{"type":"progress","title":"Build ISO","value":"starting"}
-{"type":"result","title":"Deploy","value":"success","exitCode":"0"}
-{"type":"error","title":"Error","value":"Missing --method","exitCode":"12"}
-```
-
-| Type | When Emitted |
-|------|-------------|
-| `confirm` | Confirmation prompt result |
-| `menu` | Menu selection result |
-| `menu_options` | Available choices when no selection provided |
-| `msgbox` | Information display |
-| `input` | Input prompt result |
-| `settings` | Configuration summary before action |
-| `progress` | Operation started |
-| `result` | Operation completed (success/failed) |
-| `error` | Error with exit code |
-
-### Exit Codes
-
-| Code | Constant | Meaning |
-|------|----------|---------|
-| 0 | `E_SUCCESS` | Success |
-| 1 | `E_GENERAL` | General error |
-| 2 | `E_USAGE` | Invalid usage / missing arguments |
-| 3 | `E_CONFIG` | Configuration error |
-| 4 | `E_CHECK` | Pre-flight check failed |
-| 5 | `E_PARTIAL` | Partial success |
-| 6 | `E_DEPENDENCY` | Missing dependency |
-| 7 | `E_NETWORK` | Network error |
-| 8 | `E_DISK` | Disk/partition error |
-| 9 | `E_TIMEOUT` | Timeout |
-| 10 | `E_AUTH` | Authentication error |
-| 11 | `E_DRY_RUN_OK` | Dry-run completed (no changes made) |
-| 12 | `E_AGENT_PARAM` | Agent mode: missing required parameter |
-| 13 | `E_AGENT_DENIED` | Agent mode: confirmation denied |
-
-### Example: Full Deploy via Agent
-
-```bash
-# 1. Build ISO
-sudo ./lib/build-iso.sh
-
-# 2. Dry-run to verify
-sudo ./prepare-deployment.sh --agent --dry-run --method 1 --storage 1 --network 1
-
-# 3. Actual deploy
-sudo ./prepare-deployment.sh --agent --yes --method 1 --storage 1 --network 1
-
-# 4. Check system after install
-sudo ./prepare-deployment.sh --agent --operation sysinfo --host macpro-linux
-```
-
-### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
