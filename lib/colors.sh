@@ -28,6 +28,7 @@ readonly BOLD='\033[1m'
 readonly UNDERLINE='\033[4m'
 readonly WHITE='\033[0;37m'
 readonly BRIGHT_WHITE='\033[1;37m'
+readonly BOLD_WHITE='\033[1;37m'
 readonly MAGENTA='\033[0;35m'
 readonly BRIGHT_RED='\033[1;31m'
 

@@ -5,7 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SCRIPT_DIR/lib/colors.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/logging.sh" 2>/dev/null || true
 
-TUI_BACKEND="raw"
 AGENT_MODE=1
 
 source "$SCRIPT_DIR/lib/tui.sh"
