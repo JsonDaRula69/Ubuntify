@@ -439,6 +439,7 @@ __SSH_KEYS__
         device: root-disk
         number: 4
         size: __ROOT_SIZE_BYTES__
+        preserve: true
         wipe: superblock
       - type: partition
         id: recovery

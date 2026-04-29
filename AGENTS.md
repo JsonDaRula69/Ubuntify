@@ -222,7 +222,7 @@ No separate `/boot` partition. `/boot` lives on the root partition. `GRUB` uses 
   type: partition
   number: SKIP_PART_NUM
   size: ROOT_SIZE_BYTES
-  flag: root
+  preserve: true
   wipe: superblock
   grub_device: false
   filesystem: ext4
@@ -236,7 +236,7 @@ The `generate_dualboot_storage()` function:
 - Uses `refresh-installer: { update: false }` (snap refresh loses NoCloud datasource — LP #2132014; Apple EFI fix already in 24.04 ISO)
 - Normalizes partition type GUIDs to lowercase (curtin compatibility)
 - Uses string-based regex replacement (NOT `yaml.dump`) to preserve `|` block scalars
-- Uses `wipe: superblock` (not `preserved-partition` check) for the root partition
+- Uses `preserve: true` + `wipe: superblock` for the root partition (preserve GPT entry, wipe contents for formatting)
 
 ### Phase List Update
 
@@ -829,7 +829,7 @@ The `remote_toggle_apt_sources(host, action)` function (line 234 in lib/remote.s
 - **`ROOT_SIZE_BYTES` env var** — passed through deploy.sh to autoinstall.sh as `generate_dualboot_storage()` 4th argument
 - **`storage: version: 2`** — required in autoinstall YAML for editing existing partition tables (Subiquity bug #2018589)
 - **`refresh-installer: { update: false }`** — snap refresh loses NoCloud datasource on restart (LP #2132014); Apple EFI 1.1 fix is already in 24.04 ISO's Subiquity snap
-- **`wipe: superblock`** (not `preserved-partition`) — used for the pre-created root partition; the partition exists but needs superblock wipe
+- **`preserve: true` + `wipe: superblock`** — used for the pre-created root partition; `preserve: true` tells curtin the partition exists in GPT (verify, don't create), `wipe: superblock` wipes contents so ext4 can be formatted. Without `preserve: true`, curtin tries to `sgdisk --new` the partition which fails since it already exists.
 - **Partition type GUIDs must be lowercase** — curtin normalizes to lowercase; uppercase causes verification mismatches
 - **Autoinstall YAML must use string-based replacement** — `yaml.dump` converts `|` block scalars to quoted strings with `\n` escapes
 - **gcc-13 must match ISO kernel** — `gcc-13 13.3.0-6ubuntu2~24.04` and `gcc-13-x86-64-linux-gnu` required. `cc` symlink points to `x86_64-linux-gnu-gcc-13`

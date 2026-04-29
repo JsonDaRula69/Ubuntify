@@ -400,11 +400,11 @@ for p_num in sorted(sizes.keys()):
         continue  # logged separately below
     size_gb = sizes[p_num] / (1024**3)
     print(f"  Partition {p_num}: {sizes[p_num]} bytes ({size_gb:.1f} GB), type: {type_guids.get(p_num, 'unknown')}", file=sys.stderr)
-print(f"  Root partition (4): {root_size} bytes, wipe: superblock", file=sys.stderr)
+print(f"  Root partition (4): {root_size} bytes, preserve: true, wipe: superblock", file=sys.stderr)
 
 with open(output_path, 'w') as f:
     f.write(content)
 
-print(f"  Preserving {len([p for p in sizes if p != 4])} existing partitions (ESP + APFS + CIDATA + Recovery) + 1 root (wipe)")
+print(f"  Preserving {len([p for p in sizes if p != 4])} existing partitions (ESP + APFS + CIDATA + Recovery) + 1 root (preserve, wipe superblock)")
 PYEOF
 }
