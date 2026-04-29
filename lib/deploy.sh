@@ -33,7 +33,7 @@ APFS_CONTAINER="${APFS_CONTAINER:-}"
 TARGET_DEVICE="${TARGET_DEVICE:-}"
 
 # Internal partition deployment phase functions
-# These correspond to PHASES_INTERNAL="analyze shrink_apfs create_esp extract_iso copy_pkgs generate_config verify_bless"
+# These correspond to PHASES_INTERNAL="analyze shrink_apfs create_esp create_root extract_iso copy_pkgs generate_config verify_bless"
 
 _phase_analyze() {
     analyze_disk_layout INTERNAL_DISK APFS_CONTAINER
@@ -80,6 +80,26 @@ _phase_create_esp() {
     printf '\r%b  %b✓%b ESP partition created                   \n' "$CLR" "$GREEN" "$NC" >&2
 }
 
+_phase_create_root() {
+    if [ "${STORAGE_LAYOUT:-1}" != "1" ]; then
+        log "Full disk mode — skipping root partition creation (installer handles partitioning)"
+        return 0
+    fi
+    printf '\r%b  %b▸%b Creating root partition...            \r' "$CLR" "$CYAN" "$NC" >&2
+    local _root_output_file
+    _root_output_file=$(mktemp /tmp/macpro-root-output.XXXXXX)
+    create_root_partition "$INTERNAL_DISK" _ROOT_CREATED _ROOT_DEVICE _ROOT_SIZE_BYTES > "$_root_output_file" 2>&1
+    rm -f "$_root_output_file"
+    journal_set "ROOT_CREATED" "${_ROOT_CREATED:-0}"
+    journal_set "ROOT_DEVICE" "${_ROOT_DEVICE:-}"
+    journal_set "ROOT_SIZE_BYTES" "${_ROOT_SIZE_BYTES:-0}"
+    export ROOT_SIZE_BYTES="${_ROOT_SIZE_BYTES:-0}"
+    if [ "${_ROOT_CREATED}" -ne 1 ]; then
+        die "Failed to create root partition"
+    fi
+    printf '\r%b  %b✓%b Root partition created (%s)            \n' "$CLR" "$GREEN" "$NC" "$_ROOT_DEVICE" >&2
+}
+
 _phase_extract_iso() {
     local ESP_MOUNT="/Volumes/${ESP_NAME:-CIDATA}"
     if [ -n "${1:-}" ]; then
@@ -88,6 +108,10 @@ _phase_extract_iso() {
     log_info "Extracting Ubuntu ISO to ESP... (this may take 2-5 minutes)"
     log_info "  ISO: $ISO_PATH"
     log_info "  Target: $ESP_MOUNT"
+
+    if ! verify_esp_mount "$ESP_MOUNT" "${JOURNAL_ESP_DEVICE:-}"; then
+        error "ESP not mounted before ISO extraction — attempting re-mount"
+    fi
 
     local host="${TARGET_HOST:-macpro}"
     printf '\r%b  %b▸%b Transferring ISO to %s...   \r' "$CLR" "$CYAN" "$NC" "$host" >&2
@@ -156,11 +180,7 @@ _phase_generate_config() {
     mkdir -p "$_local_staging/cidata"
     generate_autoinstall "$_local_staging/autoinstall.yaml" "$STORAGE_TYPE_ARG" "$NETWORK_TYPE_ARG"
     if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
-        local _skip_part=""
-        if [ -n "${_ESP_DEVICE:-}" ]; then
-            _skip_part="${_ESP_DEVICE##*s}"
-        fi
-        generate_dualboot_storage "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data" "$INTERNAL_DISK" "$_skip_part"
+        generate_dualboot_storage "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data" "$INTERNAL_DISK" "${ROOT_SIZE_BYTES:-0}"
     else
         cp "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data"
     fi
@@ -191,10 +211,16 @@ _phase_generate_config() {
     remote_mac_cp "$_local_staging/cidata/user-data" "$ESP_MOUNT/user-data"
     remote_mac_cp "$_local_staging/cidata/meta-data" "$ESP_MOUNT/meta-data"
     remote_mac_cp "$_local_staging/cidata/vendor-data" "$ESP_MOUNT/vendor-data"
-    # Copy autoinstall.yaml to ESP root for Subiquity fallback (no #cloud-config header needed)
-    remote_mac_cp "$_local_staging/autoinstall.yaml" "$ESP_MOUNT/autoinstall.yaml"
+    # Copy autoinstall.yaml to ESP root for Subiquity fallback method #4
+    # MUST use the generated user-data (with all placeholders substituted), NOT the raw template.
+    # The raw template still has __ROOT_SIZE_BYTES__ etc. which breaks curtin if Subiquity reads it.
+    # Strip the #cloud-config header — Subiquity fallback doesn't need it.
+    local _ai_fallback="$_local_staging/autoinstall-fallback.yaml"
+    tail -n +2 "$_local_staging/cidata/user-data" > "$_ai_fallback"
+    remote_mac_cp "$_ai_fallback" "$ESP_MOUNT/autoinstall.yaml"
+    rm -f "$_ai_fallback"
     if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
-        if ! remote_mac_exec grep -q 'preserved-partition' "$ESP_MOUNT/user-data" 2>/dev/null; then
+        if ! remote_mac_exec grep -q 'preserve: true' "$ESP_MOUNT/user-data" 2>/dev/null; then
             die "Generated user-data lacks preserved partition entries — macOS partitions would be wiped"
         fi
     fi
@@ -286,6 +312,7 @@ deploy_internal_partition() {
         _phase_analyze \
         _phase_shrink_apfs \
         _phase_create_esp \
+        _phase_create_root \
         _phase_extract_iso \
         _phase_copy_pkgs \
         _phase_generate_config \
@@ -619,11 +646,7 @@ _phase_generate_config_usb() {
     mkdir -p "$_local_staging/cidata"
     generate_autoinstall "$_local_staging/autoinstall.yaml" "$STORAGE_TYPE_ARG" "$NETWORK_TYPE_ARG"
     if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
-        local _skip_part=""
-        if [ -n "${_ESP_DEVICE:-}" ]; then
-            _skip_part="${_ESP_DEVICE##*s}"
-        fi
-        generate_dualboot_storage "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data" "$INTERNAL_DISK" "$_skip_part"
+        generate_dualboot_storage "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data" "$INTERNAL_DISK" "${ROOT_SIZE_BYTES:-0}"
     else
         cp "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data"
     fi
@@ -652,8 +675,11 @@ _phase_generate_config_usb() {
     remote_mac_cp "$_local_staging/cidata/user-data" "$USB_MOUNT/user-data"
     remote_mac_cp "$_local_staging/cidata/meta-data" "$USB_MOUNT/meta-data"
     remote_mac_cp "$_local_staging/cidata/vendor-data" "$USB_MOUNT/vendor-data"
-    # Subiquity fallback (no #cloud-config header needed)
-    remote_mac_cp "$_local_staging/autoinstall.yaml" "$USB_MOUNT/autoinstall.yaml"
+    # Subiquity fallback — use generated user-data (substituted), NOT raw template
+    local _ai_fallback_usb="$_local_staging/autoinstall-fallback.yaml"
+    tail -n +2 "$_local_staging/cidata/user-data" > "$_ai_fallback_usb"
+    remote_mac_cp "$_ai_fallback_usb" "$USB_MOUNT/autoinstall.yaml"
+    rm -f "$_ai_fallback_usb"
     if ! verify_cidata_structure "$USB_MOUNT"; then
         error "CIDATA structure verification failed on remote host"
         return 1

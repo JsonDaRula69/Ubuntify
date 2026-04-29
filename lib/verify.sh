@@ -480,19 +480,15 @@ verify_cidata_structure() {
             if remote_mac_exec "grep -q 'preserve: true' '$user_data' 2>/dev/null"; then
                 log "verify_cidata_structure: dual-boot configuration detected (preserve: true)"
             fi
-            if remote_mac_exec "grep -q 'preserved-partition' '$user_data' 2>/dev/null"; then
-                log "verify_cidata_structure: partition preservation entries found"
-            else
-                warn "verify_cidata_structure: no preserved-partition entries found — macOS partitions may not be preserved"
+            if remote_mac_exec "grep -q 'wipe: superblock' '$user_data' 2>/dev/null"; then
+                log "verify_cidata_structure: root partition wipe configuration found"
             fi
         else
             if grep -q 'preserve: true' "$user_data" 2>/dev/null; then
                 log "verify_cidata_structure: dual-boot configuration detected (preserve: true)"
             fi
-            if grep -q 'preserved-partition' "$user_data" 2>/dev/null; then
-                log "verify_cidata_structure: partition preservation entries found"
-            else
-                warn "verify_cidata_structure: no preserved-partition entries found — macOS partitions may not be preserved"
+            if grep -q 'wipe: superblock' "$user_data" 2>/dev/null; then
+                log "verify_cidata_structure: root partition wipe configuration found"
             fi
         fi
     fi

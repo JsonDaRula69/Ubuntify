@@ -266,10 +266,14 @@ generate_dualboot_storage() {
     local TEMPLATE_PATH="$1"
     local OUTPUT_PATH="$2"
     local DISK_DEV="$3"
-    local SKIP_PART_NUM="${4:-}"
+    local ROOT_SIZE_BYTES="$4"
 
     log "Generating dual-boot storage config..."
-    log_debug "generate_dualboot_storage: DISK_DEV=$DISK_DEV, SKIP_PART_NUM=$SKIP_PART_NUM, TARGET_HOST=${TARGET_HOST:-}"
+    log_debug "generate_dualboot_storage: DISK_DEV=$DISK_DEV, ROOT_SIZE_BYTES=$ROOT_SIZE_BYTES, TARGET_HOST=${TARGET_HOST:-}"
+
+    if [ -z "$ROOT_SIZE_BYTES" ]; then
+        ROOT_SIZE_BYTES=0
+    fi
 
     local PARTITION_DATA
     local PARTITION_DETAIL=""
@@ -279,7 +283,6 @@ generate_dualboot_storage() {
         PARTITION_DATA=$(remote_mac_sudo "sgdisk -p $DISK_DEV" 2>/dev/null) || true
         local _pd_lines=$(echo "$PARTITION_DATA" | wc -l | tr -d ' ')
         log_debug "generate_dualboot_storage: PARTITION_DATA has ${_pd_lines} lines"
-        log_debug "generate_dualboot_storage: first 3 lines: $(echo "$PARTITION_DATA" | head -3 | tr '\n' ' | ')"
         for part_num in $(echo "$PARTITION_DATA" | awk '{print $1}' | grep -E '^[0-9]+$'); do
             PARTITION_DETAIL="${PARTITION_DETAIL}===PART:${part_num}===
 $(remote_mac_sudo "sgdisk -i $part_num $DISK_DEV" 2>/dev/null)
@@ -294,35 +297,27 @@ $(sgdisk -i "$part_num" "$DISK_DEV" 2>/dev/null)
         done
     fi
 
-    local _part_data_file="${OUTPUT_PATH}.partdata"
     local _part_detail_file="${OUTPUT_PATH}.partdetail"
-    printf '%s' "$PARTITION_DATA" > "$_part_data_file"
     printf '%s' "$PARTITION_DETAIL" > "$_part_detail_file"
 
-    python3 - "$TEMPLATE_PATH" "$OUTPUT_PATH" "$_part_data_file" "$_part_detail_file" "${SKIP_PART_NUM}" << 'PYEOF' || { rm -f "$_part_data_file" "$_part_detail_file"; die "Failed to generate dual-boot storage config"; }
+    python3 - "$TEMPLATE_PATH" "$OUTPUT_PATH" "$_part_detail_file" "$ROOT_SIZE_BYTES" << 'PYEOF' || { rm -f "$_part_detail_file"; die "Failed to generate dual-boot storage config"; }
 import sys, re
 
 template_path = sys.argv[1]
 output_path = sys.argv[2]
-part_data_path = sys.argv[3]
-part_detail_path = sys.argv[4]
-skip_part_num = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else None
+part_detail_path = sys.argv[3]
+root_size_bytes = sys.argv[4]
 
 with open(template_path) as f:
     content = f.read()
-
-with open(part_data_path) as f:
-    partition_data = f.read()
 
 with open(part_detail_path) as f:
     partition_detail_raw = f.read()
 
 import os
-os.unlink(part_data_path)
 os.unlink(part_detail_path)
 
-part_lines = partition_data.strip().split('\n')
-
+# Parse sgdisk -i output for each partition
 partition_info = {}
 for section in partition_detail_raw.split('===PART:'):
     if not section.strip():
@@ -332,159 +327,84 @@ for section in partition_detail_raw.split('===PART:'):
         p_num = int(header_match.group(1))
         partition_info[p_num] = section.split('\n', 1)[1] if '\n' in section else ''
 
-# Parse existing partitions
-preserved_yaml = ""
-max_part_num = 0
-part_count = 0
+# Extract exact byte sizes and type GUIDs for partitions 1-3 (preserved)
+# Partition 4 (root) gets wipe: superblock with the pre-created size
+sizes = {}
+type_guids = {}
+has_apfs = False
 
-for line in part_lines:
-    fields = line.split()
-    if len(fields) < 6:
-        continue
-    try:
-        part_num = int(fields[0])
-        max_part_num = max(max_part_num, part_num)
-    except (ValueError, IndexError):
-        continue
+for p_num, info_text in partition_info.items():
+    first_sector = None
+    last_sector = None
+    part_type_guid = ''
 
-    if skip_part_num is not None and part_num == skip_part_num:
-        # CIDATA ESP: include as preserved partition so curtin doesn't try to
-        # create a new partition overlapping it. Curtin will NOT delete EFI-type
-        # partitions (safety check), so skipping it causes sector overlap with
-        # new partitions. Preserve it instead.
-        print(f"  Including CIDATA ESP partition {part_num} as preserved (curtin cannot delete EFI-type partitions)", file=sys.stderr)
-        # Fall through to include in preserved_yaml with grub_device: false
+    for info_line in info_text.split('\n'):
+        if 'Partition GUID code:' in info_line or 'Partition type GUID code:' in info_line or 'Partition type code:' in info_line:
+            guid_match = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', info_line)
+            if guid_match:
+                part_type_guid = guid_match.group(1).lower()
+        elif 'First sector:' in info_line:
+            sector_match = re.search(r'(\d+)', info_line.split(':')[-1])
+            if sector_match:
+                first_sector = int(sector_match.group(1))
+        elif 'Last sector:' in info_line:
+            sector_match = re.search(r'(\d+)', info_line.split(':')[-1])
+            if sector_match:
+                last_sector = int(sector_match.group(1))
 
-    try:
-        info_text = partition_info.get(part_num, '')
+    if first_sector is not None and last_sector is not None and part_type_guid:
+        sizes[p_num] = (last_sector - first_sector + 1) * 512
+        type_guids[p_num] = part_type_guid
+        if part_type_guid == '7c3457ef-0000-11aa-aa11-00306543ecac':
+            has_apfs = True
 
-        part_type_guid = ''
-        part_uuid = ''
-        first_sector = None
-        last_sector = None
-
-        for info_line in info_text.split('\n'):
-            if 'Partition GUID code:' in info_line or 'Partition type GUID code:' in info_line or 'Partition type code:' in info_line:
-                guid_match = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', info_line)
-                if guid_match:
-                    part_type_guid = guid_match.group(1).lower()
-            elif 'Partition unique GUID:' in info_line or 'Partition GUID:' in info_line:
-                guid_match = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', info_line)
-                if guid_match:
-                    part_uuid = guid_match.group(1).lower()
-            elif 'First sector:' in info_line:
-                sector_match = re.search(r'(\d+)', info_line.split(':')[-1])
-                if sector_match:
-                    first_sector = int(sector_match.group(1))
-            elif 'Last sector:' in info_line:
-                sector_match = re.search(r'(\d+)', info_line.split(':')[-1])
-                if sector_match:
-                    last_sector = int(sector_match.group(1))
-
-        if first_sector is None or last_sector is None or not part_type_guid:
-            continue
-
-        offset_bytes = first_sector * 512
-        size_bytes = (last_sector - first_sector + 1) * 512
-
-        if size_bytes < 1048576:
-            continue
-
-        preserved_yaml += f"""    - device: root-disk
-      size: {size_bytes}
-      number: {part_num}
-      preserve: true
-      grub_device: false
-      offset: {offset_bytes}
-      partition_type: {part_type_guid}
-      id: preserved-partition-{part_num}
-      type: partition
-"""
-        part_count += 1
-    except Exception as e:
-        print(f"WARNING: Could not parse partition {part_num}: {e}", file=sys.stderr)
-        continue
-
-if not preserved_yaml:
-    print("ERROR: No preserved partitions found — dual-boot requires partition preservation to avoid wiping macOS", file=sys.stderr)
+if not has_apfs:
+    print("ERROR: APFS container partition (GUID 7c3457ef-0000-11aa-aa11-00306543ecac) not found!", file=sys.stderr)
+    print("Dual-boot requires preserving the macOS APFS container. Aborting.", file=sys.stderr)
     sys.exit(1)
 
-APPLE_APFS_GUID = "7c3457ef-0000-11aa-aa11-00306543ecac"
-APPLE_EFI_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-has_apfs_container = any(APPLE_APFS_GUID in line for line in preserved_yaml.lower().split('\n'))
-if not has_apfs_container:
-    print(f"ERROR: APFS container partition (GUID {APPLE_APFS_GUID}) not found in preserved partitions!", file=sys.stderr)
-    print("The macOS Recovery partition lives inside the APFS container. Without preserving it,", file=sys.stderr)
-    print("the installer will DESTROY all macOS data including Recovery. Aborting.", file=sys.stderr)
-    sys.exit(1)
+# Verify partitions 1-3 exist (required for dual-boot)
+for required_num in [1, 2, 3]:
+    if required_num not in sizes:
+        print(f"ERROR: Required partition {required_num} not found in GPT table!", file=sys.stderr)
+        print("Dual-boot requires partitions 1 (ESP), 2 (APFS), and 3 (CIDATA) to exist.", file=sys.stderr)
+        sys.exit(1)
 
-# New partitions have no explicit 'number' field — curtin auto-assigns
-# partition numbers based on ordering in the config list. This avoids
-# collisions with leftover partitions from failed installs (e.g. a
-# previous curtin run that created sda4 but didn't complete).
-# See: curtin block_meta.py determine_partition_number()
+# Replace the size placeholders in the template with actual values
+# If ROOT_SIZE_BYTES is 0, auto-detect from partition 4 if it exists
+root_size = int(root_size_bytes) if root_size_bytes and root_size_bytes != '0' else 0
+if root_size == 0:
+    # Check if partition 4 exists on disk (pre-created by create_root_partition)
+    if 4 in sizes:
+        root_size = sizes[4]
+        print(f"  Auto-detected root partition 4 size: {root_size} bytes", file=sys.stderr)
+    else:
+        print("ERROR: ROOT_SIZE_BYTES=0 and no partition 4 found on disk!", file=sys.stderr)
+        print("Either pre-create the root partition with create_root_partition(), or pass ROOT_SIZE_BYTES.", file=sys.stderr)
+        sys.exit(1)
 
-# Build the new storage section
-new_storage = f"""  storage:
-    config:
-    - type: disk
-      id: root-disk
-      path: /dev/sda
-      ptable: gpt
-      preserve: true
-{preserved_yaml}    - type: partition
-      id: efi-partition
-      device: root-disk
-      size: 512M
-      flag: boot
-      partition_type: c12a7328-f81f-11d2-ba4b-00a0c93ec93b
-      grub_device: true
-    - type: format
-      id: efi-format
-      volume: efi-partition
-      fstype: fat32
-    - type: mount
-      id: efi-mount
-      device: efi-format
-      path: /boot/efi
-    - type: partition
-      id: boot-partition
-      device: root-disk
-      size: 1G
-    - type: format
-      id: boot-format
-      volume: boot-partition
-      fstype: ext4
-    - type: mount
-      id: boot-mount
-      device: boot-format
-      path: /boot
-    - type: partition
-      id: root-partition
-      device: root-disk
-      size: -1
-    - type: format
-      id: root-format
-      volume: root-partition
-      fstype: ext4
-    - type: mount
-      id: root-mount
-      device: root-format
-      path: /
-"""
-
-# Replace the storage section in the template
-pattern = r'  storage:\n    config:.*?(?=\n  [a-z]|\Z)'
-replacement = new_storage.rstrip()
-new_content = re.sub(pattern, replacement, content, count=1, flags=re.DOTALL)
-
-if new_content == content:
-    print("WARNING: Storage section not found in template — copying as-is", file=sys.stderr)
-    with open(output_path, 'w') as f:
-        f.write(content)
+content = content.replace('__ROOT_SIZE_BYTES__', str(root_size))
+content = content.replace('size: 209715200', f'size: {sizes[1]}')
+content = content.replace('size: 49999998976', f'size: {sizes[2]}')
+content = content.replace('size: 4999999488', f'size: {sizes[3]}')
+if 5 in sizes:
+    content = content.replace('size: 134217728', f'size: {sizes[5]}')
 else:
-    with open(output_path, 'w') as f:
-        f.write(new_content)
-    print(f"  Preserving {part_count} existing partitions (macOS + installer ESP)")
+    # No partition 5 (Recovery) found — remove the recovery partition entry
+    import re
+    content = re.sub(r'\n      - type: partition\n        id: recovery\n        device: root-disk\n        number: 5\n        size: 134217728\n        preserve: true\n        partition_type: 426f6f74-0000-11aa-aa11-00306543ecac', '', content)
+
+# Log what we're preserving
+for p_num in sorted(sizes.keys()):
+    if p_num == 4 and root_size > 0:
+        continue  # logged separately below
+    size_gb = sizes[p_num] / (1024**3)
+    print(f"  Partition {p_num}: {sizes[p_num]} bytes ({size_gb:.1f} GB), type: {type_guids.get(p_num, 'unknown')}", file=sys.stderr)
+print(f"  Root partition (4): {root_size} bytes, wipe: superblock", file=sys.stderr)
+
+with open(output_path, 'w') as f:
+    f.write(content)
+
+print(f"  Preserving {len([p for p in sizes if p != 4])} existing partitions (ESP + APFS + CIDATA + Recovery) + 1 root (wipe)")
 PYEOF
 }

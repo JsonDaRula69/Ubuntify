@@ -40,27 +40,31 @@ autoinstall:
       KVER="$(uname -r)"
       ABI_VER="${KVER%-generic}"
       LOG="/run/macpro.log"
+      CIDATA=""
+      for _cidata_mp in /cdrom /isodevice /mnt; do
+        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
+          CIDATA="$_cidata_mp"
+          break
+        fi
+      done
+      CIDATA_LOG_DIR="${CIDATA}/logs"
+      _sync_log() { if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null; cp "$LOG" "$CIDATA_LOG_DIR/macpro-early.log" 2>/dev/null || true; dmesg > "$CIDATA_LOG_DIR/dmesg-early.log" 2>/dev/null || true; fi; }
       WHURL="http://10.0.2.2:8081/webhook"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[early] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-0},\"stage\":\"early\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      die() { echo "[early] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-0},\"stage\":\"early\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; _sync_log; exit 1; }
       log() { echo "[early] $1" >> "$LOG"; }
 
       echo "=== VM TEST AUTOINSTALL ===" > "$LOG"
       echo "Kernel: $(uname -r)" >> "$LOG"
       echo "Target: $KVER" >> "$LOG"
+      echo "CIDATA: $CIDATA" >> "$LOG"
 
-      # Discover macpro-pkgs mount point (may differ between USB and internal boot)
-      PKGS=""
-      for _mp in /cdrom /isodevice /mnt; do
-        if [ -d "$_mp/macpro-pkgs" ]; then
-          PKGS="$_mp/macpro-pkgs"
-          break
-        fi
-      done
-      if [ -z "$PKGS" ]; then
-        die "Cannot find macpro-pkgs on any mount point" 2
+      PKGS="${CIDATA}/macpro-pkgs"
+      if [ ! -d "$PKGS" ]; then
+        die "Cannot find macpro-pkgs at $PKGS" 2
       fi
       echo "Packages: $(ls $PKGS/*.deb 2>/dev/null | wc -l) debs" >> "$LOG"
+      _sync_log
 
       # Validate kernel headers exist for running kernel
       wh '{"progress":2,"stage":"prep-init","status":"running","message":"Autoinstall started — validating kernel headers"}'
@@ -311,9 +315,18 @@ autoinstall:
       KVER="$(uname -r)"
       ABI_VER="${KVER%-generic}"
       LOG="/run/macpro.log"
+      CIDATA=""
+      for _cidata_mp in /cdrom /isodevice /mnt /target/cdrom; do
+        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
+          CIDATA="$_cidata_mp"
+          break
+        fi
+      done
+      CIDATA_LOG_DIR="${CIDATA}/logs"
+      _sync_log() { if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null; cp "$LOG" "$CIDATA_LOG_DIR/macpro-late.log" 2>/dev/null || true; dmesg > "$CIDATA_LOG_DIR/dmesg-late.log" 2>/dev/null || true; fi; }
       WHURL="http://10.0.2.2:8081/webhook"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-29},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-29},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; _sync_log; exit 1; }
       log() { echo "[late] $1" >> "$LOG"; }
       _dump_log() { cat "$LOG" > /dev/console 2>/dev/null || true; }
       trap '_dump_log' EXIT
@@ -321,16 +334,9 @@ autoinstall:
       log "Late commands starting..."
       wh '{"progress":29,"stage":"late-init","status":"running","message":"Late commands started — validating kernel headers"}'
 
-      # Discover macpro-pkgs mount point
-      PKGS=""
-      for _mp in /cdrom /isodevice /mnt /target/cdrom; do
-        if [ -d "$_mp/macpro-pkgs" ]; then
-          PKGS="$_mp/macpro-pkgs"
-          break
-        fi
-      done
-      if [ -z "$PKGS" ]; then
-        die "Cannot find macpro-pkgs on any mount point" 29
+      PKGS="${CIDATA}/macpro-pkgs"
+      if [ ! -d "$PKGS" ]; then
+        die "Cannot find macpro-pkgs at $PKGS" 29
       fi
       # Validate kernel headers exist before attempting install
       if ! ls $PKGS/linux-headers-${ABI_VER}_*.deb 1>/dev/null 2>&1; then
@@ -682,6 +688,23 @@ autoinstall:
       dkms status > "$ERR_DIR/error-dkms-status.log" 2>/dev/null || true
       lsmod > "$ERR_DIR/error-lsmod.log" 2>/dev/null || true
       lspci -nn > "$ERR_DIR/error-lspci.log" 2>/dev/null || true
+      for _logdir in /var/log/installer /var/log/install-logs-*; do
+        if [ -d "$_logdir" ]; then
+          cp -r "$_logdir" "$ERR_DIR/" 2>/dev/null || true
+        fi
+      done
+      CIDATA=""
+      for _cidata_mp in /cdrom /isodevice /mnt; do
+        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
+          CIDATA="$_cidata_mp"
+          break
+        fi
+      done
+      if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then
+        mkdir -p "$CIDATA/logs" 2>/dev/null || true
+        cp -r "$ERR_DIR/"* "$CIDATA/logs/" 2>/dev/null || true
+        cp /run/macpro.log "$CIDATA/logs/error-macpro.log" 2>/dev/null || true
+      fi
       if [ -d /target ]; then
         mkdir -p /target/var/log/macpro-install 2>/dev/null || true
         cp "$ERR_DIR/"* /target/var/log/macpro-install/ 2>/dev/null || true

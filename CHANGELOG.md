@@ -2,11 +2,24 @@
 
 All notable changes to the Mac Pro 2013 Ubuntu Autoinstall project are documented in this file. Each version corresponds to a git tag. For the full commit history, see `git log`.
 
-## v0.3.x — Remote-Only Architecture, Dead Code Cleanup, Partitioning
+## v0.3.x — Simplified Dual-Boot Partitioning
 
-Starting with v0.3.0, the project transitions to remote-only deployment mode. All local macOS operations are removed — the control machine only generates configuration and transfers it via SSH to the Mac Pro target. This version series also removes dead code left over from the local-deploy era and addresses disk partitioning issues discovered during live testing.
+Starting with v0.3.0, the dual-boot storage layout is simplified. Removed separate 512M EFI and 1G /boot partitions. GRUB installs directly to the existing Apple ESP via `grub_device: true`. Root partition is pre-created from macOS before the installer runs.
 
-**Milestone: v0.2.98 (last v0.2.x)** — Successful live deployment confirmed: Broadcom BCM4360 WiFi driver compiled and connected, autoinstall completed, SSH access verified on headless Mac Pro. Disk partitioning issues with dual-boot mode remain the primary blocker for reliable ESP setup.
+### v0.3.0 — Simplified dual-boot partitioning
+
+- **feat**: Remove separate 512M EFI partition — GRUB uses existing Apple ESP (sda1) with `grub_device: true` and `preserve: true`
+- **feat**: Remove separate 1G /boot partition — /boot lives on root filesystem
+- **feat**: `create_root_partition()` in disk.sh creates root partition from macOS before the installer runs, using `ROOT_SIZE_BYTES` for exact byte sizing
+- **feat**: `cleanup_linux_partitions()` extracted from `analyze_disk_layout()` — erases Linux partitions with `diskutil eraseVolume` before `gpt remove`
+- **feat**: `generate_dualboot_storage()` rewritten — takes `ROOT_SIZE_BYTES` as 4th arg, generates YAML with 4 preserved partitions and 1 new root with `wipe: superblock`
+- **feat**: `storage: version: 2` in autoinstall YAML for editing existing partition tables (Subiquity bug #2018589)
+- **feat**: `refresh-installer: { update: true }` for Apple EFI 1.1 compatibility (bug #2040190)
+- **feat**: GRUB fallback in late-commands — checks for `grubx64.efi` after `update-grub`, runs `grub-install` if missing
+- **feat**: `PHASES_INTERNAL` updated with `create_root` phase between `create_esp` and `copy_iso`
+- **feat**: Rollback Step 2b removes pre-created root partition if deployment fails before installer runs
+- **refactor**: `_skip_part` removed — all 4 partitions preserved (including CIDATA ESP)
+- **docs**: AGENTS.md updated with simplified dual-boot storage config, new constraints, updated version series
 
 ## v0.2.x — TUI Architecture, Agent Mode, and Config System
 - refactor: remove dialog TUI backend, simplify to whiptail > raw detection
@@ -306,4 +319,4 @@ Starting with v0.3.0, the project transitions to remote-only deployment mode. Al
   - v0.2.98: Local deploy mode removed, raw TUI only — **last version with local mode**
   - v0.2.99–v0.2.106: Remote-aware verification, rollback, disk ops, ESP mount fixes
   - **Live testing milestone (v0.2.98)**: Broadcom BCM4360 WiFi driver compiled and connected successfully, SSH access verified on headless Mac Pro. Disk partitioning (dual-boot ESP setup) identified as primary remaining issue.
-- **v0.3.x** (next): Remote-only cleanup, dead code removal, partitioning fixes, production hardening
+- **v0.3.x** (current): Remote-only cleanup, dead code removal, simplified dual-boot partitioning, production hardening

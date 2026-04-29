@@ -41,7 +41,7 @@ Ubuntu 24.04.4 LTS Server deployment and management tool for Mac Pro 2013 (MacPr
 │   ├── rollback.sh                  # State journal + rollback engine (phase tracking)
 │   ├── remote.sh                    # SSH management functions for post-install operations
 │   ├── detect.sh                    # detect_iso, detect_usb_devices, select_usb_device
-│   ├── disk.sh                      # analyze_disk_layout, shrink_apfs_if_needed, create_esp_partition
+│   ├── disk.sh                      # analyze_disk_layout, shrink_apfs_if_needed, cleanup_linux_partitions, create_esp_partition, create_root_partition
 │   ├── bless.sh                     # verify_esp_contents, attempt_bless
 │   ├── deploy.sh                    # 7-phase checkpointed deployment with journal state
 │   ├── remote_mac.sh                # Remote execution wrapper (SSH routing to Mac Pro)
@@ -152,7 +152,7 @@ The `prepare-deployment.sh` script supports four deployment methods:
 | 4) VM test | Validates autoinstall flow in VirtualBox on this Mac | VirtualBox, 4GB+ disk space |
 
 Each method (except 3 and 4) offers two storage layouts:
-- **Dual-boot**: Preserves macOS partitions with `preserve: true`, dynamically generates storage config
+- **Dual-boot**: Preserves macOS partitions with `preserve: true`, pre-creates root partition from macOS, GRUB installed to Apple ESP
 - **Full disk**: Wipes entire disk, fresh GPT + EFI + /boot + / (simpler autoinstall)
 
 And two network configurations:
@@ -191,6 +191,68 @@ The script operates in remote deployment mode only, controlled via SSH to the ta
 
 # Agent mode remote deployment
 ./prepare-deployment.sh --agent --target-host macpro --remote-password XXX --method 1 --storage 1 --network 1 --json
+```
+
+## Dynamic Dual-Boot Storage Config
+
+The dual-boot storage config uses a simplified approach: no separate 512M EFI or 1G /boot partitions. GRUB installs directly to the existing Apple ESP (sda1) via `grub_device: true` with `preserve: true`. The root partition is pre-created from macOS before the installer runs.
+
+### How It Works
+
+1. **`cleanup_linux_partitions()`** (`lib/disk.sh`) erases any leftover Linux partitions from previous installs using `diskutil eraseVolume` followed by `gpt remove`
+2. **`shrink_apfs_if_needed()`** shrinks the macOS APFS container to free space for Ubuntu
+3. **`create_root_partition()`** (`lib/disk.sh`, mirrors `create_esp_partition()`) creates the Ubuntu root partition at a precise byte offset from the freed space, using `ROOT_SIZE_BYTES` for exact sizing
+4. **`generate_dualboot_storage()`** (`lib/autoinstall.sh`, 4th arg = `ROOT_SIZE_BYTES`) generates the YAML storage config with 4 preserved partitions and 1 new root partition with `wipe: superblock`
+
+### Preserved Partitions (all `preserve: true`)
+
+| # | Content | Type | GUID |
+|---|---------|------|------|
+| sda1 | Apple ESP (shared by both OSes) | EFI System | `c12a7328-f81f-11d2-ba4b-00a0c93ec93b` |
+| sda2 | APFS container (macOS) | Apple APFS | `7c3457ef-0000-11aa-aa11-00306543ecac` |
+| sda3 | CIDATA ESP (5GB, created by `create_esp_partition`) | EFI System | `c12a7328-f81f-11d2-ba4b-00a0c93ec93b` |
+| sda5 | Apple Boot / Recovery HD | Apple Boot | `426f6f74-0000-11aa-aa11-00306543ecac` |
+
+### New Root Partition (single new entry)
+
+No separate `/boot` partition. `/boot` lives on the root partition. `GRUB` uses `grub_device: true` to install to the Apple ESP.
+
+```yaml
+- id: root
+  type: partition
+  number: SKIP_PART_NUM
+  size: ROOT_SIZE_BYTES
+  flag: root
+  wipe: superblock
+  grub_device: false
+  filesystem: ext4
+```
+
+The `generate_dualboot_storage()` function:
+- Reads GPT after APFS shrink + root partition creation
+- Generates `preserve: true` entries for all 5 existing partitions (ESP + APFS + CIDATA + Recovery)
+- Appends the single root partition entry with exact byte size
+- Uses `storage: version: 2` (required for editing existing partition tables — Subiquity bug #2018589)
+- Uses `refresh-installer: { update: false }` (snap refresh loses NoCloud datasource — LP #2132014; Apple EFI fix already in 24.04 ISO)
+- Normalizes partition type GUIDs to lowercase (curtin compatibility)
+- Uses string-based regex replacement (NOT `yaml.dump`) to preserve `|` block scalars
+- Uses `wipe: superblock` (not `preserved-partition` check) for the root partition
+
+### Phase List Update
+
+Internal ESP deployment (`PHASES_INTERNAL`) now includes:
+```
+create_esp → create_root → copy_iso → copy_config → bless → verification → cleanup
+```
+
+`create_root` runs after `create_esp` — the ESP is created first, then the root partition is carved from the remaining free space.
+
+### Rollback
+
+Rollback Step 2b removes the pre-created root partition if deployment fails before the installer runs:
+```bash
+# Remove root partition by device
+sgdisk -d $ROOT_PART_NUM /dev/$DISK
 ```
 
 ## Boot Methods
@@ -335,7 +397,7 @@ const MAX_UPDATES = 200;
 - Format: `v0.3.N` where N starts from 0 (v0.3.0, v0.3.1, v0.3.2, ...)
 - **Every commit must have a version tag** — no untagged commits on main
 - Tags are assigned in chronological order (oldest commit = lowest N)
-- **v0.2.x series is closed** — v0.2.106 was the last v0.2.x release
+- **v0.2.x series is closed** — v0.2.109 was the last v0.2.x release
 - Version series MUST stay on v0.3.* — do NOT iterate to v0.4.* or higher without explicit user permission
 - When creating a commit, immediately tag it with the next sequential v0.3.N number
 - Runtime version is derived via `git describe --tags` (set as `APP_VERSION` in prepare-deployment.sh); falls back to `"dev"` if not in a git repo
@@ -346,7 +408,7 @@ const MAX_UPDATES = 200;
 |--------|-------------|--------|
 | v0.0.x | Initial development (102 micro-releases) | Closed |
 | v0.1.x | CLI flags, modularization, hardening (9 releases) | Closed |
-| v0.2.x | TUI, agent mode, config, remote deployment (99 releases) | Closed at v0.2.106 |
+| v0.2.x | TUI, agent mode, config, remote deployment, partitioning fixes | Closed at v0.2.109 |
 | v0.3.x | Remote-only cleanup, dead code removal, partitioning fixes | Current |
 
 ### v0.2.x → v0.3.0 Transition
@@ -355,6 +417,7 @@ const MAX_UPDATES = 200;
 - v0.2.99–v0.2.106 made all verification, rollback, disk, bless, and deploy ops remote-aware
 - **Live testing milestone (v0.2.98)**: Broadcom BCM4360 WiFi driver compiled and connected successfully, SSH verified on headless Mac Pro. Disk partitioning (dual-boot ESP setup) identified as primary remaining issue.
 - v0.3.0 begins dead code cleanup (unused TUI widgets, vestigial local-mode branches, duplicate functions) and partitioning fixes
+- v0.3.0 simplifies dual-boot partitioning: removes separate 512M EFI and 1G /boot partitions, uses existing Apple ESP via `grub_device: true`, pre-creates root partition from macOS with `wipe: superblock`, adds `storage: version: 2`, sets `refresh-installer: { update: false }` (snap refresh breaks NoCloud)
 
 ## deploy.conf Configuration
 
@@ -674,7 +737,7 @@ The erase operation (managed via the TUI Storage menu) performs these steps:
 | Mounted at `/boot/efi` | EFI System Partition | **DO NOT DELETE** — shared by both OSes |
 | FSTYPE contains `apfs` | macOS | Target for deletion |
 | TYPE GUID `7C3457EF-...` | Apple APFS container | Target for deletion |
-| TYPE GUID `426F6F74-...` | Apple Boot/Recovery | Target for deletion |
+| TYPE GUID `426F6F74-...` | Apple Boot/Recovery | Only delete during macOS erasure (explicit user action) |
 | LABEL contains `Macintosh` or `Recovery` | macOS | Target for deletion |
 | Swap partition (FSTYPE=`swap`) | Ubuntu | **DO NOT DELETE** |
 
@@ -761,6 +824,12 @@ The `remote_toggle_apt_sources(host, action)` function (line 234 in lib/remote.s
 - **Each `- |` block in autoinstall.yaml runs in separate `sh -c`** — variables NOT shared between blocks
 - **Shell commands via `sh -c`** (dash) — POSIX-compatible syntax only (no `[[ ]]`, no arrays, no `<<<`)
 - **ESP must be 5GB+** — ISO is ~3.4GB with squashfs layers ~2.5GB
+- **No separate EFI or /boot partitions** — GRUB uses existing Apple ESP (sda1) with `grub_device: true`; /boot lives on root
+- **Root partition pre-created from macOS** — `create_root_partition()` runs before the installer, using `ROOT_SIZE_BYTES` for exact byte sizing
+- **`ROOT_SIZE_BYTES` env var** — passed through deploy.sh to autoinstall.sh as `generate_dualboot_storage()` 4th argument
+- **`storage: version: 2`** — required in autoinstall YAML for editing existing partition tables (Subiquity bug #2018589)
+- **`refresh-installer: { update: false }`** — snap refresh loses NoCloud datasource on restart (LP #2132014); Apple EFI 1.1 fix is already in 24.04 ISO's Subiquity snap
+- **`wipe: superblock`** (not `preserved-partition`) — used for the pre-created root partition; the partition exists but needs superblock wipe
 - **Partition type GUIDs must be lowercase** — curtin normalizes to lowercase; uppercase causes verification mismatches
 - **Autoinstall YAML must use string-based replacement** — `yaml.dump` converts `|` block scalars to quoted strings with `\n` escapes
 - **gcc-13 must match ISO kernel** — `gcc-13 13.3.0-6ubuntu2~24.04` and `gcc-13-x86-64-linux-gnu` required. `cc` symlink points to `x86_64-linux-gnu-gcc-13`

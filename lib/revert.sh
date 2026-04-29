@@ -5,7 +5,7 @@
 # Provides revert_changes for cleaning up deployment artifacts
 # and handle_revert_flag for the --revert command-line flag.
 #
-# Dependencies: lib/colors.sh, lib/logging.sh
+# Dependencies: lib/colors.sh, lib/logging.sh, lib/rollback.sh, lib/dryrun.sh, lib/remote_mac.sh
 #
 
 [ "${_REVERT_SH_SOURCED:-0}" -eq 1 ] && return 0
@@ -19,6 +19,158 @@ source "${LIB_DIR:-./lib}/remote_mac.sh"
 
 : "${ESP_NAME:=CIDATA}"
 
+# ---------------------------------------------------------------------------
+# Disk State Detection Helpers
+# ---------------------------------------------------------------------------
+
+# _detect_internal_disk
+# Detects the internal disk device on the target Mac Pro
+_detect_internal_disk() {
+    if [ -n "${INTERNAL_DISK:-}" ]; then
+        return 0
+    fi
+    INTERNAL_DISK=$(remote_mac_exec diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
+    if [ -z "$INTERNAL_DISK" ]; then
+        # Fallback: look for the disk with an APFS partition
+        INTERNAL_DISK=$(remote_mac_exec "diskutil list 2>/dev/null | grep -i APFS | head -1 | grep -oE '/dev/disk[0-9]+'" || true)
+    fi
+}
+
+# _detect_apfs_container
+# Detects the APFS container reference from the internal disk
+_detect_apfs_container() {
+    if [ -n "${APFS_CONTAINER:-}" ]; then
+        return 0
+    fi
+    local apfs_partition
+    apfs_partition=$(remote_mac_exec diskutil list "${INTERNAL_DISK:-}" 2>/dev/null | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+    if [ -n "$apfs_partition" ]; then
+        APFS_CONTAINER=$(remote_mac_exec diskutil info "$apfs_partition" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head -1 || true)
+    fi
+    if [ -z "$APFS_CONTAINER" ]; then
+        APFS_CONTAINER=$(remote_mac_exec "diskutil list 2>/dev/null | grep -i APFS | head -1 | grep -oE 'disk[0-9]+'" || true)
+    fi
+}
+
+# _detect_esp_device
+# Detects the CIDATA ESP partition device from the internal disk
+_detect_esp_device() {
+    if [ -n "${ESP_DEVICE:-}" ]; then
+        return 0
+    fi
+    ESP_DEVICE=$(remote_mac_exec diskutil list "${INTERNAL_DISK:-}" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+}
+
+# _get_apfs_size_bytes
+# Returns the APFS container size in bytes via diskutil apfs list
+# Args: container_ref
+_get_apfs_size_bytes() {
+    local container="$1"
+    remote_mac_exec diskutil apfs list "$container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true
+}
+
+# _get_disk_total_bytes
+# Returns the total disk size in bytes via diskutil info
+# Args: disk_device (e.g. /dev/disk0)
+_get_disk_total_bytes() {
+    local disk="$1"
+    # diskutil info outputs "Total Size: ... (NNNNNN Bytes)" or "Disk Size: ..." (varies by macOS version)
+    remote_mac_exec diskutil info "$disk" 2>/dev/null | grep -E "Total Size|Disk Size" | head -1 | grep -oE '\([0-9]+ Bytes\)' | grep -oE '[0-9]+' || true
+}
+
+# _has_revertable_state
+# Returns 0 if deployment artifacts exist on the internal disk that can be reverted
+# Returns 1 if the system appears clean (no CIDATA, no Linux partitions, APFS near full)
+# Requires INTERNAL_DISK to be set (call _detect_internal_disk first)
+_has_revertable_state() {
+    if [ -z "${INTERNAL_DISK:-}" ]; then
+        return 1
+    fi
+
+    # Check for CIDATA partition
+    if remote_mac_exec diskutil list "$INTERNAL_DISK" 2>/dev/null | grep -q "$ESP_NAME"; then
+        return 0
+    fi
+
+    # Check for Linux Filesystem partitions
+    if remote_mac_exec "diskutil list $INTERNAL_DISK 2>/dev/null" 2>/dev/null | grep -q "Linux Filesystem"; then
+        return 0
+    fi
+
+    # Check for Linux GPT entries (ghost partitions from diskutil eraseVolume)
+    local gpt_linux
+    gpt_linux=$(remote_mac_sudo "gpt -r show $INTERNAL_DISK 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print \$3}'" || true)
+    if [ -n "$gpt_linux" ]; then
+        return 0
+    fi
+
+    # Check if APFS container is notably smaller than the disk (shrunk and not restored)
+    _detect_apfs_container
+    if [ -n "${APFS_CONTAINER:-}" ]; then
+        local disk_total_bytes apfs_size_bytes
+        disk_total_bytes=$(_get_disk_total_bytes "$INTERNAL_DISK")
+        apfs_size_bytes=$(_get_apfs_size_bytes "$APFS_CONTAINER")
+        # If APFS is more than 10GB smaller than the disk, it was likely shrunk
+        if [ -n "$disk_total_bytes" ] && [ -n "$apfs_size_bytes" ]; then
+            local size_gap=$((disk_total_bytes - apfs_size_bytes))
+            # 10GB = 10,000,000,000 bytes
+            if [ "$size_gap" -gt 10000000000 ] 2>/dev/null; then
+                return 0
+            fi
+        fi
+    fi
+
+    return 1
+}
+
+# _remove_linux_partitions_and_ghosts
+# Removes Linux Filesystem partitions via diskutil eraseVolume, then scrubs
+# ghost GPT entries that diskutil eraseVolume leaves behind.
+# Ghost entries (GUIDs 0FC63DAF/0657FD6D) cause curtin "Could not create partition N"
+# errors on next deploy if not scrubbed.
+# Args: internal_disk (e.g. /dev/disk0)
+_remove_linux_partitions_and_ghosts() {
+    local internal_disk="$1"
+
+    local _linux_parts
+    _linux_parts=$(remote_mac_exec "diskutil list $internal_disk 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
+    if [ -n "$_linux_parts" ]; then
+        log "Found leftover Linux partitions — removing..."
+        echo "$_linux_parts" | while IFS= read -r _line; do
+            local _linux_dev
+            _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
+            if [ -n "$_linux_dev" ]; then
+                dry_run_exec "Remove Linux partition /dev/${_linux_dev}" \
+                    remote_mac_sudo diskutil eraseVolume free none "/dev/${_linux_dev}" 2>/dev/null || true
+                log "Removed Linux partition /dev/${_linux_dev}"
+            fi
+        done
+    fi
+
+    # Scrub ghost GPT entries
+    # diskutil eraseVolume hides Linux partitions from macOS but leaves stale GPT entries.
+    # The Linux kernel finds these at boot, causing curtin "Could not create partition N" errors.
+    local _gpt_linux_indices
+    _gpt_linux_indices=$(remote_mac_sudo "gpt -r show $internal_disk 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print \$3}'" || true)
+    if [ -n "$_gpt_linux_indices" ]; then
+        log "Found leftover Linux GPT entries — scrubbing..."
+        for _idx in $_gpt_linux_indices; do
+            # Safety: only remove indices > 2 (preserves EFI=1 + APFS=2)
+            if ! [[ "$_idx" =~ ^[0-9]+$ ]] || [ "$_idx" -le 2 ]; then
+                warn "Skipping invalid GPT index $_idx — must be numeric and > 2"
+                continue
+            fi
+            dry_run_exec "Remove Linux GPT entry index $_idx" \
+                remote_mac_sudo "gpt remove -i $_idx $internal_disk" 2>/dev/null || true
+            log "Removed GPT entry index $_idx from $internal_disk"
+        done
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Main Revert Function
+# ---------------------------------------------------------------------------
+
 revert_changes() {
     # Load journal state at start
     journal_read
@@ -29,88 +181,171 @@ revert_changes() {
     # Determine deploy method from journal or fallback to variable
     local deploy_method="${JOURNAL_DEPLOY_METHOD:-${DEPLOY_METHOD:-}}"
 
+    # If no deploy method known, try disk-detection fallback
+    if [ -z "$deploy_method" ]; then
+        _detect_internal_disk
+        _detect_esp_device
+        if [ -n "${ESP_DEVICE:-}" ]; then
+            log "Detected CIDATA partition on internal disk — inferring internal deploy method"
+            deploy_method="1"
+        elif [ -n "${JOURNAL_USB_DEVICE:-}" ]; then
+            deploy_method="2"
+        elif [ -n "${JOURNAL_VM_NAME:-}" ]; then
+            deploy_method="4"
+        else
+            # No method detected — check for any leftover artifacts on disk
+            if [ -n "${INTERNAL_DISK:-}" ] && _has_revertable_state; then
+                deploy_method="1"
+                log "Found deployment artifacts on disk — assuming internal deploy method"
+            else
+                log "No deployment method detected and no deployment artifacts found — system appears clean"
+                return 0
+            fi
+        fi
+    fi
+
     if [ "$deploy_method" = "1" ] || [ "$deploy_method" = "internal" ]; then
         # Internal partition method cleanup
+        _detect_internal_disk
         if [ -z "${INTERNAL_DISK:-}" ]; then
-            INTERNAL_DISK=$(remote_mac_exec diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
+            die "Cannot identify internal disk for revert"
+        fi
+        _detect_apfs_container
+
+        # Full-disk guard: if no APFS container found, macOS was erased — cannot revert
+        if [ -z "${APFS_CONTAINER:-}" ]; then
+            die "No APFS container found — macOS may have been erased. Cannot revert automatically. Use macOS Recovery (hold Cmd+Option+R at startup) to reinstall macOS."
         fi
 
-        # Prefer journal values over runtime variables
+        # Prefer journal values over runtime variables, then disk detection
         local esp_created="${JOURNAL_ESP_CREATED:-${_ESP_CREATED:-0}}"
         local esp_device="${JOURNAL_ESP_DEVICE:-}"
+        local root_created="${JOURNAL_ROOT_CREATED:-${_ROOT_CREATED:-0}}"
+        local root_device="${JOURNAL_ROOT_DEVICE:-}"
         local apfs_resized="${JOURNAL_APFS_RESIZED:-${_APFS_RESIZED:-0}}"
         local apfs_container="${JOURNAL_ORIGINAL_APFS_CONTAINER:-${APFS_CONTAINER:-}}"
         local original_size="${JOURNAL_ORIGINAL_APFS_SIZE:-${_APFS_ORIGINAL_SIZE:-}}"
 
-        # ESP removal with self-healing (try to mount if not found)
-        if [ "$esp_created" = "1" ]; then
-            if [ -z "$esp_device" ] && [ -n "${INTERNAL_DISK:-}" ]; then
-                esp_device=$(remote_mac_exec diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
-            fi
-
+        # Detect ESP device if not known from journal
+        if [ -z "$esp_device" ]; then
+            esp_device=$(remote_mac_exec diskutil list "$INTERNAL_DISK" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
             if [ -n "$esp_device" ]; then
-                log "Removing ESP partition /dev/$esp_device..."
-
-                # Self-healing: try to mount ESP if it's not mounted
-                local mount_point
-                mount_point=$(remote_mac_exec diskutil info "/dev/$esp_device" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || true)
-                if [ -z "$mount_point" ] || [ "$mount_point" = "N/A" ]; then
-                    log "ESP not mounted, attempting to mount..."
-                    mount_point="/Volumes/CIDATA"
-                    remote_mac_exec mkdir -p "$mount_point" 2>/dev/null || true
-                    remote_mac_sudo mount_msdos "/dev/$esp_device" "$mount_point" 2>/dev/null || \
-                        remote_mac_sudo diskutil mount "/dev/$esp_device" 2>/dev/null || true
-                fi
-
-                remote_mac_sudo diskutil unmount "/dev/$esp_device" 2>/dev/null || true
-                dry_run_exec "Remove ESP partition /dev/$esp_device" \
-                    remote_mac_sudo diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || true
-                # Verify ESP actually removed — diskutil eraseVolume can return non-zero on success
-                if remote_mac_exec diskutil list 2>/dev/null | grep -q "$esp_device"; then
-                    warn "ESP partition /dev/$esp_device still present after erase"
-                    REVERT_ERRORS=1
-                fi
-            else
-                warn "ESP device not found for removal"
-                REVERT_ERRORS=1
+                esp_created="1"
             fi
-            _ESP_CREATED=0
         fi
 
-        # Remove leftover Linux partitions created by Subiquity/curtin
-        # diskutil eraseVolume hides from macOS but leaves stale GPT entries;
-        # the Linux kernel finds them at boot — use gpt remove to scrub.
-        local _gpt_linux_indices
-        _gpt_linux_indices=$(remote_mac_sudo "gpt -r show $INTERNAL_DISK 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print \$3}'" || true)
-        if [ -n "$_gpt_linux_indices" ]; then
-            log "Found leftover Linux GPT entries — removing..."
-            for _idx in $_gpt_linux_indices; do
-                if ! [[ "$_idx" =~ ^[0-9]+$ ]] || [ "$_idx" -le 2 ]; then
-                    warn "Skipping invalid GPT index $_idx — must be numeric and > 2"
-                    continue
-                fi
-                dry_run_exec "Remove Linux GPT entry index $_idx" \
-                    remote_mac_sudo "gpt remove -i $_idx $INTERNAL_DISK" 2>/dev/null || true
-                log "Removed GPT entry index $_idx from $INTERNAL_DISK"
-            done
+        # Detect root partition if journal says created but device unknown
+        if [ "$root_created" = "1" ] && [ -z "$root_device" ]; then
+            root_device=$(remote_mac_exec diskutil list "$INTERNAL_DISK" 2>/dev/null | grep -A1 "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | tail -1 || true)
         fi
 
+        # Nothing-to-revert: skip if nothing was done and nothing on disk
+        if [ "$esp_created" != "1" ] && [ "$root_created" != "1" ] && [ "$apfs_resized" != "1" ] && [ -z "$esp_device" ]; then
+            if ! _has_revertable_state; then
+                log "No deployment changes detected — system appears clean"
+                return 0
+            fi
+            log "Found deployment artifacts on disk despite no journal record — cleaning up"
+        fi
+
+        # Step 1: ESP removal with self-healing
+        if [ -n "$esp_device" ]; then
+            log "Removing ESP partition /dev/$esp_device..."
+
+            # Self-healing: try to mount ESP if it's not mounted
+            local mount_point
+            mount_point=$(remote_mac_exec diskutil info "/dev/$esp_device" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || true)
+            if [ -z "$mount_point" ] || [ "$mount_point" = "N/A" ]; then
+                log "ESP not mounted, attempting to mount..."
+                mount_point="/Volumes/CIDATA"
+                remote_mac_exec mkdir -p "$mount_point" 2>/dev/null || true
+                remote_mac_sudo mount_msdos "/dev/$esp_device" "$mount_point" 2>/dev/null || \
+                    remote_mac_sudo diskutil mount "/dev/$esp_device" 2>/dev/null || true
+            fi
+
+            remote_mac_sudo diskutil unmount "/dev/$esp_device" 2>/dev/null || true
+            dry_run_exec "Remove ESP partition /dev/$esp_device" \
+                remote_mac_sudo diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || true
+            # Verify ESP actually removed — diskutil eraseVolume can return non-zero on success
+            if remote_mac_exec diskutil list 2>/dev/null | grep -q "$esp_device"; then
+                warn "ESP partition /dev/$esp_device still present after erase"
+                REVERT_ERRORS=1
+            else
+                log "ESP partition removed"
+            fi
+        elif [ "$esp_created" = "1" ]; then
+            warn "ESP was marked as created but device not found for removal"
+            REVERT_ERRORS=1
+        fi
+        _ESP_CREATED=0
+
+        # Step 2b: Remove pre-created root partition if it exists
+        if [ -n "$root_device" ]; then
+            log "Removing root partition /dev/$root_device..."
+            remote_mac_sudo diskutil unmount "/dev/$root_device" 2>/dev/null || true
+            dry_run_exec "Remove root partition /dev/$root_device" \
+                remote_mac_sudo diskutil eraseVolume free none "/dev/$root_device" 2>/dev/null || true
+            # Verify root removed
+            if remote_mac_exec diskutil list 2>/dev/null | grep -q "$root_device"; then
+                warn "Root partition /dev/$root_device still present after erase"
+                REVERT_ERRORS=1
+            else
+                log "Root partition removed"
+            fi
+        fi
+
+        # Step 3: Remove leftover Linux partitions and scrub ghost GPT entries
+        _remove_linux_partitions_and_ghosts "$INTERNAL_DISK"
+
+        # Step 4: Expand APFS container if resized
         if [ "$apfs_resized" = "1" ] && [ -n "$apfs_container" ]; then
             log "Expanding APFS container to fill available space..."
-            dry_run_exec "Expand APFS container to fill free space" \
-                remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || true
-            # Verify expansion — diskutil apfs resizeContainer can return non-zero on success
-            sleep 2
-            local _revert_size
-            _revert_size=$(remote_mac_exec diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
-            if [ -z "$_revert_size" ]; then
-                warn "Could not verify APFS container size after expansion"
-                REVERT_ERRORS=1
+
+            # APFS resize guard: check current size before attempting resize
+            # diskutil apfs resizeContainer rejects same-size resize
+            local current_apfs_bytes disk_total_bytes
+            current_apfs_bytes=$(_get_apfs_size_bytes "$apfs_container")
+            disk_total_bytes=$(_get_disk_total_bytes "$INTERNAL_DISK")
+
+            local should_resize=1
+            if [ -n "$current_apfs_bytes" ] && [ -n "$disk_total_bytes" ]; then
+                local size_gap=$((disk_total_bytes - current_apfs_bytes))
+                # 10GB = 10,000,000,000 bytes
+                if [ "$size_gap" -lt 10000000000 ] 2>/dev/null; then
+                    log "APFS container already near full disk size (${size_gap:-0} bytes gap) — skipping expansion"
+                    should_resize=0
+                fi
+            fi
+
+            if [ "$should_resize" = "1" ]; then
+                dry_run_exec "Expand APFS container to fill free space" \
+                    remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || true
+                # Verify expansion — diskutil apfs resizeContainer can return non-zero on success
+                sleep 2
+                local _verify_size
+                _verify_size=$(_get_apfs_size_bytes "$apfs_container")
+
+                # Verify container expanded beyond original size (with ±1GB tolerance)
+                # diskutil uses decimal GB (10^9), not binary GiB (2^30)
+                local _original_bytes
+                _original_bytes=$(awk -v gb="${original_size:-0}" 'BEGIN { printf "%.0f", gb * 1000000000 }')
+                local _min_bytes=$(( ${_original_bytes:-0} - 1000000000 ))
+                if [ -n "$_verify_size" ]; then
+                    if [ "$_verify_size" -ge "${_min_bytes:-0}" ] 2>/dev/null; then
+                        log "APFS container expanded to fill freed space"
+                    else
+                        warn "APFS container may not have expanded (current: ${_verify_size:-unknown} bytes, minimum expected: ${_min_bytes:-unknown} bytes)"
+                        REVERT_ERRORS=1
+                    fi
+                else
+                    warn "Could not verify APFS container size after expansion"
+                    REVERT_ERRORS=1
+                fi
             fi
             _APFS_RESIZED=0
         fi
 
-        # Restore macOS boot device
+        # Step 5: Restore macOS boot device
         local MACOS_VOLUME="/"
         if [ -n "$apfs_container" ]; then
             MACOS_VOLUME=$(remote_mac_exec diskutil info "$apfs_container" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
@@ -130,8 +365,8 @@ revert_changes() {
                 REVERT_ERRORS=1
             }
         fi
-    elif [ "$deploy_method" = "2" ] || [ "$deploy_method" = "usb" ]; then
-        # USB method cleanup - use rollback_usb from rollback.sh
+    elif [ "$deploy_method" = "2" ] || [ "$deploy_method" = "usb" ] || [ "$deploy_method" = "3" ] || [ "$deploy_method" = "manual" ]; then
+        # USB/manual method cleanup - use rollback_usb from rollback.sh
         if command -v rollback_usb >/dev/null 2>&1; then
             rollback_usb
         else
@@ -162,6 +397,10 @@ revert_changes() {
         error "Revert incomplete — some changes may require manual cleanup"
     fi
 }
+
+# ---------------------------------------------------------------------------
+# EXIT Trap Handler
+# ---------------------------------------------------------------------------
 
 cleanup_on_error() {
     local EXIT_CODE=$?
@@ -220,102 +459,110 @@ cleanup_on_error() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Manual --revert Flag Handler
+# ---------------------------------------------------------------------------
+
 handle_revert_flag() {
-    # Handle --revert flag for manual rollback
-    if [ "${1:-}" = "--revert" ]; then
-        log "Manual revert requested..."
-
-        # Load journal state first
-        if command -v journal_read >/dev/null 2>&1; then
-            journal_read
-        fi
-
-        # Use journal values when available, fall back to disk detection
-        local internal_disk="${JOURNAL_INTERNAL_DISK:-}"
-        local apfs_container="${JOURNAL_ORIGINAL_APFS_CONTAINER:-}"
-        local original_size="${JOURNAL_ORIGINAL_APFS_SIZE:-}"
-        local esp_device="${JOURNAL_ESP_DEVICE:-}"
-
-        # Fallback to disk detection if journal values missing
-        if [ -z "$internal_disk" ]; then
-            internal_disk=$(remote_mac_exec diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
-        fi
-        if [ -z "${internal_disk:-}" ]; then
-            die "Cannot identify internal disk for revert"
-        fi
-
-        if [ -z "$apfs_container" ]; then
-            local APFS_PARTITION
-            APFS_PARTITION=$(remote_mac_exec diskutil list "$internal_disk" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
-            if [ -n "${APFS_PARTITION:-}" ]; then
-                apfs_container=$(remote_mac_exec diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head -1 || true)
-            fi
-            if [ -z "${apfs_container:-}" ]; then
-                apfs_container=$(remote_mac_exec diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head -1 || true)
-            fi
-        fi
-
-        # Find ESP - prefer journal, then detect
-        if [ -z "$esp_device" ]; then
-            esp_device=$(remote_mac_exec diskutil list "$internal_disk" 2>/dev/null | grep "$ESP_NAME" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
-        fi
-
-        if [ -n "${esp_device:-}" ]; then
-            log "Removing ESP partition /dev/$esp_device..."
-            remote_mac_sudo diskutil unmount "/dev/$esp_device" 2>/dev/null || true
-            dry_run_exec "Erase ESP partition /dev/$esp_device" remote_mac_sudo diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || true
-            if remote_mac_exec diskutil list 2>/dev/null | grep -q "$esp_device"; then
-                warn "ESP partition /dev/$esp_device still present after erase"
-            fi
-        else
-            warn "No $ESP_NAME partition found"
-        fi
-
-        # Remove leftover Linux partitions created by Subiquity/curtin
-        local _linux_parts_rev
-        _linux_parts_rev=$(remote_mac_exec "diskutil list $internal_disk 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
-        if [ -n "$_linux_parts_rev" ]; then
-            log "Found leftover Linux partitions — removing..."
-            echo "$_linux_parts_rev" | while IFS= read -r _line; do
-                _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
-                if [ -n "$_linux_dev" ]; then
-                    dry_run_exec "Remove Linux partition /dev/${_linux_dev}" \
-                        remote_mac_sudo diskutil eraseVolume free none "/dev/${_linux_dev}" 2>/dev/null || true
-                    log "Removed Linux partition /dev/${_linux_dev}"
-                fi
-            done
-        fi
-
-        # Restore macOS boot device
-        local MACOS_VOLUME
-        MACOS_VOLUME=$(remote_mac_exec diskutil info "${apfs_container:-}" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || echo "/")
-        if [ -d "$MACOS_VOLUME" ] && [ "$MACOS_VOLUME" != "/" ]; then
-            dry_run_exec "Restore macOS boot device" remote_mac_sudo bless --mount "$MACOS_VOLUME" --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
-        else
-            dry_run_exec "Restore macOS boot device" remote_mac_sudo bless --mount / --setBoot 2>/dev/null && log "macOS boot device restored" || warn "Could not restore macOS boot device"
-        fi
-
-        # Restore APFS container to fill freed space (use original size if available)
-        if [ -n "${apfs_container:-}" ]; then
-            if [ -n "${original_size:-}" ]; then
-                log "Restoring APFS container to ${original_size}GB, then expanding..."
-                dry_run_exec "Resize APFS container to ${original_size}GB" remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || true
-            fi
-
-            local CURRENT_APFS_GB
-            CURRENT_APFS_GB=$(remote_mac_exec diskutil info "$apfs_container" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
-            log "Current APFS container: ${CURRENT_APFS_GB:-unknown}GB — expanding to fill free space..."
-            dry_run_exec "Expand APFS container to fill free space" remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null && \
-                log "APFS container expanded to fill freed space" || \
-                warn "Could not expand APFS container (space may need manual recovery)"
-        fi
-
-        # Destroy journal after successful revert
-        if command -v journal_destroy >/dev/null 2>&1; then
-            journal_destroy
-        fi
-
-        log "Revert complete"
-        exit 0
+    if [ "${1:-}" != "--revert" ]; then
+        return 1
     fi
+    log "Manual revert requested..."
+
+    # Load journal state first
+    if command -v journal_read >/dev/null 2>&1; then
+        journal_read
+    fi
+
+    # Detect disk state for fallback values
+    _detect_internal_disk
+    if [ -z "${INTERNAL_DISK:-}" ]; then
+        die "Cannot identify internal disk for revert"
+    fi
+    _detect_apfs_container
+
+    # Full-disk guard: if no APFS container found, macOS was erased
+    if [ -z "${APFS_CONTAINER:-}" ]; then
+        die "No APFS container found — macOS may have been erased. Cannot revert automatically. Use macOS Recovery (hold Cmd+Option+R at startup) to reinstall macOS."
+    fi
+
+    # Detect deploy method from journal or disk state
+    local deploy_method="${JOURNAL_DEPLOY_METHOD:-}"
+    if [ -z "$deploy_method" ]; then
+        _detect_esp_device
+        if [ -n "${ESP_DEVICE:-}" ]; then
+            deploy_method="1"
+            log "Detected CIDATA partition — inferring internal deploy method"
+        elif [ -n "${JOURNAL_USB_DEVICE:-}" ]; then
+            deploy_method="2"
+        elif [ -n "${JOURNAL_VM_NAME:-}" ]; then
+            deploy_method="4"
+        else
+            # Check for any deployment artifacts on disk
+            if _has_revertable_state; then
+                deploy_method="1"
+                log "Found deployment artifacts — assuming internal deploy method"
+            else
+                log "No deployment changes detected — system appears clean"
+                # Destroy stale journal if present
+                if command -v journal_destroy >/dev/null 2>&1; then
+                    journal_destroy
+                    for _jrvar in $(set 2>/dev/null | grep '^JOURNAL_' | cut -d= -f1); do
+                        unset "$_jrvar" 2>/dev/null || true
+                    done
+                    unset _jrvar
+                fi
+                exit 0
+            fi
+        fi
+        # Set journal value so revert_changes can use it
+        JOURNAL_DEPLOY_METHOD="$deploy_method"
+    fi
+
+    # Populate journal fallback values from disk detection
+    # (revert_changes reads these after journal_read, which won't overwrite if file has no entry)
+    if [ -z "${JOURNAL_ORIGINAL_APFS_CONTAINER:-}" ] && [ -n "${APFS_CONTAINER:-}" ]; then
+        JOURNAL_ORIGINAL_APFS_CONTAINER="$APFS_CONTAINER"
+    fi
+    if [ -z "${JOURNAL_ESP_DEVICE:-}" ] && [ -n "${ESP_DEVICE:-}" ]; then
+        JOURNAL_ESP_DEVICE="$ESP_DEVICE"
+        JOURNAL_ESP_CREATED="1"
+    fi
+
+    # Nothing-to-revert: double-check disk state for internal method
+    if [ "$deploy_method" = "1" ] || [ "$deploy_method" = "internal" ]; then
+        if ! _has_revertable_state && [ -z "${JOURNAL_ESP_CREATED:-}" ] && [ -z "${JOURNAL_APFS_RESIZED:-}" ]; then
+            log "No deployment changes detected — system appears clean"
+            if command -v journal_destroy >/dev/null 2>&1; then
+                journal_destroy
+                for _jrvar in $(set 2>/dev/null | grep '^JOURNAL_' | cut -d= -f1); do
+                    unset "$_jrvar" 2>/dev/null || true
+                done
+                unset _jrvar
+            fi
+            exit 0
+        fi
+    fi
+
+    # Call unified revert function
+    revert_changes
+    local revert_rc=$?
+
+    # Destroy journal after revert — never resume a reverted deployment
+    if command -v journal_destroy >/dev/null 2>&1; then
+        journal_destroy
+        # Clear all JOURNAL_ vars from shell environment
+        # (shell env vars persist after file removal, so both must be cleared)
+        for _jrvar in $(set 2>/dev/null | grep '^JOURNAL_' | cut -d= -f1); do
+            unset "$_jrvar" 2>/dev/null || true
+        done
+        unset _jrvar
+    fi
+
+    if [ "$revert_rc" -eq 0 ]; then
+        log "Revert complete"
+    else
+        warn "Revert completed with some errors — manual cleanup may be needed"
+    fi
+    exit 0
 }
