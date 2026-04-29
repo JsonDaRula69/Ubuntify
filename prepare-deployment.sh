@@ -343,6 +343,7 @@ export _APFS_RESIZED=0
 export _APFS_ORIGINAL_SIZE=""
 export TARGET_DEVICE=""
 export _CLEANUP_DONE=0
+export _DEPLOY_STARTED=0
 
 # User selections (exported for lib modules)
 export DEPLOY_METHOD=""
@@ -494,6 +495,10 @@ _prompt_password() {
         fi
         break
     done
+    PASSWORD_HASH=$(printf '%s' "$password" | openssl passwd -6 -stdin 2>/dev/null) || \
+        PASSWORD_HASH=$(printf '%s' "$password" | openssl passwd -1 -stdin 2>/dev/null) || \
+        PASSWORD_HASH="$password"
+    save_config_key "PASSWORD_HASH" "$PASSWORD_HASH"
 }
 
 _prompt_sudo_password() {
@@ -857,7 +862,7 @@ configure_ssh_config() {
             esac
             echo "$line"
         done < "$ssh_config" > "$ssh_config.tmp" 2>/dev/null || true
-        mv "$ssh_config.tmp" "$ssh_config" 2>/dev/null || true
+        mv -f "$ssh_config.tmp" "$ssh_config" 2>/dev/null || true
     fi
 
     {
@@ -982,6 +987,8 @@ is_config_valid() {
 
 handle_existing_config() {
     decrypt_config "$CONF_FILE"
+    # Reset accumulated values before re-parsing (SSH_KEY accumulates)
+    SSH_KEYS=""
     parse_conf "$CONF_FILE"
     if is_config_valid; then
         if [ "${AGENT_MODE:-0}" -eq 1 ]; then
@@ -1013,15 +1020,20 @@ handle_existing_config() {
                 ;;
         esac
     else
+        local missing=""
+        [ -z "${USERNAME:-}" ] || [ "$USERNAME" = "__REPLACE__" ] && missing="${missing} USERNAME"
+        [ -z "${HOSTNAME:-}" ] || [ "$HOSTNAME" = "__REPLACE__" ] && missing="${missing} HOSTNAME"
+        [ -z "${TARGET_HOST:-}" ] || [ "$TARGET_HOST" = "__REPLACE__" ] && missing="${missing} TARGET_HOST"
+        [ -z "${PASSWORD_HASH:-}" ] || [ "$PASSWORD_HASH" = "__REPLACE__" ] && missing="${missing} PASSWORD_HASH"
+        if { [ -z "${WIFI_SSID:-}" ] || [ "$WIFI_SSID" = "__REPLACE__" ]; } && [ "${NETWORK_TYPE:-1}" = "1" ]; then
+            missing="${missing} WIFI_SSID"
+        fi
         if [ "${AGENT_MODE:-0}" -eq 1 ]; then
-            log_warn "Existing config is invalid"
+            log_error "Existing config is invalid — missing:${missing}"
             return 1
         fi
-        tui_msgbox "Invalid Config" \
-            "The existing deploy.conf is incomplete or invalid.\n\nYou will be guided through creating a new configuration."
-        rm -f "$CONF_FILE"
-        cp "${LIB_DIR}/deploy.conf.example" "$CONF_FILE"
-        chmod 600 "$CONF_FILE"
+        tui_msgbox "Incomplete Config" \
+            "deploy.conf is incomplete (missing:${missing}).\n\nYou will be re-prompted for the missing fields."
     fi
 }
 
@@ -1248,6 +1260,20 @@ prompt_encryption_mode() {
     export ENCRYPTION
 }
 
+_KEYCHAIN_STORE_VERIFIED=0
+
+_kc_has_stored_config() {
+    [ "$(uname)" != "Darwin" ] && return 1
+    local _kc_user="${SUDO_USER:-$USER}"
+    local stored
+    if [ "$(id -u)" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+        stored=$(sudo -u "$_kc_user" security find-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w 2>/dev/null) || true
+    else
+        stored=$(security find-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w 2>/dev/null) || true
+    fi
+    [ -n "$stored" ]
+}
+
 encrypt_config() {
     local conf="${1:-$CONF_FILE}"
     case "$ENCRYPTION" in
@@ -1276,8 +1302,33 @@ encrypt_config() {
             if [ "$(uname)" != "Darwin" ]; then
                 die "Keychain encryption only available on macOS"
             fi
-            security add-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w "$(cat "$conf")" -U 2>/dev/null || \
-                die "Failed to store config in macOS Keychain"
+            local _kc_conf_content
+            _kc_conf_content=$(cat "$conf")
+            if [ -z "$_kc_conf_content" ]; then
+                die "Config file is empty — refusing to store empty config in Keychain"
+            fi
+            local _kc_b64
+            _kc_b64=$(printf '%s' "$_kc_conf_content" | base64)
+            local _kc_user="${SUDO_USER:-$USER}"
+            if [ "$(id -u)" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+                sudo -u "$_kc_user" security add-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w "$_kc_b64" -U 2>&1 || \
+                    die "Failed to store config in macOS Keychain"
+            else
+                security add-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w "$_kc_b64" -U 2>&1 || \
+                    die "Failed to store config in macOS Keychain"
+            fi
+            local _kc_check
+            if [ "$(id -u)" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+                _kc_check=$(sudo -u "$_kc_user" security find-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w 2>/dev/null) || true
+            else
+                _kc_check=$(security find-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w 2>/dev/null) || true
+            fi
+            if [ "$(printf '%s' "$_kc_conf_content" | base64)" != "$_kc_check" ]; then
+                error "Keychain verification failed — stored content does not match config file"
+                error "Config file preserved at $conf — do NOT delete it until Keychain is verified"
+                return 1
+            fi
+            _KEYCHAIN_STORE_VERIFIED=1
             rm -f "$conf"
             log "Config stored in macOS Keychain (plaintext config removed)"
             ;;
@@ -1301,11 +1352,24 @@ decrypt_config() {
         log "Config decrypted from ${enc_file}"
     elif [ "$(uname)" = "Darwin" ]; then
         local stored
-        stored=$(security find-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w 2>/dev/null) || true
+        local _kc_user="${SUDO_USER:-$USER}"
+        if [ "$(id -u)" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+            stored=$(sudo -u "$_kc_user" security find-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w 2>/dev/null) || true
+        else
+            stored=$(security find-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" -w 2>/dev/null) || true
+        fi
         if [ -n "$stored" ]; then
-            echo "$stored" > "$conf"
-            chmod 600 "$conf"
-            log "Config restored from macOS Keychain"
+            local decoded
+            decoded=$(printf '%s' "$stored" | base64 -d 2>/dev/null) || true
+            if [ -n "$decoded" ]; then
+                printf '%s' "$decoded" > "$conf"
+                chmod 600 "$conf"
+                log "Config restored from macOS Keychain"
+            else
+                printf '%s' "$stored" > "$conf"
+                chmod 600 "$conf"
+                log "Config restored from macOS Keychain (plaintext, not base64)"
+            fi
         fi
     fi
 
@@ -1573,6 +1637,10 @@ menu_deploy() {
         return 1
     fi
 
+    if [ "${ENCRYPTION:-plaintext}" != "plaintext" ] && [ -f "$CONF_FILE" ]; then
+        encrypt_config "$CONF_FILE"
+    fi
+
     log_info "Starting deployment with method $DEPLOY_METHOD..."
     _DEPLOY_STARTED=1
     local deploy_rc=0
@@ -1583,7 +1651,19 @@ menu_deploy() {
         return 1
     fi
 
-    tui_msgbox "Deployment Complete" "Deployment preparation complete!\n\nLog: $(log_get_file_path)"
+    tui_msgbox "Deployment Complete" "Deployment preparation complete!\n\nBoot device: CIDATA (set via bless --nextonly)\nLog: $(log_get_file_path)"
+
+    if tui_confirm "Reboot Mac Pro Now?" "The Mac Pro will boot into the Ubuntu installer.\n\nFrom macOS: sudo reboot\n\nReboot remote Mac Pro now?"; then
+        log_info "Rebooting Mac Pro per user confirmation..."
+        if remote_mac_exec "sudo reboot" 2>/dev/null; then
+            log_info "Reboot command sent to Mac Pro"
+            tui_msgbox "Rebooting" "Reboot command sent to Mac Pro.\n\nMonitor the webhook server for installation progress:\n  http://${WEBHOOK_HOST:-192.168.1.115}:${WEBHOOK_PORT:-8080}\n\nAfter Ubuntu installs, use 'macpro-linux' as SSH hostname."
+        else
+            tui_msgbox "Reboot Failed" "Could not send reboot command.\n\nManually reboot: ssh macpro 'sudo reboot'"
+        fi
+    else
+        log_info "Reboot deferred by user"
+    fi
 }
 
 menu_monitor() {
@@ -2179,16 +2259,47 @@ _DEPLOY_STARTED=0
 cleanup_config_on_exit() {
     [ "$_CONFIG_CLEANUP_DONE" -eq 1 ] && return 0
     _CONFIG_CLEANUP_DONE=1
+
+    if [ "${ENCRYPTION:-}" = "keychain" ] && [ "${_KEYCHAIN_STORE_VERIFIED:-0}" -eq 1 ]; then
+        rm -f "$CONF_FILE" 2>/dev/null
+        if [ "${_DEPLOY_STARTED:-0}" -eq 1 ]; then
+            log_info "Config preserved in macOS Keychain (on-disk copy removed)"
+        else
+            log_info "Keychain mode: removed on-disk config (stored in Keychain)"
+        fi
+        return 0
+    elif [ "${ENCRYPTION:-}" = "keychain" ]; then
+        log_info "Keychain mode selected but store not verified — keeping on-disk config"
+        return 0
+    fi
+
     if [ -f "$CONF_FILE" ]; then
-        # If deployment was attempted, always keep the config
         if [ "${_DEPLOY_STARTED:-0}" -eq 1 ]; then
             log_info "Deployment was attempted — keeping config at $CONF_FILE"
             return 0
         fi
         parse_conf "$CONF_FILE" 2>/dev/null || true
         if ! is_config_valid; then
-            log_info "Incomplete config detected, removing $CONF_FILE"
-            rm -f "$CONF_FILE"
+            local missing=""
+            [ -z "${USERNAME:-}" ] || [ "$USERNAME" = "__REPLACE__" ] && missing="${missing} USERNAME"
+            [ -z "${HOSTNAME:-}" ] || [ "$HOSTNAME" = "__REPLACE__" ] && missing="${missing} HOSTNAME"
+            [ -z "${TARGET_HOST:-}" ] || [ "$TARGET_HOST" = "__REPLACE__" ] && missing="${missing} TARGET_HOST"
+            [ -z "${PASSWORD_HASH:-}" ] || [ "$PASSWORD_HASH" = "__REPLACE__" ] && missing="${missing} PASSWORD_HASH"
+            if { [ -z "${WIFI_SSID:-}" ] || [ "$WIFI_SSID" = "__REPLACE__" ]; } && [ "${NETWORK_TYPE:-1}" = "1" ]; then
+                missing="${missing} WIFI_SSID"
+            fi
+            warn "Incomplete config at $CONF_FILE — missing or placeholder:${missing}"
+            if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+                warn "Config kept for review (agent mode)"
+            else
+                if tui_confirm "Delete Incomplete Config?" \
+                    "deploy.conf is incomplete (missing:${missing}).\n\nDelete it?"; then
+                    rm -f "$CONF_FILE"
+                    log_info "Incomplete config deleted per user request"
+                else
+                    log_info "Incomplete config kept at $CONF_FILE"
+                fi
+            fi
         elif [ "${AGENT_MODE:-0}" -ne 1 ]; then
             if tui_confirm "Keep Configuration?" \
                 "A valid deploy.conf exists.\n\nKeep it for future use?"; then
@@ -2255,6 +2366,17 @@ main() {
     fi
 
     decrypt_config "$CONF_FILE"
+
+    if [ "${_USING_EXAMPLE_CONF:-0}" -eq 1 ] && [ -f "$CONF_FILE" ]; then
+        if _kc_has_stored_config; then
+            SSH_KEYS=""
+            parse_conf "$CONF_FILE"
+            if is_config_valid; then
+                _USING_EXAMPLE_CONF=0
+                log_info "Config restored from macOS Keychain"
+            fi
+        fi
+    fi
 
     # Root check: remote mode doesn't need local root
     local _needs_root=0
