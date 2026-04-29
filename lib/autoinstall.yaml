@@ -2,7 +2,7 @@ autoinstall:
   version: 1
 
   refresh-installer:
-    update: false
+    update: true
 
   kernel:
     package: linux-image-6.8.0-100-generic
@@ -390,7 +390,16 @@ __SSH_KEYS__
   # The prepare-deployment.sh script MUST inject preserve:true for all
   # existing macOS/APFS partitions before use. Without that injection,
   # curtin will WIPE existing partitions during autoinstall.
+  #
+  # Simplified dual-boot storage layout:
+  # - Apple ESP (sda1): reused for GRUB, preserve: true, don't reformat
+  # - macOS APFS (sda2): preserved
+  # - CIDATA ESP (sda3): preserved during install, removed after
+  # - Root partition (sda4): pre-created from macOS, wipe: superblock
+  # No separate /boot or EFI partition — GRUB installs to Apple ESP.
+  # Generated dynamically by generate_dualboot_storage() in lib/autoinstall.sh.
   storage:
+    version: 2
     config:
       - type: disk
         id: root-disk
@@ -398,40 +407,46 @@ __SSH_KEYS__
         ptable: gpt
         preserve: true
       - type: partition
-        id: efi-partition
+        id: efi
         device: root-disk
-        size: 512M
+        number: 1
+        size: 209715200
+        preserve: true
         flag: boot
-        partition_type: c12a7328-f81f-11d2-ba4b-00a0c93ec93b
         grub_device: true
-      - type: format
-        id: efi-format
-        volume: efi-partition
-        fstype: fat32
-      - type: mount
-        id: efi-mount
-        device: efi-format
-        path: /boot/efi
       - type: partition
-        id: boot-partition
+        id: macos-apfs
         device: root-disk
-        size: 1G
-      - type: format
-        id: boot-format
-        volume: boot-partition
-        fstype: ext4
-      - type: mount
-        id: boot-mount
-        device: boot-format
-        path: /boot
+        number: 2
+        size: 49999998976
+        preserve: true
+        partition_type: 7c3457ef-0000-11aa-aa11-00306543ecac
+      - type: partition
+        id: cidata-esp
+        device: root-disk
+        number: 3
+        size: 4999999488
+        preserve: true
+        partition_type: c12a7328-f81f-11d2-ba4b-00a0c93ec93b
       - type: partition
         id: root-partition
         device: root-disk
-        size: -1
+        number: 4
+        size: __ROOT_SIZE_BYTES__
+        wipe: superblock
+      - type: format
+        id: efi-format
+        volume: efi
+        fstype: fat32
+        preserve: true
       - type: format
         id: root-format
         volume: root-partition
         fstype: ext4
+      - type: mount
+        id: efi-mount
+        device: efi-format
+        path: /boot/efi
       - type: mount
         id: root-mount
         device: root-format
@@ -672,6 +687,10 @@ __SSH_KEYS__
       printf '#!/bin/sh\nexec tail -n +3 "$0"\nmenuentry "Reboot to Apple Boot Manager" {\n  fwsetup\n}\n' > /target/etc/grub.d/40_macos
       chmod +x /target/etc/grub.d/40_macos
       chroot /target update-grub 2>>"$LOG" || log "WARN: update-grub failed"
+      if [ ! -f /target/boot/efi/EFI/ubuntu/grubx64.efi ]; then
+        log "GRUB EFI binary not found after update-grub — running grub-install"
+        chroot /target grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck 2>>"$LOG" || log "WARN: grub-install failed (GRUB may already be installed)"
+      fi
       mkdir -p /target/usr/local/bin
       printf '#!/bin/bash\nset -e\nexport LIBEFIVAR_OPS=efivarfs\nEFIVARS="/sys/firmware/efi/efivars"\nif [ ! -d "$EFIVARS" ]; then\n  echo "ERROR: EFI variables not available" >&2\n  exit 1\nfi\nMACOS_BOOT=$(efibootmgr | grep -i "macos\\|apple" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)\nif [ -z "$MACOS_BOOT" ]; then\n  MACOS_BOOT=$(efibootmgr | grep "Boot80\\|Boot81" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)\nfi\nif [ -z "$MACOS_BOOT" ]; then\n  echo "WARNING: macOS boot entry not found in EFI variables" >&2\n  echo "Use Apple Boot Manager (hold Option at boot) instead" >&2\n  exit 1\nfi\nefibootmgr --bootnext "$MACOS_BOOT"\necho "macOS set as next boot device. Reboot to start macOS."\n' > /target/usr/local/bin/boot-macos
       chmod +x /target/usr/local/bin/boot-macos

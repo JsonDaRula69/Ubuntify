@@ -483,6 +483,30 @@ rollback_internal() {
         fi
     fi
 
+    # Step 2b: Remove root partition if created
+    local root_created="${JOURNAL_ROOT_CREATED:-}"
+    local root_device="${JOURNAL_ROOT_DEVICE:-}"
+
+    if [ "$root_created" = "1" ] && [ -n "$root_device" ]; then
+        printf '\r%b  %b▸%b Removing root partition %s            \r' "$CLR" "$CYAN" "$NC" "$root_device" >&2
+        log_info "Removing created root partition ${root_device}"
+
+        if [ -n "${TARGET_HOST:-}" ]; then
+            dry_run_exec "Unmounting root /dev/${root_device}" \
+                remote_mac_exec diskutil unmount "/dev/${root_device}" 2>/dev/null || true
+            dry_run_exec "Erasing root partition ${root_device} to free space" \
+                remote_mac_retry_diskutil eraseVolume free none "/dev/${root_device}" 2>/dev/null || warn "Could not erase root partition ${root_device}"
+        else
+            dry_run_exec "Unmounting root /dev/${root_device}" \
+                diskutil unmount "/dev/${root_device}" 2>/dev/null || true
+            dry_run_exec "Erasing root partition ${root_device} to free space" \
+                diskutil eraseVolume free none "/dev/${root_device}" 2>/dev/null || warn "Could not erase root partition ${root_device}"
+        fi
+
+        rollback_status="${rollback_status}root_removed "
+        printf '\r%b  %b✓%b Root partition removed                  \n' "$CLR" "$GREEN" "$NC" >&2
+    fi
+
     # Step 3: Remove any leftover Linux partitions created by Subiquity
     # (curtin creates a "Linux Filesystem" partition that rollback must clean up)
     if [ -n "${TARGET_HOST:-}" ]; then
