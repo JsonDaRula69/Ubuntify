@@ -184,6 +184,7 @@ The `--deploy-mode` CLI flag is accepted but ignored (for backward compatibility
 - Preflight checks run on the target host (xorriso, sgdisk, python3, diskutil, bless)
 - No local sudo required — all elevated operations run on the target
 - Revert can also operate remotely
+- Verification functions (`verify_esp_mount`, `verify_iso_extraction`, `verify_cidata_structure`, `verify_esp_contents`, `verify_bless_result`, `verify_disk_space`) and snapshot functions (`snapshot_disk_layout`) are **remote-aware** — they detect `DEPLOY_MODE=remote` and `TARGET_HOST` to route filesystem checks via `remote_mac_exec`/`remote_mac_dir_exists`/`remote_mac_file_exists` instead of local `[ -d ]`, `[ -f ]`, `df`, `mount` checks. **When adding new verification functions, ALWAYS check `DEPLOY_MODE` and use the appropriate remote or local command path.**
 
 **CLI flags for remote mode**:
 ```bash
@@ -768,6 +769,8 @@ The `remote_toggle_apt_sources(host, action)` function (line 234 in lib/remote.s
 - **Blacklist loop redirect** — for-loop writing to blacklist file must use `>>` (append), not `>` (overwrite); `>` truncates on each iteration, only keeping the last driver entry
 - **macOS erasure is irreversible** — once macOS partitions are deleted, they cannot be recovered; the GPT backup only restores partition table entries, not data
 - **macOS Recovery MUST be preserved** — `check_recovery_health()` runs before deployment (in `analyze_disk_layout`), after APFS resize (in `shrink_apfs_if_needed`), and after bless (in `_phase_verify_bless`). If Recovery is missing/unhealthy, deployment is blocked. `generate_dualboot_storage` verifies the APFS container partition (GUID `7c3457ef-0000-11aa-aa11-00306543ecac`) is in the preserve list — without it, the installer destroys Recovery. `diskutil apfs resizeContainer` can corrupt APFS volume metadata that the firmware uses to discover Recovery — the post-resize check catches this.
+- **macOS auto-unmounts FAT32 ESP volumes** — after `newfs_msdos` + `diskutil mount`, macOS's `diskarbitrationd` may auto-unmount EFI-typed partitions before subsequent SSH commands can verify them. Always use `mount_msdos /dev/$dev /Volumes/$ESP_NAME` with an explicit mount point (after `mkdir -p`) instead of `diskutil mount`, which bypasses diskarbitrationd's auto-removal. Fall back to `diskutil mount` only if `mount_msdos` fails. `verify_esp_mount` proactively re-mounts via `_vem_ensure_mounted()` and resolves alternate mount paths (e.g. `/Volumes/CIDATA 1`). `create_esp_partition` adds `sleep 3` after mount to give macOS time to settle. **When writing code that mounts ESP/FAT32 partitions, always use `mount_msdos` with explicit mount point, not `diskutil mount`.**
+- **`verify_esp_mount` accepts optional second argument `esp_device`** — this allows callers (like `_phase_create_esp`) to pass the device name so `verify_esp_mount` can re-mount without reading the journal. Always pass the device when available.
 
 ## Runtime Output Directory
 
