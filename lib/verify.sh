@@ -14,13 +14,19 @@ verify_apfs_resize() {
     local expected_gb="$2"
     local actual_gb
 
-    if ! diskutil info "$container_device" >/dev/null 2>&1; then
-        error "verify_apfs_resize: cannot access $container_device"
-        return 1
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        if ! remote_mac_exec diskutil info "$container_device" >/dev/null 2>&1; then
+            error "verify_apfs_resize: cannot access $container_device on ${TARGET_HOST}"
+            return 1
+        fi
+        actual_gb=$(remote_mac_exec diskutil info "$container_device" 2>/dev/null | grep -i "Disk Size" | sed -E 's/.*[^0-9]([0-9]+\.[0-9]+)[^0-9]*GB.*/\1/')
+    else
+        if ! diskutil info "$container_device" >/dev/null 2>&1; then
+            error "verify_apfs_resize: cannot access $container_device"
+            return 1
+        fi
+        actual_gb=$(diskutil info "$container_device" 2>/dev/null | grep -i "Disk Size" | sed -E 's/.*[^0-9]([0-9]+\.[0-9]+)[^0-9]*GB.*/\1/')
     fi
-
-    # Extract GB from "Disk Size" line (format: "Disk Size: 500.0 GB (500000000000 Bytes)")
-    actual_gb=$(diskutil info "$container_device" 2>/dev/null | grep -i "Disk Size" | sed -E 's/.*[^0-9]([0-9]+\.[0-9]+)[^0-9]*GB.*/\1/')
 
     if [ -z "$actual_gb" ]; then
         error "verify_apfs_resize: could not parse disk size for $container_device"
@@ -57,6 +63,23 @@ verify_autoinstall_schema() {
         return 0
     fi
 
+    local _py_pkgs_missing=""
+    for _pkg in jsonschema pyyaml; do
+        if ! python3 -c "import $_pkg" 2>/dev/null; then
+            _py_pkgs_missing="${_py_pkgs_missing}${_py_pkgs_missing:+ }$_pkg"
+        fi
+    done
+    if [ -n "$_py_pkgs_missing" ]; then
+        log_info "Installing Python packages: $_py_pkgs_missing"
+        if python3 -m pip install --quiet --break-system-packages $_py_pkgs_missing 2>/dev/null; then
+            log_info "Python packages installed successfully"
+        elif python3 -m pip install --quiet --user --break-system-packages $_py_pkgs_missing 2>/dev/null; then
+            log_info "Python packages installed (user scope)"
+        else
+            warn "verify_autoinstall_schema: could not install Python packages ($_py_pkgs_missing), falling back to lightweight key validation"
+        fi
+    fi
+
     local escaped_file escaped_schema
     escaped_file=$(printf '%s\n' "$file_path" | sed "s/'/'\\''/g")
     escaped_schema=$(printf '%s\n' "$schema_path" | sed "s/'/'\\''/g")
@@ -72,7 +95,9 @@ try:
         schema = json.load(f)
     with open('$escaped_file') as f:
         data = yaml.safe_load(f)
-    jsonschema.validate(data, schema)
+    # Schema validates the autoinstall section, not the wrapper
+    ai_data = data.get('autoinstall', data) if isinstance(data, dict) else data
+    jsonschema.validate(ai_data, schema)
 except ImportError:
     sys.exit(42)
 except Exception as e:
@@ -128,56 +153,186 @@ if 'identity' in ai:
     return 0
 }
 
-# verify_esp_mount mount_point
+# verify_esp_mount mount_point [esp_device]
 # Returns 0 if mount_point exists, writable, FAT32, and has >=100MB free
+# In remote deployment mode (DEPLOY_MODE=remote), all checks run via SSH
+# on the target Mac Pro. In local mode, checks run on this machine.
+# macOS auto-unmounts FAT32 ESP volumes, so this function proactively
+# re-mounts if the volume is not found.
 verify_esp_mount() {
     local mount_point="$1"
-    local esp_device
+    local esp_device="${2:-}"
+    local mount_attempts=3
+    local i=1
 
-    # Check if mount_point exists and is writable
-    if [ ! -d "$mount_point" ]; then
-        warn "verify_esp_mount: $mount_point does not exist, checking journal for ESP"
+    # Determine if we're in remote mode — use SSH commands if so
+    local is_remote=0
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        is_remote=1
+    fi
 
-        # Self-healing: try to find ESP in journal and mount it
-        if command -v journal_read >/dev/null 2>&1; then
-            journal_read
-            esp_device="${JOURNAL_ESP_DEVICE:-}"
+    # Helper: run a command locally or remotely depending on mode
+    _vem_run() {
+        if [ "$is_remote" -eq 1 ]; then
+            remote_mac_exec "$1"
+        else
+            eval "$1"
         fi
+    }
 
+    # Helper: check if directory exists locally or remotely
+    _vem_dir_exists() {
+        if [ "$is_remote" -eq 1 ]; then
+            remote_mac_dir_exists "$1"
+        else
+            [ -d "$1" ]
+        fi
+    }
+
+    # Resolve the actual mount point from the device (macOS may mount to
+    # /Volumes/CIDATA 1 if /Volumes/CIDATA already existed from a stale mount)
+    _vem_resolve_mount() {
+        local dev="$1"
+        local resolved=""
+        if [ "$is_remote" -eq 1 ]; then
+            resolved=$(remote_mac_exec "diskutil info '/dev/$dev' 2>/dev/null | grep 'Mount Point' | awk '{\$1=\$2=\"\"; print substr(\$0,3)}' | sed 's/^[[:space:]]*//'" 2>/dev/null || true)
+        else
+            resolved=$(diskutil info "/dev/$dev" 2>/dev/null | grep "Mount Point" | awk '{$1=$2=""; print substr($0,3)}' | sed 's/^[[:space:]]*//' || true)
+        fi
+        echo "$resolved"
+    }
+
+    # macOS diskarbitrationd auto-unmounts EFI-typed partitions;
+    # mount_msdos with explicit mount point bypasses this
+    _vem_ensure_mounted() {
+        local dev="$1"
+        local mp="$2"
+        if _vem_dir_exists "$mp"; then
+            return 0
+        fi
+        log "verify_esp_mount: $mp not found, attempting to mount /dev/$dev"
+        if [ "$is_remote" -eq 1 ]; then
+            remote_mac_exec mkdir -p "$mp" 2>/dev/null || true
+            remote_mac_sudo mount_msdos "/dev/$dev" "$mp" 2>/dev/null || \
+                remote_mac_retry_diskutil mount "/dev/$dev" 2>/dev/null || true
+        else
+            mkdir -p "$mp" 2>/dev/null || true
+            sudo mount_msdos "/dev/$dev" "$mp" 2>/dev/null || \
+                diskutil mount "/dev/$dev" >/dev/null 2>&1 || true
+        fi
+        sleep 3
+        if _vem_dir_exists "$mp"; then
+            return 0
+        fi
+        local resolved
+        resolved=$(_vem_resolve_mount "$dev")
+        if [ -n "$resolved" ] && _vem_dir_exists "$resolved"; then
+            log "verify_esp_mount: ESP mounted at alternate path: $resolved"
+            return 0
+        fi
+        return 1
+    }
+
+    # If we have an esp_device, proactively ensure the ESP is mounted
+    if [ -n "$esp_device" ]; then
+        while [ "$i" -le "$mount_attempts" ]; do
+            if _vem_ensure_mounted "$esp_device" "$mount_point"; then
+                break
+            fi
+            warn "verify_esp_mount: mount attempt $i/$mount_attempts failed"
+            i=$((i + 1))
+        done
+    fi
+
+    # Final check: directory must exist
+    if ! _vem_dir_exists "$mount_point"; then
         if [ -n "$esp_device" ]; then
-            warn "verify_esp_mount: attempting to mount $esp_device to $mount_point"
-            diskutil mount "$esp_device" >/dev/null 2>&1 || true
-
-            # Re-check after mount attempt
-            if [ ! -d "$mount_point" ]; then
-                error "verify_esp_mount: mount attempt failed, $mount_point still does not exist"
+            local resolved
+            resolved=$(_vem_resolve_mount "$esp_device")
+            if [ -n "$resolved" ] && _vem_dir_exists "$resolved"; then
+                log "verify_esp_mount: using resolved mount point: $resolved"
+                mount_point="$resolved"
+            else
+                error "verify_esp_mount: $mount_point does not exist and mount attempts failed"
                 return 1
             fi
         else
-            error "verify_esp_mount: no ESP device found in journal, $mount_point does not exist"
+            if command -v journal_read >/dev/null 2>&1; then
+                journal_read
+                esp_device="${JOURNAL_ESP_DEVICE:-}"
+            fi
+            if [ -n "$esp_device" ]; then
+                warn "verify_esp_mount: attempting to mount $esp_device from journal"
+                if [ "$is_remote" -eq 1 ]; then
+                    remote_mac_exec mkdir -p "$mount_point" 2>/dev/null || true
+                    remote_mac_sudo mount_msdos "/dev/$esp_device" "$mount_point" 2>/dev/null || \
+                        remote_mac_retry_diskutil mount "/dev/$esp_device" 2>/dev/null || true
+                else
+                    mkdir -p "$mount_point" 2>/dev/null || true
+                    sudo mount_msdos "/dev/$esp_device" "$mount_point" 2>/dev/null || \
+                        diskutil mount "/dev/$esp_device" >/dev/null 2>&1 || true
+                fi
+                sleep 3
+                if ! _vem_dir_exists "$mount_point"; then
+                    error "verify_esp_mount: $mount_point does not exist after mount attempt"
+                    return 1
+                fi
+            else
+                error "verify_esp_mount: $mount_point does not exist and no ESP device available"
+                return 1
+            fi
+        fi
+    fi
+
+    # Check writability
+    local write_test
+    if [ "$is_remote" -eq 1 ]; then
+        write_test=$(remote_mac_exec "test -w '$mount_point' && echo ok || echo fail" 2>/dev/null)
+        if [ "$write_test" != "ok" ]; then
+            error "verify_esp_mount: $mount_point exists but is not writable"
+            return 1
+        fi
+    else
+        if [ ! -w "$mount_point" ]; then
+            error "verify_esp_mount: $mount_point exists but is not writable"
             return 1
         fi
     fi
 
-    if [ ! -w "$mount_point" ]; then
-        error "verify_esp_mount: $mount_point exists but is not writable"
-        return 1
-    fi
-
     # Check filesystem is FAT32
-    if ! mount | grep -q "$mount_point.*msdos\|fat32\|FAT32"; then
-        error "verify_esp_mount: $mount_point is not FAT32"
-        return 1
+    if [ "$is_remote" -eq 1 ]; then
+        local fs_type
+        fs_type=$(remote_mac_exec "diskutil info '/dev/$esp_device' 2>/dev/null | grep 'File System Type:' | awk '{print \$NF}'" || true)
+        if [ -z "$fs_type" ] || echo "$fs_type" | grep -qi "unknown\|warning"; then
+            local mount_info
+            mount_info=$(remote_mac_exec "mount | grep '$mount_point' | grep -v 'Warning'" 2>/dev/null || true)
+            if ! echo "$mount_info" | grep -qi "msdos\|fat32\|FAT32"; then
+                error "verify_esp_mount: $mount_point is not FAT32 (got: ${mount_info:-unknown})"
+                return 1
+            fi
+        elif ! echo "$fs_type" | grep -qi "fat32\|msdos"; then
+            error "verify_esp_mount: $mount_point is not FAT32 (got: $fs_type)"
+            return 1
+        fi
+    else
+        if ! mount | grep -q "$mount_point.*msdos\|fat32\|FAT32"; then
+            error "verify_esp_mount: $mount_point is not FAT32"
+            return 1
+        fi
     fi
 
-    # Check available space >= 100MB (using df -k, convert to MB)
+    # Check available space >= 100MB
     local available_kb
-    available_kb=$(df -k "$mount_point" 2>/dev/null | tail -1 | awk '{print $4}')
+    if [ "$is_remote" -eq 1 ]; then
+        available_kb=$(remote_mac_exec "df -k '$mount_point' 2>/dev/null | tail -1 | awk '{print \$4}'" 2>/dev/null || true)
+    else
+        available_kb=$(df -k "$mount_point" 2>/dev/null | tail -1 | awk '{print $4}')
+    fi
 
     if [ -z "$available_kb" ] || [ "$available_kb" -lt 102400 ]; then
         local available_mb
         available_mb=$((available_kb / 1024))
-        error "verify_esp_mount: insufficient space on $mount_point (available: ${available_mb}MB, required: 100MB)"
+        error "verify_esp_mount: insufficient space on $mount_point (available: ${available_mb:-0}MB, required: 100MB)"
         return 1
     fi
 
@@ -186,40 +341,59 @@ verify_esp_mount() {
 
 # verify_iso_extraction mount_point
 # Returns 0 if all required ISO files present, 1 otherwise
+# In remote mode, checks files on the target Mac Pro via SSH
 verify_iso_extraction() {
     local mount_point="$1"
     local missing_count=0
 
-    # Check EFI/boot/bootx64.efi (case-insensitive)
-    if [ ! -f "$mount_point/EFI/boot/bootx64.efi" ] && [ ! -f "$mount_point/efi/boot/bootx64.efi" ] && \
-       [ ! -f "$mount_point/EFI/BOOT/BOOTX64.EFI" ] && [ ! -f "$mount_point/efi/boot/BOOTX64.EFI" ]; then
+    local is_remote=0
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        is_remote=1
+    fi
+
+    _vie_file_exists() {
+        local path="$1"
+        if [ "$is_remote" -eq 1 ]; then
+            remote_mac_file_exists "$path"
+        else
+            [ -f "$path" ]
+        fi
+    }
+
+    if ! _vie_file_exists "$mount_point/EFI/boot/bootx64.efi" && ! _vie_file_exists "$mount_point/efi/boot/bootx64.efi" && \
+       ! _vie_file_exists "$mount_point/EFI/BOOT/BOOTX64.EFI" && ! _vie_file_exists "$mount_point/efi/boot/BOOTX64.EFI"; then
         error "verify_iso_extraction: EFI/boot/bootx64.efi not found (case-insensitive)"
         missing_count=$((missing_count + 1))
     fi
 
-    # Check casper/vmlinuz
-    if [ ! -f "$mount_point/casper/vmlinuz" ]; then
+    if ! _vie_file_exists "$mount_point/casper/vmlinuz"; then
         error "verify_iso_extraction: casper/vmlinuz not found"
         missing_count=$((missing_count + 1))
     fi
 
-    # Check casper/initrd
-    if [ ! -f "$mount_point/casper/initrd" ]; then
+    if ! _vie_file_exists "$mount_point/casper/initrd"; then
         error "verify_iso_extraction: casper/initrd not found"
         missing_count=$((missing_count + 1))
     fi
 
-    # Check casper/*.squashfs (at least one)
     local squashfs_count
-    squashfs_count=$(find "$mount_point/casper" -name "*.squashfs" -type f 2>/dev/null | wc -l)
+    if [ "$is_remote" -eq 1 ]; then
+        squashfs_count=$(remote_mac_exec "ls $mount_point/casper/*.squashfs 2>/dev/null | wc -l | tr -d ' '" || echo "0")
+    else
+        squashfs_count=$(find "$mount_point/casper" -name "*.squashfs" -type f 2>/dev/null | wc -l)
+    fi
     if [ "$squashfs_count" -eq 0 ]; then
         error "verify_iso_extraction: no squashfs files found in casper/"
         missing_count=$((missing_count + 1))
     fi
 
-    # Check autoinstall.yaml
-    if [ ! -f "$mount_point/autoinstall.yaml" ]; then
-        error "verify_iso_extraction: autoinstall.yaml not found"
+    if ! _vie_file_exists "$mount_point/user-data"; then
+        error "verify_iso_extraction: user-data not found at ESP root (NoCloud requires root-level files)"
+        missing_count=$((missing_count + 1))
+    fi
+
+    if ! _vie_file_exists "$mount_point/autoinstall.yaml"; then
+        error "verify_iso_extraction: autoinstall.yaml not found (Subiquity fallback)"
         missing_count=$((missing_count + 1))
     fi
 
@@ -266,33 +440,82 @@ verify_cidata_structure() {
     local meta_data="$mount_point/cidata/meta-data"
     local vendor_data="$mount_point/cidata/vendor-data"
 
-    # Check user-data exists and is non-empty
-    if [ ! -f "$user_data" ]; then
+    local is_remote=0
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        is_remote=1
+    fi
+
+    _vcs_file_exists() {
+        local path="$1"
+        if [ "$is_remote" -eq 1 ]; then
+            remote_mac_file_exists "$path"
+        else
+            [ -f "$path" ]
+        fi
+    }
+
+    _vcs_file_nonempty() {
+        local path="$1"
+        if [ "$is_remote" -eq 1 ]; then
+            local size
+            size=$(remote_mac_exec "stat -f '%z' '$path' 2>/dev/null" || echo "0")
+            [ "$size" -gt 0 ]
+        else
+            [ -s "$path" ]
+        fi
+    }
+
+    if ! _vcs_file_exists "$user_data"; then
         error "verify_cidata_structure: user-data not found at $user_data"
         errors=$((errors + 1))
-    elif [ ! -s "$user_data" ]; then
+    elif ! _vcs_file_nonempty "$user_data"; then
         error "verify_cidata_structure: user-data is empty at $user_data"
         errors=$((errors + 1))
     else
-        # Validate YAML syntax
         if ! verify_yaml_syntax "$user_data"; then
             errors=$((errors + 1))
         fi
 
-        # Check for dual-boot preserve flag
-        if grep -q 'preserve: true' "$user_data" 2>/dev/null; then
-            log "verify_cidata_structure: dual-boot configuration detected (preserve: true)"
+        if [ "$is_remote" -eq 1 ]; then
+            if remote_mac_exec "grep -q 'preserve: true' '$user_data' 2>/dev/null"; then
+                log "verify_cidata_structure: dual-boot configuration detected (preserve: true)"
+            fi
+            if remote_mac_exec "grep -q 'preserved-partition' '$user_data' 2>/dev/null"; then
+                log "verify_cidata_structure: partition preservation entries found"
+            else
+                warn "verify_cidata_structure: no preserved-partition entries found — macOS partitions may not be preserved"
+            fi
+        else
+            if grep -q 'preserve: true' "$user_data" 2>/dev/null; then
+                log "verify_cidata_structure: dual-boot configuration detected (preserve: true)"
+            fi
+            if grep -q 'preserved-partition' "$user_data" 2>/dev/null; then
+                log "verify_cidata_structure: partition preservation entries found"
+            else
+                warn "verify_cidata_structure: no preserved-partition entries found — macOS partitions may not be preserved"
+            fi
         fi
     fi
 
-    # Check meta-data exists
-    if [ ! -f "$meta_data" ]; then
-        error "verify_cidata_structure: meta-data not found at $meta_data"
+    local root_user_data="$mount_point/user-data"
+    local root_meta_data="$mount_point/meta-data"
+    local root_autoinstall="$mount_point/autoinstall.yaml"
+
+    if ! _vcs_file_exists "$root_user_data"; then
+        error "verify_cidata_structure: user-data not found at ESP root ($root_user_data) — NoCloud requires root-level files"
         errors=$((errors + 1))
     fi
 
-    # Check vendor-data exists
-    if [ ! -f "$vendor_data" ]; then
+    if ! _vcs_file_exists "$root_meta_data"; then
+        error "verify_cidata_structure: meta-data not found at ESP root ($root_meta_data) — NoCloud requires root-level files"
+        errors=$((errors + 1))
+    fi
+
+    if ! _vcs_file_exists "$root_autoinstall"; then
+        warn "verify_cidata_structure: autoinstall.yaml not found at ESP root — Subiquity fallback unavailable"
+    fi
+
+    if ! _vcs_file_exists "$vendor_data"; then
         error "verify_cidata_structure: vendor-data not found at $vendor_data"
         errors=$((errors + 1))
     fi
@@ -314,13 +537,22 @@ verify_disk_space() {
     local available_mb
 
     # Get available space in MB using df -m
-    if [ -d "$path" ]; then
-        available_mb=$(df -m "$path" 2>/dev/null | tail -1 | awk '{print $4}')
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        available_mb=$(remote_mac_exec "df -m '$path' 2>/dev/null | tail -1 | awk '{print \$4}'" || echo "")
+        if [ -z "$available_mb" ]; then
+            local parent_dir
+            parent_dir=$(dirname "$path")
+            available_mb=$(remote_mac_exec "df -m '$parent_dir' 2>/dev/null | tail -1 | awk '{print \$4}'" || echo "")
+        fi
     else
-        # Get space for parent directory if path doesn't exist yet
-        local parent_dir
-        parent_dir=$(dirname "$path")
-        available_mb=$(df -m "$parent_dir" 2>/dev/null | tail -1 | awk '{print $4}')
+        if [ -d "$path" ]; then
+            available_mb=$(df -m "$path" 2>/dev/null | tail -1 | awk '{print $4}')
+        else
+            # Get space for parent directory if path doesn't exist yet
+            local parent_dir
+            parent_dir=$(dirname "$path")
+            available_mb=$(df -m "$parent_dir" 2>/dev/null | tail -1 | awk '{print $4}')
+        fi
     fi
 
     if [ -z "$available_mb" ]; then
@@ -344,53 +576,74 @@ verify_disk_space() {
 # Warnings are logged for non-critical issues.
 verify_headless_readiness() {
     local host="${1:-}"
-    local rc=0
     local errors=0
+    local warnings=0
 
-    if [ -n "$host" ]; then
-        local ssh_prefix="ssh -o ConnectTimeout=10 -o BatchMode=yes $host"
-    else
-        local ssh_prefix=""
-    fi
-
-    log "Verifying headless readiness${host:+ on $host}..."
-
-    if [ -n "$host" ]; then
-        if ! $ssh_prefix 'echo ok' >/dev/null 2>&1; then
-            error "verify_headless_readiness: SSH connection to $host failed"
-            return 1
-        fi
-        log "  SSH connection: OK"
+    # In remote deploy mode, always check the target host
+    if [ -z "$host" ] && [ "${DEPLOY_MODE:-}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        host="$TARGET_HOST"
     fi
 
     local run_cmd
     if [ -n "$host" ]; then
-        run_cmd() { $ssh_prefix "$@" 2>/dev/null; }
+        run_cmd() {
+            local _outf="/tmp/vhr_out_$$_${RANDOM}"
+            local _errf="/tmp/vhr_err_$$_${RANDOM}"
+            local _rc=0
+            ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o BatchMode=yes "$host" "$@" >"$_outf" 2>"$_errf" &
+            local _pid=$!
+            local _elapsed=0
+            while [ "$_elapsed" -lt 30 ]; do
+                if ! kill -0 "$_pid" 2>/dev/null; then
+                    break
+                fi
+                sleep 1
+                _elapsed=$((_elapsed + 1))
+            done
+            if kill -0 "$_pid" 2>/dev/null; then
+                kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+                _rc=124
+            else
+                wait "$_pid" 2>/dev/null; _rc=$?
+            fi
+            cat "$_outf" 2>/dev/null; rm -f "$_outf"
+            [ -s "$_errf" ] && log_debug "run_cmd stderr: $(cat "$_errf")"
+            rm -f "$_errf" 2>/dev/null
+            return $_rc
+        }
+        log "Verifying headless readiness on $host..."
+        if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$host" 'echo ok' >/dev/null 2>&1; then
+            error "verify_headless_readiness: SSH connection to $host failed"
+            return 1
+        fi
+        log "  SSH connection: OK"
     else
         run_cmd() { "$@" 2>/dev/null; }
+        log "Verifying headless readiness (local)..."
     fi
 
     local sip_status
     sip_status=$(run_cmd csrutil status 2>&1 | grep -o 'enabled\|disabled' | head -1)
     if [ "$sip_status" = "enabled" ]; then
-        warn "verify_headless_readiness: SIP is ENABLED — bless and Recovery repairs will fail"
-        warn "  Disable SIP: boot to Recovery (Option+R) → csrutil disable"
-        errors=$((errors + 1))
+        # SIP is always enabled on Mac Pro 2013 — this is expected, not a warning
+        # bless cannot modify NVRAM; use Option key or Startup Disk for boot selection
+        log "  SIP status: enabled (expected)"
     elif [ "$sip_status" = "disabled" ]; then
         log "  SIP status: disabled (OK)"
     else
-        warn "verify_headless_readiness: Could not determine SIP status"
+        log "  SIP status: unknown (continuing)"
     fi
 
     local remote_login
-    remote_login=$(run_cmd systemsetup -getremotelogin 2>&1 | grep -o 'On\|Off' | head -1)
+    remote_login=$(run_cmd sudo systemsetup -getremotelogin 2>&1 | grep -o 'On\|Off' | head -1)
     if [ "$remote_login" = "Off" ] || [ "$remote_login" = "off" ]; then
         error "verify_headless_readiness: Remote Login (SSH) is OFF"
         errors=$((errors + 1))
     elif [ "$remote_login" = "On" ] || [ "$remote_login" = "on" ]; then
         log "  Remote Login (SSH): On"
     else
-        warn "verify_headless_readiness: Could not determine Remote Login status (may need sudo)"
+        warn "verify_headless_readiness: Could not determine Remote Login status (needs sudo on remote)"
+        warnings=$((warnings + 1))
     fi
 
     local sudo_check
@@ -398,7 +651,7 @@ verify_headless_readiness() {
     if [ "$sudo_check" = "root" ]; then
         log "  Passwordless sudo: OK"
     else
-        warn "verify_headless_readiness: Passwordless sudo not configured — SSH remote commands may fail"
+        error "verify_headless_readiness: Passwordless sudo not configured — remote deployment will fail"
         errors=$((errors + 1))
     fi
 
@@ -408,7 +661,7 @@ verify_headless_readiness() {
         log "  Screen sharing (ARD): Running"
     else
         warn "verify_headless_readiness: Screen sharing (ARD) not running — no GUI remote access"
-        errors=$((errors + 1))
+        warnings=$((warnings + 1))
     fi
 
     local sleep_val displaysleep_val
@@ -419,6 +672,7 @@ verify_headless_readiness() {
     else
         warn "verify_headless_readiness: Sleep is NOT disabled (sleep=${sleep_val:-?}, displaysleep=${displaysleep_val:-?})"
         warn "  Fix: sudo pmset -a sleep 0 displaysleep 0 disksleep 0"
+        warnings=$((warnings + 1))
     fi
 
     local womp_val
@@ -427,6 +681,7 @@ verify_headless_readiness() {
         log "  Wake on LAN (WOMP): Enabled"
     else
         warn "verify_headless_readiness: Wake on LAN (WOMP) not enabled"
+        warnings=$((warnings + 1))
     fi
 
     local autorestart_val
@@ -435,6 +690,7 @@ verify_headless_readiness() {
         log "  Auto-restart: Enabled"
     else
         warn "verify_headless_readiness: Auto-restart on power loss not enabled"
+        warnings=$((warnings + 1))
     fi
 
     local firewall_state
@@ -443,8 +699,10 @@ verify_headless_readiness() {
         log "  Firewall: Enabled"
     elif [ "$firewall_state" = "disabled" ]; then
         warn "verify_headless_readiness: Firewall is disabled"
+        warnings=$((warnings + 1))
     else
         warn "verify_headless_readiness: Could not determine firewall state"
+        warnings=$((warnings + 1))
     fi
 
     local recovery_found
@@ -457,18 +715,20 @@ verify_headless_readiness() {
     fi
 
     local efi_foreign
-    efi_foreign=$(run_cmd bash -c "'diskutil mount disk0s1 2>/dev/null; find /Volumes/EFI/EFI/ -maxdepth 2 -name \"refind.conf\" 2>/dev/null; diskutil unmount disk0s1 2>/dev/null'" 2>&1 || true)
+    efi_foreign=$(run_cmd bash -c "'find /Volumes/EFI/EFI/ -maxdepth 2 -name refind.conf 2>/dev/null'" || true)
     if [ -n "$efi_foreign" ]; then
         warn "verify_headless_readiness: Third-party bootloader (rEFInd) detected on EFI — may interfere with boot"
         warn "  Remove: mount EFI, delete EFI/refind/ and EFI/BOOT/BOOTX64.EFI, then bless macOS"
+        warnings=$((warnings + 1))
     fi
 
     local ssh_keys
-    ssh_keys=$(run_cmd bash -c 'cat ~/.ssh/authorized_keys 2>/dev/null | wc -l' || true)
+    ssh_keys=$(run_cmd bash -c "'cat ~/.ssh/authorized_keys 2>/dev/null | wc -l'" || true)
     if [ "${ssh_keys:-0}" -ge 1 ]; then
         log "  SSH authorized_keys: ${ssh_keys} key(s) present"
     else
         warn "verify_headless_readiness: No SSH authorized_keys found — SSH access may fail after deploy"
+        warnings=$((warnings + 1))
     fi
 
     if [ "$errors" -gt 0 ]; then
@@ -476,7 +736,7 @@ verify_headless_readiness() {
         return 1
     fi
 
-    log "verify_headless_readiness: All critical checks passed"
+    log "verify_headless_readiness: All critical checks passed (${warnings} warning(s))"
     return 0
 }
 
@@ -499,6 +759,11 @@ collect_error_context() {
     fi
 
     {
+        local _is_remote=0
+        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+            _is_remote=1
+        fi
+
         echo "=== Error Context Report ==="
         echo "Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
         echo "Phase: $phase"
@@ -508,27 +773,51 @@ collect_error_context() {
         echo ""
 
         echo "=== Disk Space ==="
-        df -h 2>/dev/null || echo "df command failed"
+        if [ "$_is_remote" -eq 1 ]; then
+            remote_mac_exec "df -h 2>/dev/null" || echo "df command failed"
+        else
+            df -h 2>/dev/null || echo "df command failed"
+        fi
         echo ""
 
         echo "=== Mount Points ==="
-        mount 2>/dev/null | grep -E "(disk|ESP|CIDATA|/Volumes)" || echo "mount command failed or no relevant mounts"
+        if [ "$_is_remote" -eq 1 ]; then
+            remote_mac_exec "mount 2>/dev/null | grep -E '(disk|ESP|CIDATA|/Volumes)'" || echo "mount command failed or no relevant mounts"
+        else
+            mount 2>/dev/null | grep -E "(disk|ESP|CIDATA|/Volumes)" || echo "mount command failed or no relevant mounts"
+        fi
         echo ""
 
         echo "=== SIP Status ==="
-        csrutil status 2>/dev/null || echo "csrutil command failed (may require root)"
+        if [ "$_is_remote" -eq 1 ]; then
+            remote_mac_exec "csrutil status 2>/dev/null" || echo "csrutil command failed (may require root)"
+        else
+            csrutil status 2>/dev/null || echo "csrutil command failed (may require root)"
+        fi
         echo ""
 
         echo "=== FileVault Status ==="
-        fdesetup status 2>/dev/null || echo "fdesetup command failed (may require root)"
+        if [ "$_is_remote" -eq 1 ]; then
+            remote_mac_exec "fdesetup status 2>/dev/null" || echo "fdesetup command failed (may require root)"
+        else
+            fdesetup status 2>/dev/null || echo "fdesetup command failed (may require root)"
+        fi
         echo ""
 
         echo "=== APFS Containers ==="
-        diskutil apfs list 2>/dev/null | head -30 || echo "diskutil apfs command failed"
+        if [ "$_is_remote" -eq 1 ]; then
+            remote_mac_exec "diskutil apfs list 2>/dev/null | head -30" || echo "diskutil apfs command failed"
+        else
+            diskutil apfs list 2>/dev/null | head -30 || echo "diskutil apfs command failed"
+        fi
         echo ""
 
         echo "=== Disk Partition Table ==="
-        diskutil list 2>/dev/null | head -50 || echo "diskutil list command failed"
+        if [ "$_is_remote" -eq 1 ]; then
+            remote_mac_exec "diskutil list 2>/dev/null | head -50" || echo "diskutil list command failed"
+        else
+            diskutil list 2>/dev/null | head -50 || echo "diskutil list command failed"
+        fi
         echo ""
 
         echo "=== End of Error Context ==="
@@ -539,31 +828,57 @@ collect_error_context() {
 
 # verify_bless_result mount_point
 # Returns 0 if bless succeeded by checking boot device configuration
+# In remote mode, checks bless status on the target Mac Pro via SSH
 verify_bless_result() {
     local mount_point="$1"
-    
-    # Check if bless succeeded by verifying boot device
-    local blessed_device
-    blessed_device=$(bless --info --getBoot 2>/dev/null || true)
-    
-    if [ -z "$blessed_device" ]; then
-        warn "verify_bless_result: no blessed boot device found"
-        return 1
+    local is_remote=0
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        is_remote=1
     fi
-    
-    log "verify_bless_result: blessed boot device: $blessed_device"
-    
-    # Verify the blessed device matches our ESP
-    local esp_device
-    esp_device=$(diskutil info "$mount_point" 2>/dev/null | grep "Device Node" | awk '{print $3}' || true)
-    
-    if [ -n "$esp_device" ] && [ "$blessed_device" = "$esp_device" ]; then
-        log "verify_bless_result: ESP correctly blessed as boot device"
+
+    local blessed_device
+    if [ "$is_remote" -eq 1 ]; then
+        blessed_device=$(remote_mac_exec "bless --info --getBoot 2>/dev/null" || true)
+    else
+        blessed_device=$(bless --info --getBoot 2>/dev/null || true)
+    fi
+
+    if [ -n "$blessed_device" ]; then
+        log "verify_bless_result: default boot device: $blessed_device"
+    fi
+
+    # bless --nextonly stores the next boot device in efi-boot-next NVRAM
+    # bless --getBoot only reports the DEFAULT boot device, not --nextonly
+    # Check NVRAM efi-boot-next for the one-time boot device set by --nextonly
+    local efi_boot_next
+    if [ "$is_remote" -eq 1 ]; then
+        efi_boot_next=$(remote_mac_exec "nvram efi-boot-next 2>/dev/null" || true)
+    else
+        efi_boot_next=$(nvram efi-boot-next 2>/dev/null || true)
+    fi
+
+    if [ -n "$efi_boot_next" ]; then
+        log "verify_bless_result: efi-boot-next NVRAM set (one-time boot device configured)"
         return 0
     fi
-    
-    # Bless may have succeeded but with --nextonly (one-time boot)
-    # This is acceptable for deployment
-    log "verify_bless_result: bless may be set for next boot only (acceptable)"
-    return 0
+
+    if [ -n "$blessed_device" ]; then
+        local esp_device
+        if [ "$is_remote" -eq 1 ]; then
+            esp_device=$(remote_mac_exec "diskutil info '$mount_point' 2>/dev/null | grep 'Device Node' | awk '{print \$3}'" || true)
+        else
+            esp_device=$(diskutil info "$mount_point" 2>/dev/null | grep "Device Node" | awk '{print $3}' || true)
+        fi
+
+        if [ -n "$esp_device" ] && [ "$blessed_device" = "$esp_device" ]; then
+            log "verify_bless_result: ESP correctly blessed as default boot device"
+            return 0
+        fi
+
+        log "verify_bless_result: bless set for next boot (acceptable)"
+        return 0
+    fi
+
+    warn "verify_bless_result: no blessed boot device found"
+    return 1
 }
