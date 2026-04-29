@@ -23,6 +23,75 @@ source "${LIB_DIR:-./lib}/remote_mac.sh"
 : "${ESP_NAME:=CIDATA}"
 : "${ESP_SIZE:=5g}"
 STORAGE_LAYOUT="${STORAGE_LAYOUT:-1}"
+: "${LINUX_FS_GUID:=0FC63DAF-8483-4772-8E79-3D69D8477DE4}"
+
+# Remove leftover Linux partitions from previous failed installs.
+# Two-step cleanup: diskutil eraseVolume reclaims macOS-visible space,
+# then gpt remove scrubs stale GPT entries that diskutil may miss.
+cleanup_linux_partitions() {
+    local INTERNAL_DISK="$1"
+
+    log_info "Checking for leftover Linux partitions on $INTERNAL_DISK..."
+
+    # Step 1: Find and erase Linux partitions visible to diskutil
+    # diskutil list shows type in columns; "Linux Filesystem" and "Linux Swap" are the types we target
+    local _linux_devices
+    _linux_devices=$(remote_mac_exec diskutil list "$INTERNAL_DISK" 2>/dev/null \
+        | awk '/Linux Filesystem|Linux Swap/{print $NF}' 2>/dev/null || true)
+
+    if [ -n "$_linux_devices" ]; then
+        printf '\r%b  %b▸%b Erasing leftover Linux partitions     \r' "$CLR" "$CYAN" "$NC" >&2
+        log_info "Found Linux partitions visible to diskutil — erasing to reclaim space"
+        for _dev in $_linux_devices; do
+            if ! echo "$_dev" | grep -qE '^disk[0-9]+s[0-9]+$'; then
+                warn "Skipping invalid device name $_dev"
+                continue
+            fi
+            local _dev_index
+            _dev_index=$(echo "$_dev" | sed 's/.*s//')
+            if [ "$_dev_index" -le 2 ]; then
+                warn "Skipping partition $_dev — index ≤ 2 preserves EFI+APFS"
+                continue
+            fi
+            log_info "Erasing Linux partition /dev/$_dev to reclaim space"
+            dry_run_exec "Erase Linux partition /dev/$_dev" \
+                remote_mac_retry_diskutil unmount "/dev/$_dev" >/dev/null 2>&1 || true
+            dry_run_exec "Erase Linux partition /dev/$_dev to free space" \
+                remote_mac_retry_diskutil eraseVolume free none "/dev/$_dev" >/dev/null 2>&1 || warn "Could not erase /dev/$_dev"
+        done
+        printf '\r%b  %b✓%b Linux partitions erased                    \n' "$CLR" "$GREEN" "$NC" >&2
+    fi
+
+    # Step 2: Scrub stale GPT entries with gpt remove
+    # diskutil eraseVolume hides partitions from macOS but may leave stale
+    # GPT entries that the Linux kernel finds at boot time.
+    # MUST use gpt remove to actually scrub the GPT entry.
+    local _gpt_linux_indices
+    if [ -n "${TARGET_HOST:-}" ]; then
+        _gpt_linux_indices=$(remote_mac_sudo "gpt -r show $_internal_disk_val 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print \$3}'" || true)
+    else
+        _gpt_linux_indices=$(sudo gpt -r show "$INTERNAL_DISK" 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print $3}' || true)
+    fi
+    if [ -n "$_gpt_linux_indices" ]; then
+        printf '\r%b  %b▸%b Removing leftover Linux GPT entries    \r' "$CLR" "$CYAN" "$NC" >&2
+        log_info "Found leftover Linux GPT entries — removing"
+        for _idx in $_gpt_linux_indices; do
+            if ! [[ "$_idx" =~ ^[0-9]+$ ]] || [ "$_idx" -le 2 ]; then
+                warn "Skipping invalid GPT index $_idx — must be numeric and > 2 (preserves EFI+APFS)"
+                continue
+            fi
+            if [ -n "${TARGET_HOST:-}" ]; then
+                dry_run_exec "Remove Linux GPT entry index $_idx" \
+                    remote_mac_sudo "gpt remove -i $_idx $_internal_disk_val" 2>/dev/null || true
+            else
+                dry_run_exec "Remove Linux GPT entry index $_idx" \
+                    sudo gpt remove -i "$_idx" "$INTERNAL_DISK" 2>/dev/null || true
+            fi
+            log_info "Removed leftover GPT entry index $_idx from $INTERNAL_DISK"
+        done
+        printf '\r%b  %b✓%b Leftover Linux GPT entries removed       \n' "$CLR" "$GREEN" "$NC" >&2
+    fi
+}
 
 # Returns 0 if Recovery is present and healthy, 1 otherwise.
 # Populates RECOVERY_VOLUME and RECOVERY_UUID globals.
@@ -117,37 +186,7 @@ analyze_disk_layout() {
             warn "macOS Recovery partition may be damaged. Deployment can proceed but repair Recovery if possible: boot to Internet Recovery (Option+R) and reinstall macOS."
         fi
     fi
-    # Remove leftover Linux partitions from previous failed installs
-    # These occupy sector space that curtin needs for new partitions,
-    # causing "Could not create partition N" sgdisk errors on overlap.
-    # IMPORTANT: diskutil eraseVolume hides partitions from macOS but may
-    # leave stale GPT entries that the Linux kernel finds at boot time.
-    # MUST use gpt remove to actually scrub the GPT entry.
-    local _gpt_linux_indices
-    if [ -n "${TARGET_HOST:-}" ]; then
-        _gpt_linux_indices=$(remote_mac_sudo "gpt -r show $_internal_disk_val 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print \$3}'" || true)
-    else
-        _gpt_linux_indices=$(sudo gpt -r show "$_internal_disk_val" 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print $3}' || true)
-    fi
-    if [ -n "$_gpt_linux_indices" ]; then
-        printf '\r%b  %b▸%b Removing leftover Linux GPT entries    \r' "$CLR" "$CYAN" "$NC" >&2
-        log_info "Found leftover Linux GPT entries from previous install — removing"
-        for _idx in $_gpt_linux_indices; do
-            if ! [[ "$_idx" =~ ^[0-9]+$ ]] || [ "$_idx" -le 2 ]; then
-                warn "Skipping invalid GPT index $_idx — must be numeric and > 2 (preserves EFI+APFS)"
-                continue
-            fi
-            if [ -n "${TARGET_HOST:-}" ]; then
-                dry_run_exec "Remove Linux GPT entry index $_idx" \
-                    remote_mac_sudo "gpt remove -i $_idx $_internal_disk_val" 2>/dev/null || true
-            else
-                dry_run_exec "Remove Linux GPT entry index $_idx" \
-                    sudo gpt remove -i "$_idx" "$_internal_disk_val" 2>/dev/null || true
-            fi
-            log_info "Removed leftover GPT entry index $_idx from $_internal_disk_val"
-        done
-        printf '\r%b  %b✓%b Leftover Linux GPT entries removed       \n' "$CLR" "$GREEN" "$NC" >&2
-    fi
+    cleanup_linux_partitions "$_internal_disk_val"
 
     printf '\r%b  %b✓%b Disk layout analyzed                   \n' "$CLR" "$GREEN" "$NC" >&2
     echo ""
@@ -370,6 +409,85 @@ create_esp_partition() {
         eval "$_esp_created_name=0"
         eval "$_esp_device_name=\"\""
         die "Failed to create ESP partition with EFI System Partition type"
+    fi
+}
+
+create_root_partition() {
+    local INTERNAL_DISK="$1"
+    local _root_created_name="$2"
+    local _root_device_name="$3"
+    local _root_size_name="$4"
+
+    if ! _validate_varname "$_root_created_name"; then
+        die "create_root_partition: invalid variable name: $_root_created_name"
+    fi
+    if ! _validate_varname "$_root_device_name"; then
+        die "create_root_partition: invalid variable name: $_root_device_name"
+    fi
+    if ! _validate_varname "$_root_size_name"; then
+        die "create_root_partition: invalid variable name: $_root_size_name"
+    fi
+
+    log "Creating Linux root partition for Ubuntu..."
+
+    # Remove any existing Linux filesystem partition (GUID 0FC63DAF-8483-4772-8E79-3D69D8477DE4)
+    local EXISTING_LINUX
+    EXISTING_LINUX=$(remote_mac_exec diskutil list "$INTERNAL_DISK" 2>/dev/null | grep -i "Linux" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
+    if [ -n "$EXISTING_LINUX" ]; then
+        log "Removing existing Linux partition /dev/$EXISTING_LINUX..."
+        dry_run_exec "Remove existing Linux partition /dev/$EXISTING_LINUX" \
+            remote_mac_retry_diskutil unmount "/dev/$EXISTING_LINUX" >/dev/null 2>&1 || true
+        dry_run_exec "Erase Linux partition /dev/$EXISTING_LINUX to free space" \
+            remote_mac_retry_diskutil eraseVolume free none "/dev/$EXISTING_LINUX" >/dev/null 2>&1 || warn "Could not remove existing Linux partition"
+    fi
+
+    local BEFORE_PARTS AFTER_PARTS
+    BEFORE_PARTS=$(remote_mac_exec diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
+    if [ "${DRY_RUN:-0}" -eq 1 ]; then
+        echo ""
+        echo "disk0sN"
+        eval "$_root_created_name=1"
+        eval "$_root_device_name=\"disk0sN\""
+        eval "$_root_size_name=0"
+        return 0
+    fi
+    if remote_mac_retry_diskutil addPartition "$INTERNAL_DISK" %0FC63DAF-8483-4772-8E79-3D69D8477DE4% %noformat% 0 >/dev/null 2>&1; then
+        AFTER_PARTS=$(remote_mac_exec diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
+        local _root_device_val
+        _root_device_val=$(comm -13 <(echo "$BEFORE_PARTS") <(echo "$AFTER_PARTS") | head -1)
+        if [ -z "$_root_device_val" ]; then
+            die "Cannot identify newly created root partition"
+        fi
+        log "Root partition candidate: /dev/$_root_device_val"
+
+        # Get exact byte size from sgdisk
+        local PART_NUM
+        PART_NUM=$(echo "$_root_device_val" | grep -oE 's[0-9]+$' | sed 's/^s//')
+        local PART_INFO FIRST_SEC LAST_SEC SIZE_BYTES
+        PART_INFO=$(remote_mac_sudo "sgdisk -i $PART_NUM $INTERNAL_DISK" 2>/dev/null)
+        FIRST_SEC=$(echo "$PART_INFO" | grep "First sector:" | grep -oE '[0-9]+')
+        LAST_SEC=$(echo "$PART_INFO" | grep "Last sector:" | grep -oE '[0-9]+')
+        if [ -z "$FIRST_SEC" ] || [ -z "$LAST_SEC" ]; then
+            die "Cannot read partition boundaries for /dev/$_root_device_val"
+        fi
+        SIZE_BYTES=$(( (LAST_SEC - FIRST_SEC + 1) * 512 ))
+
+        eval "$_root_created_name=1"
+        eval "$_root_device_name=\"\$_root_device_val\""
+        eval "$_root_size_name=$SIZE_BYTES"
+
+        local SIZE_GB
+        SIZE_GB=$(( SIZE_BYTES / 1073741824 ))
+        log "Root partition created: /dev/$_root_device_val (${SIZE_GB}GB)"
+
+        echo ""
+        echo "${_root_device_val}"
+        echo "${SIZE_BYTES}"
+    else
+        eval "$_root_created_name=0"
+        eval "$_root_device_name=\"\""
+        eval "$_root_size_name=0"
+        die "Failed to create root partition with Linux filesystem type"
     fi
 }
 
