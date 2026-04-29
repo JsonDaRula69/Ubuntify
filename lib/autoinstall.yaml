@@ -2,7 +2,7 @@ autoinstall:
   version: 1
 
   refresh-installer:
-    update: true
+    update: false
 
   kernel:
     package: linux-image-6.8.0-100-generic
