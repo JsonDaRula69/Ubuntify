@@ -334,12 +334,29 @@ const MAX_UPDATES = 200;
 
 ## Versioning
 
-- Format: `v0.2.N` where N increments sequentially (v0.2.0, v0.2.1, v0.2.2, ...)
+- Format: `v0.3.N` where N starts from 0 (v0.3.0, v0.3.1, v0.3.2, ...)
 - **Every commit must have a version tag** — no untagged commits on main
 - Tags are assigned in chronological order (oldest commit = lowest N)
-- Version series MUST stay on v0.2.* — do NOT iterate to v0.3.* or higher without explicit user permission
-- When creating a commit, immediately tag it with the next sequential v0.2.N number
+- **v0.2.x series is closed** — v0.2.106 was the last v0.2.x release
+- Version series MUST stay on v0.3.* — do NOT iterate to v0.4.* or higher without explicit user permission
+- When creating a commit, immediately tag it with the next sequential v0.3.N number
 - Runtime version is derived via `git describe --tags` (set as `APP_VERSION` in prepare-deployment.sh); falls back to `"dev"` if not in a git repo
+
+### Version Series History
+
+| Series | Description | Status |
+|--------|-------------|--------|
+| v0.0.x | Initial development (102 micro-releases) | Closed |
+| v0.1.x | CLI flags, modularization, hardening (9 releases) | Closed |
+| v0.2.x | TUI, agent mode, config, remote deployment (99 releases) | Closed at v0.2.106 |
+| v0.3.x | Remote-only cleanup, dead code removal, partitioning fixes | Current |
+
+### v0.2.x → v0.3.0 Transition
+
+- v0.2.98 removed local deploy mode — remote-only architecture
+- v0.2.99–v0.2.106 made all verification, rollback, disk, bless, and deploy ops remote-aware
+- **Live testing milestone (v0.2.98)**: Broadcom BCM4360 WiFi driver compiled and connected successfully, SSH verified on headless Mac Pro. Disk partitioning (dual-boot ESP setup) identified as primary remaining issue.
+- v0.3.0 begins dead code cleanup (unused TUI widgets, vestigial local-mode branches, duplicate functions) and partitioning fixes
 
 ## deploy.conf Configuration
 

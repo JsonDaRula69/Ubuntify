@@ -2,8 +2,68 @@
 
 All notable changes to the Mac Pro 2013 Ubuntu Autoinstall project are documented in this file. Each version corresponds to a git tag. For the full commit history, see `git log`.
 
+## v0.3.x — Remote-Only Architecture, Dead Code Cleanup, Partitioning
+
+Starting with v0.3.0, the project transitions to remote-only deployment mode. All local macOS operations are removed — the control machine only generates configuration and transfers it via SSH to the Mac Pro target. This version series also removes dead code left over from the local-deploy era and addresses disk partitioning issues discovered during live testing.
+
+**Milestone: v0.2.98 (last v0.2.x)** — Successful live deployment confirmed: Broadcom BCM4360 WiFi driver compiled and connected, autoinstall completed, SSH access verified on headless Mac Pro. Disk partitioning issues with dual-boot mode remain the primary blocker for reliable ESP setup.
+
 ## v0.2.x — TUI Architecture, Agent Mode, and Config System
 - refactor: remove dialog TUI backend, simplify to whiptail > raw detection
+
+### v0.2.106 — Remote-aware verification and ESP mount constraints (docs)
+- docs: document verify_* and snapshot functions as remote-aware
+- docs: add macOS auto-unmounts FAT32 ESP constraint with mount_msdos guidance
+- docs: add verify_esp_mount optional esp_device parameter
+
+### v0.2.105 — Remote mode config flow, macOS size mode, cleanup on exit
+- feat: --macos-size-mode and --macos-size-gb CLI flags for dual-boot disk allocation
+- feat: cleanup_config_on_exit trap deletes invalid configs
+- feat: export DEPLOY_MODE and TARGET_HOST for all lib modules
+- feat: remote_mac_preflight adds python3 and mount_msdos checks
+
+### v0.2.104 — Bless remote-aware, build-iso, and TUI refinements
+- fix: verify_esp_contents and attempt_bless detect DEPLOY_MODE=remote
+- fix: refine ISO build parameters and squashfs layer detection
+- feat: CYAN color constant for progress indicators
+- fix: splash animation timing
+
+### v0.2.103 — WiFi early-commands wpasupplicant staging and mDNS packages
+- feat: staged wpasupplicant install in autoinstall early-commands (runtime libs → wpa from ISO → wireless-tools)
+- feat: diag() function for detailed WiFi failure diagnostics in autoinstall
+- feat: avahi-daemon, libavahi-common3, libavahi-core7, libdaemon0, libiw30t64, libnss-mdns, libpcsclite1, wireless-tools packages
+- fix: generate_dualboot_storage detects DEPLOY_MODE=remote and uses remote_mac_exec for sgdisk
+
+### v0.2.102 — Disk ops and deploy phases remote-aware, Linux partition cleanup
+- feat: analyze_disk_layout removes leftover Linux partitions from previous installs before APFS shrink
+- feat: create_esp_partition uses mount_msdos with explicit mount point instead of diskutil mount
+- feat: all deployment phases route diskutil/sgdisk/bless via remote_mac when TARGET_HOST set
+- feat: ESP device tracking for verify_esp_mount re-mounting
+- fix: USB deploy uses remote_mac_retry_diskutil for all diskutil calls
+
+### v0.2.101 — Rollback and revert operations remote-aware
+- feat: snapshot_disk_layout detects DEPLOY_MODE=remote and routes via SSH
+- feat: rollback_internal, rollback_usb, rollback_vm use remote_mac_exec/remote_mac_sudo when TARGET_HOST set
+- feat: remote-aware journal path handling and error recovery
+
+### v0.2.100 — Remote-aware verification, Python schema deps
+- feat: all verify_* functions detect DEPLOY_MODE=remote and route filesystem checks via remote_mac_exec/remote_mac_dir_exists/remote_mac_file_exists
+- feat: verify_autoinstall_schema auto-installs jsonschema/pyyaml via pip when missing
+- feat: verify_esp_mount accepts optional esp_device argument for re-mounting without reading the journal
+- feat: _vem_ensure_mounted helper proactively re-mounts auto-unmounted ESP volumes
+
+### v0.2.99 — SSH timeout handling, keepalive, preflight refinements
+- feat: _ssh_with_timeout() for configurable SSH command timeouts
+- feat: ServerAliveInterval/ServerAliveCountMax keepalive to detect dropped connections
+- feat: --timeout flag for remote_mac_exec/remote_mac_sudo
+- feat: python3 and mount_msdos added to preflight checks
+- feat: macOS built-in command handling in auto-install flow
+
+### v0.2.98 — Local deploy mode removal, raw TUI only (breaking change)
+- feat: remove local deploy mode — remote-only architecture
+- feat: remove whiptail backend — raw bash TUI only
+- refactor: redesign config flow, TUI menus, validation, and defaults
+- docs: update README for remote-only mode, disk allocation, config path fix
 
 ### v0.2.66 — Remote deployment mode (DEPLOY_MODE=remote)
 - feat: add DEPLOY_MODE config key (local/remote) to deploy.conf, parse_conf, and CLI flags (--deploy-mode, --target-host, --remote-password)
@@ -242,4 +302,8 @@ All notable changes to the Mac Pro 2013 Ubuntu Autoinstall project are documente
 
 - **v0.0.x**: Rapid iteration during initial development (102 micro-releases)
 - **v0.1.x**: CLI flags, modularization, and hardening (9 releases)
-- **v0.2.x**: TUI architecture, agent mode, config system (14 releases to date)
+- **v0.2.x**: TUI architecture, agent mode, config system, remote deployment (99 releases)
+  - v0.2.98: Local deploy mode removed, raw TUI only — **last version with local mode**
+  - v0.2.99–v0.2.106: Remote-aware verification, rollback, disk ops, ESP mount fixes
+  - **Live testing milestone (v0.2.98)**: Broadcom BCM4360 WiFi driver compiled and connected successfully, SSH access verified on headless Mac Pro. Disk partitioning (dual-boot ESP setup) identified as primary remaining issue.
+- **v0.3.x** (next): Remote-only cleanup, dead code removal, partitioning fixes, production hardening
