@@ -45,17 +45,6 @@ __SSH_KEYS__
       _dump_log() { cat "$LOG" > /dev/console 2>/dev/null || true; }
       trap '_dump_log' EXIT
 
-      # Remove leftover Linux GPT entries from previous failed installs
-      # macOS diskutil eraseVolume may leave ghost entries the kernel finds
-      _linux_parts=$(sgdisk -p /dev/sda 2>/dev/null | awk '/8300|8200/{print $1}')
-      if [ -n "$_linux_parts" ]; then
-        for _p in $(echo "$_linux_parts" | sort -rn); do
-          log "Removing leftover Linux GPT partition $_p"
-          sgdisk -d "$_p" /dev/sda 2>/dev/null || true
-        done
-        partprobe /dev/sda 2>/dev/null || true
-      fi
-
       # Verify target disk exists and is the only internal disk
       if [ ! -e /dev/sda ]; then
         die "/dev/sda not found — cannot proceed with storage config" 2

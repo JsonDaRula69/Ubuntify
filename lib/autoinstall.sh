@@ -381,12 +381,11 @@ for line in part_lines:
                 if sector_match:
                     last_sector = int(sector_match.group(1))
 
-        if first_sector is None or last_sector is None or not part_type_guid or not part_uuid:
+        if first_sector is None or last_sector is None or not part_type_guid:
             continue
 
         offset_bytes = first_sector * 512
         size_bytes = (last_sector - first_sector + 1) * 512
-        part_path = f"/dev/sda{part_num}"
 
         if size_bytes < 1048576:
             continue
@@ -398,8 +397,6 @@ for line in part_lines:
       grub_device: false
       offset: {offset_bytes}
       partition_type: {part_type_guid}
-      path: {part_path}
-      uuid: {part_uuid}
       id: preserved-partition-{part_num}
       type: partition
 """
