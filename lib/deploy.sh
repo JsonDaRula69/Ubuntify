@@ -109,6 +109,10 @@ _phase_extract_iso() {
     log_info "  ISO: $ISO_PATH"
     log_info "  Target: $ESP_MOUNT"
 
+    if ! verify_esp_mount "$ESP_MOUNT" "${JOURNAL_ESP_DEVICE:-}"; then
+        error "ESP not mounted before ISO extraction — attempting re-mount"
+    fi
+
     local host="${TARGET_HOST:-macpro}"
     printf '\r%b  %b▸%b Transferring ISO to %s...   \r' "$CLR" "$CYAN" "$NC" "$host" >&2
     local REMOTE_ISO="/tmp/ubuntu-macpro.iso"

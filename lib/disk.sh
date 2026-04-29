@@ -452,6 +452,7 @@ create_root_partition() {
         return 0
     fi
     if remote_mac_retry_diskutil addPartition "$INTERNAL_DISK" %0FC63DAF-8483-4772-8E79-3D69D8477DE4% %noformat% 0 >/dev/null 2>&1; then
+        sleep 2
         AFTER_PARTS=$(remote_mac_exec diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
         local _root_device_val
         _root_device_val=$(comm -13 <(echo "$BEFORE_PARTS") <(echo "$AFTER_PARTS") | head -1)
@@ -460,13 +461,14 @@ create_root_partition() {
         fi
         log "Root partition candidate: /dev/$_root_device_val"
 
-        # Get exact byte size from sgdisk
+        # Get exact byte size from sgdisk (requires full /dev/ path)
         local PART_NUM
         PART_NUM=$(echo "$_root_device_val" | grep -oE 's[0-9]+$' | sed 's/^s//')
         local PART_INFO FIRST_SEC LAST_SEC SIZE_BYTES
-        PART_INFO=$(remote_mac_sudo "sgdisk -i $PART_NUM $INTERNAL_DISK" 2>/dev/null)
-        FIRST_SEC=$(echo "$PART_INFO" | grep "First sector:" | grep -oE '[0-9]+')
-        LAST_SEC=$(echo "$PART_INFO" | grep "Last sector:" | grep -oE '[0-9]+')
+        sleep 1
+        PART_INFO=$(remote_mac_sudo sgdisk -i "$PART_NUM" "$INTERNAL_DISK" 2>/dev/null)
+        FIRST_SEC=$(echo "$PART_INFO" | grep "First sector:" | grep -oE '[0-9]+' | head -1)
+        LAST_SEC=$(echo "$PART_INFO" | grep "Last sector:" | grep -oE '[0-9]+' | head -1)
         if [ -z "$FIRST_SEC" ] || [ -z "$LAST_SEC" ]; then
             die "Cannot read partition boundaries for /dev/$_root_device_val"
         fi

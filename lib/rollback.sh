@@ -29,7 +29,7 @@ readonly ERROR_REPORT_FILE="${STATE_DIR}/error-report.txt"
 
 ## Phase Definitions
 
-readonly PHASES_INTERNAL="analyze shrink_apfs create_esp extract_iso copy_pkgs generate_config verify_bless"
+readonly PHASES_INTERNAL="analyze shrink_apfs create_esp create_root extract_iso copy_pkgs generate_config verify_bless"
 readonly PHASES_USB="detect_usb partition_usb extract_iso copy_pkgs generate_config verify"
 readonly PHASES_VM="check_vbox find_iso build_iso create_vm start_monitor"
 
