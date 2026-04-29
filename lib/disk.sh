@@ -78,6 +78,7 @@ analyze_disk_layout() {
     local _apfs_container_name="$2"
 
     log "Analyzing disk layout..."
+    printf '\r%b  %b▸%b Identifying internal disk...         \r' "$CLR" "$CYAN" "$NC" >&2
 
     local APFS_PARTITION
     local FREE_SPACE
@@ -88,9 +89,11 @@ analyze_disk_layout() {
     [ -n "$_internal_disk_val" ] || die "Cannot identify internal disk"
 
     log "Internal disk: $_internal_disk_val"
+    printf '\r%b  %b▸%b Reading partition table...          \r' "$CLR" "$CYAN" "$NC" >&2
     remote_mac_exec diskutil list "$_internal_disk_val"
     echo ""
 
+    printf '\r%b  %b▸%b Locating APFS container...          \r' "$CLR" "$CYAN" "$NC" >&2
     APFS_PARTITION=$(remote_mac_exec diskutil list "$_internal_disk_val" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
     if [ -n "$APFS_PARTITION" ]; then
         _apfs_container_val=$(remote_mac_exec diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head -1 || true)
@@ -99,15 +102,49 @@ analyze_disk_layout() {
         _apfs_container_val=$(remote_mac_exec diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head -1 || true)
     fi
     if [ -n "$_apfs_container_val" ]; then
-        FREE_SPACE=$(remote_mac_exec diskutil apfs list 2>/dev/null | grep -A5 "Capacity" | grep "Available" | grep -oE '[0-9]+.*B' | head -1 || true)
+        printf '\r%b  %b▸%b Checking free space...               \r' "$CLR" "$CYAN" "$NC" >&2
+        FREE_SPACE=$(remote_mac_exec "diskutil info '$_apfs_container_val' 2>/dev/null | grep 'Volume Free Space' | grep -oE '[0-9]+(\.[0-9]+)? [GTMP]?B' | head -1" || true)
+        if [ -z "$FREE_SPACE" ]; then
+            FREE_SPACE=$(remote_mac_exec "diskutil apfs list '$_apfs_container_val' 2>/dev/null | grep 'Capacity In Use By Volumes' | grep -oE '[0-9]+(\.[0-9]+)? [GTMP]?B' | head -1" || true)
+        fi
         log "APFS partition: /dev/${APFS_PARTITION:-unknown}"
         log "APFS container: /dev/$_apfs_container_val"
         log "Free space: ${FREE_SPACE:-unknown}"
 
+        printf '\r%b  %b▸%b Verifying Recovery partition...     \r' "$CLR" "$CYAN" "$NC" >&2
         if ! check_recovery_health "$_apfs_container_val"; then
             warn "macOS Recovery partition may be damaged. Deployment can proceed but repair Recovery if possible: boot to Internet Recovery (Option+R) and reinstall macOS."
         fi
     fi
+    # Remove leftover Linux partitions from previous failed installs
+    # These occupy sector space that curtin needs for new partitions,
+    # causing "Could not create partition N" sgdisk errors on overlap
+    local _linux_parts
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        _linux_parts=$(remote_mac_exec "diskutil list $_internal_disk_val 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
+    else
+        _linux_parts=$(diskutil list "$_internal_disk_val" 2>/dev/null | grep 'Linux Filesystem' || true)
+    fi
+    if [ -n "$_linux_parts" ]; then
+        printf '\r%b  %b▸%b Removing leftover Linux partitions    \r' "$CLR" "$CYAN" "$NC" >&2
+        log_info "Found leftover Linux partitions from previous install — removing"
+        echo "$_linux_parts" | while IFS= read -r _line; do
+            _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
+            if [ -n "$_linux_dev" ]; then
+                if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+                    dry_run_exec "Remove Linux partition /dev/${_linux_dev}" \
+                        remote_mac_exec "sudo -n diskutil eraseVolume free none /dev/${_linux_dev}" 2>/dev/null || true
+                else
+                    dry_run_exec "Remove Linux partition /dev/${_linux_dev}" \
+                        diskutil eraseVolume free none "/dev/${_linux_dev}" 2>/dev/null || true
+                fi
+                log_info "Removed leftover Linux partition /dev/${_linux_dev}"
+            fi
+        done
+        printf '\r%b  %b✓%b Leftover Linux partitions removed        \n' "$CLR" "$GREEN" "$NC" >&2
+    fi
+
+    printf '\r%b  %b✓%b Disk layout analyzed                   \n' "$CLR" "$GREEN" "$NC" >&2
     echo ""
 
     # Validate eval variable names to prevent injection
@@ -241,8 +278,21 @@ shrink_apfs_if_needed() {
         remote_mac_sudo tmutil thinlocalsnapshots / 999999999999 2>/dev/null || true
     fi
 
+    local _resize_rc=0
     dry_run_exec "Shrink APFS container to ${TARGET_MACOS_GB}GB" \
-        remote_mac_sudo diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || die "APFS resize failed"
+        remote_mac_sudo --timeout 600 diskutil apfs resizeContainer "$APFS_CONTAINER" "${TARGET_MACOS_GB}g" || _resize_rc=$?
+    if [ "$_resize_rc" -eq 124 ]; then
+        warn "APFS resize command timed out (SSH disconnected) — verifying if resize completed on remote..."
+        local _verify_size
+        _verify_size=$(remote_mac_exec diskutil info "$APFS_CONTAINER" 2>/dev/null | grep "Disk Size" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
+        if [ -n "$_verify_size" ] && echo "$_verify_size $TARGET_MACOS_GB" | awk '{exit !($1 <= $2 * 1.05)}'; then
+            log "APFS container resized to ${_verify_size}GB (verified after timeout)"
+        else
+            die "APFS resize timed out and verification shows container still at ${_verify_size:-unknown}GB — retry deployment"
+        fi
+    elif [ "$_resize_rc" -ne 0 ]; then
+        die "APFS resize failed (exit code $_resize_rc)"
+    fi
     if ! _validate_varname "$_apfs_resized_name"; then die "shrink_apfs_if_needed: invalid variable name"; fi
     eval "$_apfs_resized_name=1"
     log "APFS container resized to ${TARGET_MACOS_GB}GB"
@@ -272,22 +322,22 @@ create_esp_partition() {
     if [ -n "$EXISTING_ESP" ]; then
         log "Removing existing $ESP_NAME partition /dev/$EXISTING_ESP..."
         dry_run_exec "Remove existing ESP partition /dev/$EXISTING_ESP" \
-            remote_mac_retry_diskutil unmount "/dev/$EXISTING_ESP" 2>/dev/null || true
+            remote_mac_retry_diskutil unmount "/dev/$EXISTING_ESP" >/dev/null 2>&1 || true
         dry_run_exec "Erase ESP partition /dev/$EXISTING_ESP to free space" \
-            remote_mac_retry_diskutil eraseVolume free none "/dev/$EXISTING_ESP" 2>/dev/null || warn "Could not remove existing ESP"
+            remote_mac_retry_diskutil eraseVolume free none "/dev/$EXISTING_ESP" >/dev/null 2>&1 || warn "Could not remove existing ESP"
         sleep 1
     fi
 
     local BEFORE_PARTS AFTER_PARTS ESP_MOUNT
     BEFORE_PARTS=$(remote_mac_exec diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
     if [ "${DRY_RUN:-0}" -eq 1 ]; then
-        echo "[DRY-RUN] Would: addPartition → identify → newfs_msdos → mount ESP"
+        echo "/Volumes/${ESP_NAME}"
+        echo "disk0sN"
         eval "$_esp_created_name=1"
         eval "$_esp_device_name=\"disk0sN\""
-        echo "/Volumes/${ESP_NAME}"
         return 0
     fi
-    if remote_mac_retry_diskutil addPartition "$INTERNAL_DISK" %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% "$ESP_SIZE"; then
+    if remote_mac_retry_diskutil addPartition "$INTERNAL_DISK" %C12A7328-F81F-11D2-BA4B-00A0C93EC93B% %noformat% "$ESP_SIZE" >/dev/null 2>&1; then
         sleep 2
         AFTER_PARTS=$(remote_mac_exec diskutil list "$INTERNAL_DISK" | grep -oE 'disk[0-9]+s[0-9]+' | sort)
         _esp_device_val=$(comm -13 <(echo "$BEFORE_PARTS") <(echo "$AFTER_PARTS") | head -1)
@@ -295,17 +345,22 @@ create_esp_partition() {
             die "Cannot identify newly created ESP partition"
         fi
         log "ESP partition candidate: /dev/$_esp_device_val"
-        remote_mac_sudo newfs_msdos -F 32 -v "$ESP_NAME" "/dev/$_esp_device_val" || die "Failed to format ESP as FAT32"
-        sleep 1
-        remote_mac_retry_diskutil mount "/dev/$_esp_device_val" 2>/dev/null || true
+        remote_mac_sudo newfs_msdos -F 32 -v "$ESP_NAME" "/dev/$_esp_device_val" >/dev/null || die "Failed to format ESP as FAT32"
+        sleep 2
+        ESP_MOUNT="/Volumes/$ESP_NAME"
+        remote_mac_exec mkdir -p "$ESP_MOUNT" 2>/dev/null || true
+        remote_mac_sudo mount_msdos "/dev/$_esp_device_val" "$ESP_MOUNT" >/dev/null 2>&1 || \
+            remote_mac_retry_diskutil mount "/dev/$_esp_device_val" >/dev/null 2>&1 || true
+        sleep 3
         eval "$_esp_created_name=1"
         eval "$_esp_device_name=\"\$_esp_device_val\""
-        ESP_MOUNT="/Volumes/$ESP_NAME"
         if ! remote_mac_dir_exists "$ESP_MOUNT"; then
             ESP_MOUNT=$(remote_mac_exec diskutil info "/dev/$_esp_device_val" 2>/dev/null | grep "Mount Point" | awk '{$1=$2=""; print substr($0,3)}' | sed 's/^[[:space:]]*//' || true)
         fi
         remote_mac_dir_exists "$ESP_MOUNT" || die "ESP not mounted after format"
-        echo "$ESP_MOUNT"
+
+        echo "${ESP_MOUNT}"
+        echo "${_esp_device_val}"
     else
         eval "$_esp_created_name=0"
         eval "$_esp_device_name=\"\""
@@ -342,7 +397,7 @@ extract_iso_to_esp() {
     remote_mac_file_exists "$ESP_MOUNT/EFI/boot/bootx64.efi" || remote_mac_file_exists "$ESP_MOUNT/EFI/boot/BOOTX64.EFI" || die "BOOTX64.EFI missing"
     remote_mac_file_exists "$ESP_MOUNT/casper/vmlinuz" || die "casper/vmlinuz missing"
     remote_mac_file_exists "$ESP_MOUNT/casper/initrd" || die "casper/initrd missing"
-    if ! remote_mac_exec ls "$ESP_MOUNT/casper/"*.squashfs 1>/dev/null 2>&1; then
+    if ! remote_mac_exec "ls $ESP_MOUNT/casper/*.squashfs >/dev/null 2>&1"; then
         die "No .squashfs files in casper/"
     fi
 

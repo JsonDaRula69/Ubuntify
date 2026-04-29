@@ -42,39 +42,42 @@ _phase_analyze() {
 }
 
 _phase_shrink_apfs() {
+    printf '\r%b  %b▸%b Resizing APFS container...           \r' "$CLR" "$CYAN" "$NC" >&2
     shrink_apfs_if_needed "$APFS_CONTAINER" "$INTERNAL_DISK" _APFS_RESIZED _APFS_ORIGINAL_SIZE
     journal_set "APFS_RESIZED" "$_APFS_RESIZED"
     journal_set "ORIGINAL_APFS_SIZE" "${_APFS_ORIGINAL_SIZE:-}"
-    if [ "$_APFS_RESIZED" -eq 1 ] && [ -n "${_APFS_ORIGINAL_SIZE:-}" ]; then
-        local TARGET_MACOS_GB
-        TARGET_MACOS_GB=$(echo "$_APFS_ORIGINAL_SIZE" | awk '{print int($1)}')
-        if ! verify_apfs_resize "$APFS_CONTAINER" "$TARGET_MACOS_GB"; then
-            warn "APFS resize verification failed (expected ~${TARGET_MACOS_GB}GB), but continuing"
+    if [ "$_APFS_RESIZED" -eq 1 ]; then
+        # Verify against the TARGET size, not original
+        local _verify_target_gb="${MACOS_TARGET_GB:-50}"
+        # Minimum macOS is 50GB; use that as default target
+        if [ "${MACOS_SIZE_MODE:-auto}" = "max_linux" ]; then
+            _verify_target_gb=50
+        elif [ -n "${MACOS_SIZE_GB:-}" ]; then
+            _verify_target_gb="$MACOS_SIZE_GB"
+        fi
+        if ! verify_apfs_resize "$APFS_CONTAINER" "$_verify_target_gb"; then
+            warn "APFS resize verification failed (expected ~${_verify_target_gb}GB), but continuing"
         fi
     fi
+    printf '\r%b  %b✓%b APFS resize complete                   \n' "$CLR" "$GREEN" "$NC" >&2
 }
 
 _phase_create_esp() {
-    local ESP_MOUNT
-    ESP_MOUNT=$(create_esp_partition "$INTERNAL_DISK" _ESP_CREATED _ESP_DEVICE)
+    printf '\r%b  %b▸%b Creating ESP partition...            \r' "$CLR" "$CYAN" "$NC" >&2
+    local _esp_output_file
+    _esp_output_file=$(mktemp /tmp/macpro-esp-output.XXXXXX)
+    create_esp_partition "$INTERNAL_DISK" _ESP_CREATED _ESP_DEVICE > "$_esp_output_file"
+    ESP_MOUNT=$(head -1 "$_esp_output_file")
+    _ESP_DEVICE=$(tail -1 "$_esp_output_file")
+    rm -f "$_esp_output_file"
     journal_set "ESP_CREATED" "$_ESP_CREATED"
     journal_set "ESP_DEVICE" "${_ESP_DEVICE:-}"
     export ESP_MOUNT
-    if ! verify_esp_mount "$ESP_MOUNT"; then
-        warn "ESP mount verification failed, attempting self-heal..."
-        local attempt=1
-        while [ "$attempt" -le 3 ]; do
-            remote_mac_retry_diskutil mount "/dev/$_ESP_DEVICE" 2>/dev/null || true
-            sleep 2
-            if verify_esp_mount "$ESP_MOUNT"; then
-                log "ESP mount successful after retry $attempt"
-                return 0
-            fi
-            attempt=$((attempt + 1))
-        done
-        error "ESP mount verification failed after self-heal attempts"
+    if ! verify_esp_mount "$ESP_MOUNT" "$_ESP_DEVICE"; then
+        error "ESP mount verification failed after create_esp_partition"
         return 1
     fi
+    printf '\r%b  %b✓%b ESP partition created                   \n' "$CLR" "$GREEN" "$NC" >&2
 }
 
 _phase_extract_iso() {
@@ -87,21 +90,20 @@ _phase_extract_iso() {
     log_info "  Target: $ESP_MOUNT"
 
     local host="${TARGET_HOST:-macpro}"
-    log_info "Transferring ISO to $host..."
+    printf '\r%b  %b▸%b Transferring ISO to %s...   \r' "$CLR" "$CYAN" "$NC" "$host" >&2
     local REMOTE_ISO="/tmp/ubuntu-macpro.iso"
     if ! remote_mac_cp "$ISO_PATH" "$REMOTE_ISO"; then
         die "Failed to transfer ISO to $host"
     fi
-    log_info "ISO transferred. Extracting on remote host..."
-    echo "[....] Extracting ISO contents on $host..." >&2
-    if ! remote_mac_sudo retry_xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$ESP_MOUNT" 2>/dev/null; then
-        echo "[FAIL] Remote ISO extraction failed" >&2
+    printf '\r%b  %b▸%b Extracting ISO on remote host...      \r' "$CLR" "$CYAN" "$NC" >&2
+    if ! remote_mac_sudo --timeout 600 xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$ESP_MOUNT" 2>/dev/null; then
+        printf '\r%b  %b✗%b Remote ISO extraction failed           \n' "$CLR" "$RED" "$NC" >&2
         remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
         die "Failed to extract ISO contents on remote host"
     fi
     remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
-    echo "[ OK ] Remote ISO extraction complete" >&2
-    if ! remote_mac_exec verify_iso_extraction "$ESP_MOUNT" 2>/dev/null; then
+    printf '\r%b  %b✓%b ISO extraction complete                \n' "$CLR" "$GREEN" "$NC" >&2
+    if ! verify_iso_extraction "$ESP_MOUNT"; then
         die "ISO extraction verification failed on remote host — cannot retry (remote ISO deleted)"
     fi
 }
@@ -114,34 +116,33 @@ _phase_copy_pkgs() {
     local pkgs_copied=0
 
     if ! remote_mac_dir_exists "$ESP_MOUNT/macpro-pkgs" || \
-       ! remote_mac_exec ls "$ESP_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
-        echo "[....] Copying driver packages to ESP on remote host..." >&2
+       ! remote_mac_exec "ls $ESP_MOUNT/macpro-pkgs/*.deb >/dev/null 2>&1"; then
+        printf '\r%b  %b▸%b Copying driver packages to ESP...     \r' "$CLR" "$CYAN" "$NC" >&2
         remote_mac_sudo mkdir -p "$ESP_MOUNT/macpro-pkgs"
-        remote_mac_cp_dir "$SCRIPT_DIR/packages/" "$ESP_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
+        remote_mac_cp_contents "$SCRIPT_DIR/packages/" "$ESP_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
         if [ "$pkgs_copied" -eq 1 ]; then
-            echo "[ OK ] Driver packages copied" >&2
+            printf '\r%b  %b✓%b Driver packages copied                 \n' "$CLR" "$GREEN" "$NC" >&2
         fi
     fi
 
     if [ -d "$SCRIPT_DIR/packages/dkms-patches" ]; then
         local DKMS_DST="$ESP_MOUNT/macpro-pkgs/dkms-patches"
         if ! remote_mac_dir_exists "$DKMS_DST"; then
-            echo "[....] Copying DKMS patches to remote host..." >&2
+            printf '\r%b  %b▸%b Copying DKMS patches to ESP...        \r' "$CLR" "$CYAN" "$NC" >&2
             remote_mac_sudo mkdir -p "$DKMS_DST"
             remote_mac_cp_dir "$SCRIPT_DIR/packages/dkms-patches/" "$DKMS_DST/" || die "Failed to copy DKMS patches — WiFi driver cannot compile without them"
-            echo "[ OK ] DKMS patches copied" >&2
+            printf '\r%b  %b✓%b DKMS patches copied                    \n' "$CLR" "$GREEN" "$NC" >&2
         fi
     fi
 
-    if [ "$pkgs_copied" -eq 1 ]; then
-        if ! remote_mac_exec ls "$ESP_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
-            error "Package verification failed: no .deb files found on remote host after copy"
-            return 1
-        fi
+    if ! remote_mac_exec "ls $ESP_MOUNT/macpro-pkgs/*.deb >/dev/null 2>&1"; then
+        error "Package verification failed: no .deb files found on remote host after copy"
+        return 1
     fi
 }
 
 _phase_generate_config() {
+    printf '\r%b  %b▸%b Generating autoinstall configuration...\r' "$CLR" "$CYAN" "$NC" >&2
     local ESP_MOUNT="/Volumes/${ESP_NAME:-CIDATA}"
     if [ -n "${1:-}" ]; then
         ESP_MOUNT="$1"
@@ -151,14 +152,22 @@ _phase_generate_config() {
     [ "${STORAGE_LAYOUT:-1}" = "2" ] && STORAGE_TYPE_ARG="fulldisk"
     [ "${NETWORK_TYPE:-1}" = "2" ] && NETWORK_TYPE_ARG="ethernet"
 
-    local _local_staging="${OUTPUT_DIR:-~/.Ubuntu_Deployment}/staging"
+    local _local_staging="${OUTPUT_DIR:-~/.Ubuntify}/staging"
     mkdir -p "$_local_staging/cidata"
     generate_autoinstall "$_local_staging/autoinstall.yaml" "$STORAGE_TYPE_ARG" "$NETWORK_TYPE_ARG"
     if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
-        generate_dualboot_storage "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data" "$INTERNAL_DISK"
+        local _skip_part=""
+        if [ -n "${_ESP_DEVICE:-}" ]; then
+            _skip_part="${_ESP_DEVICE##*s}"
+        fi
+        generate_dualboot_storage "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data" "$INTERNAL_DISK" "$_skip_part"
     else
         cp "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data"
     fi
+    # Prepend #cloud-config header for NoCloud datasource (required by cloud-init)
+    local _tmp_user_data="$_local_staging/cidata/user-data.tmp"
+    { echo "#cloud-config"; cat "$_local_staging/cidata/user-data"; } > "$_tmp_user_data"
+    mv -f "$_tmp_user_data" "$_local_staging/cidata/user-data"
     echo "instance-id: macpro-linux-i1" > "$_local_staging/cidata/meta-data"
     touch "$_local_staging/cidata/vendor-data"
     write_grub_config "$_local_staging"
@@ -171,19 +180,29 @@ _phase_generate_config() {
         return 1
     fi
     log "Transferring autoinstall config to remote ESP..."
-    remote_mac_cp "$_local_staging/autoinstall.yaml" "$ESP_MOUNT/autoinstall.yaml"
+    # NoCloud datasource requires user-data/meta-data at ROOT of CIDATA-labeled volume,
+    # NOT in a /cidata/ subdirectory. Cloud-init scans root of labeled filesystem only.
+    # Also copy /autoinstall.yaml to ESP root as Subiquity fallback (precedence: #4 after NoCloud #3)
     remote_mac_sudo mkdir -p "$ESP_MOUNT/cidata"
     remote_mac_cp "$_local_staging/cidata/user-data" "$ESP_MOUNT/cidata/user-data"
     remote_mac_cp "$_local_staging/cidata/meta-data" "$ESP_MOUNT/cidata/meta-data"
     remote_mac_cp "$_local_staging/cidata/vendor-data" "$ESP_MOUNT/cidata/vendor-data"
+    # Copy NoCloud files to ESP root (cloud-init requires them here for labeled-volume detection)
+    remote_mac_cp "$_local_staging/cidata/user-data" "$ESP_MOUNT/user-data"
+    remote_mac_cp "$_local_staging/cidata/meta-data" "$ESP_MOUNT/meta-data"
+    remote_mac_cp "$_local_staging/cidata/vendor-data" "$ESP_MOUNT/vendor-data"
+    # Copy autoinstall.yaml to ESP root for Subiquity fallback (no #cloud-config header needed)
+    remote_mac_cp "$_local_staging/autoinstall.yaml" "$ESP_MOUNT/autoinstall.yaml"
     if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
-        if ! remote_mac_exec grep -q 'preserve: true' "$ESP_MOUNT/cidata/user-data" 2>/dev/null; then
-            die "Generated user-data lacks preserve:true entries — macOS partitions would be wiped"
+        if ! remote_mac_exec grep -q 'preserved-partition' "$ESP_MOUNT/user-data" 2>/dev/null; then
+            die "Generated user-data lacks preserved partition entries — macOS partitions would be wiped"
         fi
     fi
+    printf '\r%b  %b✓%b Configuration generated                \n' "$CLR" "$GREEN" "$NC" >&2
 }
 
 _phase_verify_bless() {
+    printf '\r%b  %b▸%b Verifying ESP contents and boot...    \r' "$CLR" "$CYAN" "$NC" >&2
     local ESP_MOUNT="/Volumes/${ESP_NAME:-CIDATA}"
     if [ -n "${1:-}" ]; then
         ESP_MOUNT="$1"
@@ -211,6 +230,7 @@ _phase_verify_bless() {
         fi
     fi
 
+    printf '\r%b  %b✓%b Boot verification complete             \n' "$CLR" "$GREEN" "$NC" >&2
     return 0
 }
 
@@ -235,7 +255,11 @@ preflight_checks() {
     fi
 
     if type verify_headless_readiness >/dev/null 2>&1; then
-        verify_headless_readiness || warn "Headless readiness issues detected on target — deployment may require manual intervention"
+        local vhr_host=""
+        if [ "${DEPLOY_MODE:-}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+            vhr_host="$TARGET_HOST"
+        fi
+        verify_headless_readiness "$vhr_host" || warn "Headless readiness issues detected on target — deployment may require manual intervention"
     fi
 }
 
@@ -270,7 +294,7 @@ deploy_internal_partition() {
     local phased_result=$?
 
     if [ $phased_result -eq 0 ]; then
-        journal_destroy
+        _DEPLOY_COMPLETED=1
         log "Deployment complete!"
         log "Boot selection: Hold Option key at startup, select CIDATA"
         show_success_instructions
@@ -304,7 +328,7 @@ deploy_usb() {
     local phased_result=$?
 
     if [ $phased_result -eq 0 ]; then
-        journal_destroy
+        _DEPLOY_COMPLETED=1
         log "USB deployment complete!"
         show_usb_instructions
     fi
@@ -396,7 +420,7 @@ deploy_vm_test() {
     local phased_result=$?
 
     if [ $phased_result -eq 0 ]; then
-        journal_destroy
+        _DEPLOY_COMPLETED=1
         echo ""
         log "VM test environment ready!"
         echo ""
@@ -473,7 +497,7 @@ deploy_manual() {
     sleep 2
 
     dry_run_exec "Write ISO to USB with dd" \
-        remote_mac_sudo dd if="$ISO_PATH" of="$TARGET_DEVICE" bs=1m || die "Failed to write ISO to USB"
+        remote_mac_sudo --timeout 900 dd if="$ISO_PATH" of="$TARGET_DEVICE" bs=1m || die "Failed to write ISO to USB"
 
     remote_mac_exec sync
     log "ISO written successfully"
@@ -512,7 +536,9 @@ _phase_partition_usb() {
     local USB_PARTITION
     USB_PARTITION=$(remote_mac_exec diskutil list "$TARGET_DEVICE" | grep "CIDATA" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
     [ -n "$USB_PARTITION" ] || die "Cannot identify USB partition"
-    remote_mac_retry_diskutil mount "/dev/$USB_PARTITION" 2>/dev/null || true
+    remote_mac_exec mkdir -p /Volumes/CIDATA 2>/dev/null || true
+    remote_mac_sudo mount_msdos "/dev/$USB_PARTITION" /Volumes/CIDATA 2>/dev/null || \
+        remote_mac_retry_diskutil mount "/dev/$USB_PARTITION" 2>/dev/null || true
     local USB_MOUNT="/Volumes/CIDATA"
     remote_mac_dir_exists "$USB_MOUNT" || die "USB not mounted after format"
     log "USB mounted at: $USB_MOUNT"
@@ -534,14 +560,14 @@ _phase_extract_iso_usb() {
     fi
     log_info "ISO transferred. Extracting on remote host..."
     echo "[....] Extracting ISO contents on $host..." >&2
-    if ! remote_mac_sudo retry_xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$USB_MOUNT" 2>/dev/null; then
+    if ! remote_mac_sudo --timeout 600 xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$USB_MOUNT" 2>/dev/null; then
         echo "[FAIL] Remote ISO extraction failed" >&2
         remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
         die "Failed to extract ISO contents on remote host"
     fi
     remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
     echo "[ OK ] Remote ISO extraction complete" >&2
-    if ! remote_mac_exec verify_iso_extraction "$USB_MOUNT" 2>/dev/null; then
+    if ! verify_iso_extraction "$USB_MOUNT"; then
         die "ISO extraction verification failed on remote host — cannot retry (remote ISO deleted)"
     fi
 }
@@ -554,10 +580,10 @@ _phase_copy_pkgs_usb() {
     local pkgs_copied=0
 
     if ! remote_mac_dir_exists "$USB_MOUNT/macpro-pkgs" || \
-       ! remote_mac_exec ls "$USB_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
+       ! remote_mac_exec "ls $USB_MOUNT/macpro-pkgs/*.deb >/dev/null 2>&1"; then
         echo "[....] Copying driver packages to USB on remote host..." >&2
         remote_mac_sudo mkdir -p "$USB_MOUNT/macpro-pkgs"
-        remote_mac_cp_dir "$SCRIPT_DIR/packages/" "$USB_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
+        remote_mac_cp_contents "$SCRIPT_DIR/packages/" "$USB_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
         if [ "$pkgs_copied" -eq 1 ]; then
             echo "[ OK ] Driver packages copied" >&2
         fi
@@ -572,7 +598,7 @@ _phase_copy_pkgs_usb() {
         fi
     fi
     if [ "$pkgs_copied" -eq 1 ]; then
-        if ! remote_mac_exec ls "$USB_MOUNT/macpro-pkgs/"*.deb 1>/dev/null 2>&1; then
+        if ! remote_mac_exec "ls $USB_MOUNT/macpro-pkgs/*.deb >/dev/null 2>&1"; then
             error "Package verification failed: no .deb files found on remote host after copy"
             return 1
         fi
@@ -589,14 +615,23 @@ _phase_generate_config_usb() {
     [ "${STORAGE_LAYOUT:-1}" = "2" ] && STORAGE_TYPE_ARG="fulldisk"
     [ "${NETWORK_TYPE:-1}" = "2" ] && NETWORK_TYPE_ARG="ethernet"
 
-    local _local_staging="${OUTPUT_DIR:-~/.Ubuntu_Deployment}/staging"
+    local _local_staging="${OUTPUT_DIR:-~/.Ubuntify}/staging"
     mkdir -p "$_local_staging/cidata"
     generate_autoinstall "$_local_staging/autoinstall.yaml" "$STORAGE_TYPE_ARG" "$NETWORK_TYPE_ARG"
     if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
-        generate_dualboot_storage "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data" "$INTERNAL_DISK"
+        local _skip_part=""
+        if [ -n "${_ESP_DEVICE:-}" ]; then
+            _skip_part="${_ESP_DEVICE##*s}"
+        fi
+        generate_dualboot_storage "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data" "$INTERNAL_DISK" "$_skip_part"
     else
         cp "$_local_staging/autoinstall.yaml" "$_local_staging/cidata/user-data"
     fi
+    # NoCloud requires #cloud-config header; Subiquity precedence: root media > NoCloud
+    # removing /autoinstall.yaml from USB forces Subiquity to use cidata/ exclusively
+    local _tmp_user_data="$_local_staging/cidata/user-data.tmp"
+    { echo "#cloud-config"; cat "$_local_staging/cidata/user-data"; } > "$_tmp_user_data"
+    mv -f "$_tmp_user_data" "$_local_staging/cidata/user-data"
     echo "instance-id: macpro-linux-i1" > "$_local_staging/cidata/meta-data"
     touch "$_local_staging/cidata/vendor-data"
     write_grub_config "$_local_staging"
@@ -609,12 +644,17 @@ _phase_generate_config_usb() {
         return 1
     fi
     log "Transferring autoinstall config to remote USB..."
-    remote_mac_cp "$_local_staging/autoinstall.yaml" "$USB_MOUNT/autoinstall.yaml"
     remote_mac_sudo mkdir -p "$USB_MOUNT/cidata"
     remote_mac_cp "$_local_staging/cidata/user-data" "$USB_MOUNT/cidata/user-data"
     remote_mac_cp "$_local_staging/cidata/meta-data" "$USB_MOUNT/cidata/meta-data"
     remote_mac_cp "$_local_staging/cidata/vendor-data" "$USB_MOUNT/cidata/vendor-data"
-    if ! remote_mac_exec verify_cidata_structure "$USB_MOUNT" 2>/dev/null; then
+    # Copy NoCloud files to USB root (cloud-init requires them here for labeled-volume detection)
+    remote_mac_cp "$_local_staging/cidata/user-data" "$USB_MOUNT/user-data"
+    remote_mac_cp "$_local_staging/cidata/meta-data" "$USB_MOUNT/meta-data"
+    remote_mac_cp "$_local_staging/cidata/vendor-data" "$USB_MOUNT/vendor-data"
+    # Subiquity fallback (no #cloud-config header needed)
+    remote_mac_cp "$_local_staging/autoinstall.yaml" "$USB_MOUNT/autoinstall.yaml"
+    if ! verify_cidata_structure "$USB_MOUNT"; then
         error "CIDATA structure verification failed on remote host"
         return 1
     fi
@@ -635,12 +675,12 @@ show_blind_boot_instructions() {
     echo " READY TO REBOOT - MANUAL BOOT REQUIRED"
     echo "========================================="
     echo ""
-    echo "Boot device NOT set automatically (SIP blocks NVRAM)."
+    echo "Boot device NOT set automatically (bless NVRAM write restricted)."
     echo "Manual keyboard selection required at boot."
     echo ""
     echo "BOOT PROCEDURE:"
     echo ""
-    echo "  1. Run: sudo shutdown -r now"
+    echo "  1. Run: sudo reboot"
     echo "  2. After startup chime, press and HOLD Option key"
     echo "  3. Release Option — Startup Manager shows disk icons"
     echo "  4. Select CIDATA (Ubuntu installer) using arrow keys"
@@ -664,7 +704,7 @@ show_success_instructions() {
     echo ""
     echo "On next reboot, Mac Pro will boot into Ubuntu installer."
     echo ""
-    echo "To start: sudo shutdown -r now"
+    echo "To start: sudo reboot"
     echo ""
     echo "POST-INSTALL:"
     echo "  After Ubuntu installs, run 'sudo boot-macos' to return to macOS"
