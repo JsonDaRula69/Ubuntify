@@ -8,7 +8,32 @@ set -o pipefail
 _REMOTE_MAC_SH_SOURCED=1
 
 # ── SSH Options ──
-_REMOTE_MAC_SSH_OPTS="-o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no"
+_REMOTE_MAC_SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o BatchMode=yes -o StrictHostKeyChecking=no"
+_REMOTE_CMD_TIMEOUT="${REMOTE_CMD_TIMEOUT:-300}"
+
+_ssh_with_timeout() {
+    local _timeout="${1:-$_REMOTE_CMD_TIMEOUT}"; shift
+    local _outf="/tmp/_ssh_out_$$_${RANDOM}"
+    local _errf="/tmp/_ssh_err_$$_${RANDOM}"
+    ssh $_REMOTE_MAC_SSH_OPTS "$@" >"$_outf" 2>"$_errf" &
+    local _pid=$!
+    local _elapsed=0
+    while [ "$_elapsed" -lt "$_timeout" ]; do
+        if ! kill -0 "$_pid" 2>/dev/null; then break; fi
+        sleep 1; _elapsed=$((_elapsed + 1))
+    done
+    local _rc=0
+    if kill -0 "$_pid" 2>/dev/null; then
+        kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null; _rc=124
+        log_debug "SSH timed out after ${_timeout}s: $*"
+    else
+        wait "$_pid" 2>/dev/null; _rc=$?
+    fi
+    cat "$_outf" 2>/dev/null; rm -f "$_outf" 2>/dev/null
+    [ -s "$_errf" ] && log_debug "ssh stderr: $(cat "$_errf")"
+    rm -f "$_errf" 2>/dev/null
+    return $_rc
+}
 
 # Non-interactive SSH doesn't include /usr/local/bin or /opt/homebrew/bin in PATH.
 # This prefix ensures brew and brew-installed tools are findable on every remote command.
@@ -23,13 +48,19 @@ _REMOTE_MAC_PATH_PREFIX='export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"'
 #   2. Single-string pipeline:   remote_mac_exec "csrutil status 2>/dev/null | grep ..."
 #      — passed verbatim to remote shell (pipe/redirect operators preserved)
 remote_mac_exec() {
+    local _timeout="$_REMOTE_CMD_TIMEOUT"
+    if [ "${1:-}" = "--timeout" ]; then
+        _timeout="$2"; shift 2
+    fi
+    local _ssh_args=()
     if [ $# -eq 1 ]; then
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "${_REMOTE_MAC_PATH_PREFIX}; $1"
+        _ssh_args=("${TARGET_HOST:-macpro}" "${_REMOTE_MAC_PATH_PREFIX}; $1")
     else
         local cmd
         cmd=$(printf '%q ' "$@")
-        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" "${_REMOTE_MAC_PATH_PREFIX}; $cmd"
+        _ssh_args=("${TARGET_HOST:-macpro}" "${_REMOTE_MAC_PATH_PREFIX}; $cmd")
     fi
+    _ssh_with_timeout "$_timeout" "${_ssh_args[@]}"
 }
 
 # ── Remote Command with sudo ──
@@ -37,26 +68,43 @@ remote_mac_exec() {
 # Uses the stored REMOTE_SUDO_PASSWORD if available, otherwise passwordless sudo.
 # Same dual-pattern as remote_mac_exec: single-string or multi-arg.
 remote_mac_sudo() {
+    local _timeout="$_REMOTE_CMD_TIMEOUT"
+    if [ "${1:-}" = "--timeout" ]; then
+        _timeout="$2"; shift 2
+    fi
+    local _raw_cmd
     if [ $# -eq 1 ]; then
-        if [ -n "${REMOTE_SUDO_PASSWORD:-}" ]; then
-            printf '%s\n' "$REMOTE_SUDO_PASSWORD" | \
-                ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
-                "${_REMOTE_MAC_PATH_PREFIX}; sudo -S -p '' $1"
-        else
-            ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
-                "${_REMOTE_MAC_PATH_PREFIX}; sudo -n $1"
-        fi
+        _raw_cmd="$1"
     else
-        local cmd
-        cmd=$(printf '%q ' "$@")
-        if [ -n "${REMOTE_SUDO_PASSWORD:-}" ]; then
-            printf '%s\n' "$REMOTE_SUDO_PASSWORD" | \
-                ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
-                "${_REMOTE_MAC_PATH_PREFIX}; sudo -S -p '' $cmd"
+        _raw_cmd=$(printf '%q ' "$@")
+    fi
+    if [ -n "${REMOTE_SUDO_PASSWORD:-}" ]; then
+        local _pwf="/tmp/_ssh_pw_$$_${RANDOM}"
+        local _outf="/tmp/_ssh_out_$$_${RANDOM}"
+        local _errf="/tmp/_ssh_err_$$_${RANDOM}"
+        printf '%s\n' "$REMOTE_SUDO_PASSWORD" > "$_pwf"
+        ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
+            "${_REMOTE_MAC_PATH_PREFIX}; sudo -S -p '' env PATH=\"\$PATH\" $_raw_cmd" \
+            <"$_pwf" >"$_outf" 2>"$_errf" &
+        local _pid=$!
+        local _elapsed=0
+        while [ "$_elapsed" -lt "$_timeout" ]; do
+            if ! kill -0 "$_pid" 2>/dev/null; then break; fi
+            sleep 1; _elapsed=$((_elapsed + 1))
+        done
+        local _rc=0
+        if kill -0 "$_pid" 2>/dev/null; then
+            kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null; _rc=124
         else
-            ssh $_REMOTE_MAC_SSH_OPTS "${TARGET_HOST:-macpro}" \
-                "${_REMOTE_MAC_PATH_PREFIX}; sudo -n $cmd"
+            wait "$_pid" 2>/dev/null; _rc=$?
         fi
+        cat "$_outf" 2>/dev/null; rm -f "$_outf" "$_pwf" 2>/dev/null
+        [ -s "$_errf" ] && log_debug "ssh stderr: $(cat "$_errf")"
+        rm -f "$_errf" 2>/dev/null
+        return $_rc
+    else
+        _ssh_with_timeout "$_timeout" "${TARGET_HOST:-macpro}" \
+            "${_REMOTE_MAC_PATH_PREFIX}; sudo -n env PATH=\"\$PATH\" $_raw_cmd"
     fi
 }
 
@@ -126,8 +174,9 @@ remote_mac_cp() {
     scp $_REMOTE_MAC_SSH_OPTS "$src" "$remote_dst"
 }
 
-# ── Directory Copy ──
-# Copies a directory tree to the target via scp -r.
+# ── Directory Copy (preserves subdirs) ──
+# scp -r creates the source dir name as a subdirectory of dst.
+# Use remote_mac_cp_contents() to copy contents without the parent dir.
 remote_mac_cp_dir() {
     local src="$1"
     local dst="$2"
@@ -139,6 +188,34 @@ remote_mac_cp_dir() {
         remote_dst="${host}:${dst}"
     fi
     scp -r $_REMOTE_MAC_SSH_OPTS "$src" "$remote_dst"
+}
+
+# ── Directory Contents Copy (flattens) ──
+# rsync src/ dst/ copies contents; scp -r src/ dst/ copies the directory itself.
+remote_mac_cp_contents() {
+    local src="$1"
+    local dst="$2"
+    local host="${TARGET_HOST:-macpro}"
+    case "$src" in
+        */) ;;
+        *) src="${src}/" ;;
+    esac
+    rsync -aze "ssh $_REMOTE_MAC_SSH_OPTS" "$src" "${host}:${dst}"
+}
+
+# ── Directory Contents Copy (flattens) ──
+# Copies the CONTENTS of a local directory to a remote directory via rsync.
+# rsync src/ dst/ copies contents; scp -r src/ dst/ copies the directory itself.
+remote_mac_cp_contents() {
+    local src="$1"
+    local dst="$2"
+    local host="${TARGET_HOST:-macpro}"
+    # Ensure trailing slash on src for rsync "contents only" semantics
+    case "$src" in
+        */) ;;
+        *) src="${src}/" ;;
+    esac
+    rsync -aze "ssh $_REMOTE_MAC_SSH_OPTS" "$src" "${host}:${dst}"
 }
 
 # ── Remote Path Prefix ──
@@ -168,7 +245,7 @@ remote_mac_preflight() {
     fi
     log_info "SSH connection to $host: OK"
 
-    local required_cmds="diskutil bless sgdisk python3"
+    local required_cmds="diskutil bless sgdisk python3 xorriso newfs_msdos mount_msdos"
 
     for cmd in $required_cmds; do
         if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; command -v $cmd >/dev/null 2>&1"; then
@@ -177,20 +254,11 @@ remote_mac_preflight() {
         fi
     done
 
-    local deploy_cmds="xorriso newfs_msdos"
-
-    for cmd in $deploy_cmds; do
-        if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; command -v $cmd >/dev/null 2>&1"; then
-            missing="${missing}${missing:+ }$cmd"
-            errors=$((errors + 1))
-        fi
-    done
-
     if [ "$errors" -gt 0 ]; then
         log_error "Missing required commands on $host: $missing"
-        log_error "Install missing prerequisites:"
-                log_error "  brew install xorriso gptfdisk"
-        log_error "  newfs_msdos and diskutil are built into macOS"
+        log_error "Install missing prerequisites via Homebrew:"
+        log_error "  brew install xorriso gptfdisk python@"
+        log_error "  newfs_msdos, mount_msdos, diskutil, bless are built into macOS"
 
         if [ "${AGENT_MODE:-0}" -eq 1 ]; then
             return 1
@@ -245,6 +313,14 @@ remote_mac_preflight() {
                         sgdisk)
                             log_info "Installing gptfdisk (sgdisk) on $host..."
                             ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; brew install gptfdisk" || die "Failed to install gptfdisk on $host"
+                            ;;
+                        python3)
+                            log_info "Installing python3 on $host..."
+                            ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; brew install python@3" || die "Failed to install python3 on $host"
+                            ;;
+                        mount_msdos|newfs_msdos|diskutil|bless)
+                            log_error "Cannot auto-install macOS built-in $cmd — macOS may need reinstallation"
+                            return 1
                             ;;
                         *)
                             log_error "Cannot auto-install $cmd"
