@@ -39,7 +39,7 @@ retry_ssh() {
             warn "SSH attempt $attempt/$max_attempts to $host"
         fi
 
-        ssh -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no "$host" "$@" 2>"$stderr_file" && exit_code=0 || exit_code=$?
+        ssh $_REMOTE_MAC_SSH_OPTS "$host" "$@" 2>"$stderr_file" && exit_code=0 || exit_code=$?
 
         if [ "$exit_code" -eq 0 ]; then
             rm -f "$stderr_file"

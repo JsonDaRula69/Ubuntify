@@ -30,19 +30,18 @@ remote__get_host() {
 remote__ssh_cmd() {
     local host
     host=$(remote__get_host "$1")
-    echo "ssh -o ConnectTimeout=10 -o BatchMode=yes $host"
+    echo "ssh $_REMOTE_MAC_SSH_OPTS $host"
 }
 
 remote__exec() {
     local host="${1:-macpro-linux}"
     shift
     local cmd="$*"
-    local ssh_cmd="ssh -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no $host"
 
     if command -v retry_ssh >/dev/null 2>&1; then
         retry_ssh "$host" "$cmd"
     else
-        $ssh_cmd "$cmd"
+        ssh $_REMOTE_MAC_SSH_OPTS "$host" "$cmd"
     fi
 }
 
@@ -52,7 +51,7 @@ remote_test_connection() {
     local host
     host=$(remote__get_host "${1:-}")
 
-    if ssh -o ConnectTimeout=10 -o BatchMode=yes "$host" 'echo ok' >/dev/null 2>&1; then
+    if ssh $_REMOTE_MAC_SSH_OPTS "$host" 'echo ok' >/dev/null 2>&1; then
         log "SSH connection to $host: OK"
         return 0
     else

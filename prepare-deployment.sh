@@ -1011,6 +1011,14 @@ handle_existing_config() {
                 ;;
             delete)
                 rm -f "$CONF_FILE"
+                if [ "$(uname)" = "Darwin" ]; then
+                    local _kc_user="${SUDO_USER:-$USER}"
+                    if [ "$(id -u)" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+                        sudo -u "$_kc_user" security delete-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" 2>/dev/null || true
+                    else
+                        security delete-generic-password -a "macpro-deploy" -s "macpro-deploy-conf" 2>/dev/null || true
+                    fi
+                fi
                 log_info "Config deleted, exiting"
                 exit 0
                 ;;

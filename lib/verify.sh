@@ -590,7 +590,7 @@ verify_headless_readiness() {
             local _outf="/tmp/vhr_out_$$_${RANDOM}"
             local _errf="/tmp/vhr_err_$$_${RANDOM}"
             local _rc=0
-            ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o BatchMode=yes "$host" "$@" >"$_outf" 2>"$_errf" &
+            ssh $_REMOTE_MAC_SSH_OPTS "$host" "$@" >"$_outf" 2>"$_errf" &
             local _pid=$!
             local _elapsed=0
             while [ "$_elapsed" -lt 30 ]; do
@@ -612,7 +612,7 @@ verify_headless_readiness() {
             return $_rc
         }
         log "Verifying headless readiness on $host..."
-        if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$host" 'echo ok' >/dev/null 2>&1; then
+        if ! remote_mac_test; then
             error "verify_headless_readiness: SSH connection to $host failed"
             return 1
         fi

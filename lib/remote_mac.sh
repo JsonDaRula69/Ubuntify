@@ -8,7 +8,28 @@ set -o pipefail
 _REMOTE_MAC_SH_SOURCED=1
 
 # ── SSH Options ──
+# When running under sudo, HOME points to /var/root which has no .ssh/config or keys.
+# Detect the real user's home directory and inject their SSH config and known_hosts.
+_REMOTE_MAC_SSH_USER_HOME="${HOME}"
+if [ -n "${SUDO_USER:-}" ]; then
+    _REAL_HOME="$(eval echo "~${SUDO_USER}")"
+    [ -d "$_REAL_HOME" ] && _REMOTE_MAC_SSH_USER_HOME="$_REAL_HOME"
+fi
 _REMOTE_MAC_SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o BatchMode=yes -o StrictHostKeyChecking=no"
+_REMOTE_MAC_SSH_CONFIG="${_REMOTE_MAC_SSH_USER_HOME}/.ssh/config"
+if [ -f "$_REMOTE_MAC_SSH_CONFIG" ]; then
+    _REMOTE_MAC_SSH_OPTS="$_REMOTE_MAC_SSH_OPTS -F $_REMOTE_MAC_SSH_CONFIG"
+fi
+_REMOTE_MAC_SSH_KNOWN_HOSTS="${_REMOTE_MAC_SSH_USER_HOME}/.ssh/known_hosts"
+if [ -f "$_REMOTE_MAC_SSH_KNOWN_HOSTS" ]; then
+    _REMOTE_MAC_SSH_OPTS="$_REMOTE_MAC_SSH_OPTS -o UserKnownHostsFile=$_REMOTE_MAC_SSH_KNOWN_HOSTS"
+fi
+for _key in "$_REMOTE_MAC_SSH_USER_HOME"/.ssh/id_rsa "$_REMOTE_MAC_SSH_USER_HOME"/.ssh/id_ed25519 "$_REMOTE_MAC_SSH_USER_HOME"/.ssh/id_ecdsa "$_REMOTE_MAC_SSH_USER_HOME"/.ssh/id_ecdsa_sk "$_REMOTE_MAC_SSH_USER_HOME"/.ssh/id_ed25519_sk; do
+    if [ -f "$_key" ]; then
+        _REMOTE_MAC_SSH_OPTS="$_REMOTE_MAC_SSH_OPTS -i $_key"
+        break
+    fi
+done
 _REMOTE_CMD_TIMEOUT="${REMOTE_CMD_TIMEOUT:-300}"
 
 _ssh_with_timeout() {
@@ -233,6 +254,8 @@ remote_mac_preflight() {
     log_info "SSH connection to $host: OK"
 
     local required_cmds="diskutil bless sgdisk python3 xorriso newfs_msdos mount_msdos"
+    # debugfs is installed by e2fsprogs but not linked to PATH by default on macOS
+    local required_cmds_with_path="/usr/local/opt/e2fsprogs/sbin/debugfs /opt/homebrew/opt/e2fsprogs/sbin/debugfs"
 
     for cmd in $required_cmds; do
         if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; command -v $cmd >/dev/null 2>&1"; then
@@ -241,10 +264,16 @@ remote_mac_preflight() {
         fi
     done
 
+    for debugfs_path in $required_cmds_with_path; do
+        if ssh $_REMOTE_MAC_SSH_OPTS "$host" "test -x '$debugfs_path'" 2>/dev/null; then
+            break
+        fi
+    done || { missing="${missing}${missing:+ }debugfs"; errors=$((errors + 1)); }
+
     if [ "$errors" -gt 0 ]; then
         log_error "Missing required commands on $host: $missing"
         log_error "Install missing prerequisites via Homebrew:"
-        log_error "  brew install xorriso gptfdisk python@"
+        log_error "  brew install xorriso gptfdisk python@3 e2fsprogs"
         log_error "  newfs_msdos, mount_msdos, diskutil, bless are built into macOS"
 
         if [ "${AGENT_MODE:-0}" -eq 1 ]; then
@@ -304,6 +333,10 @@ remote_mac_preflight() {
                         python3)
                             log_info "Installing python3 on $host..."
                             ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; brew install python@3" || die "Failed to install python3 on $host"
+                            ;;
+                        debugfs)
+                            log_info "Installing e2fsprogs (debugfs) on $host..."
+                            ssh $_REMOTE_MAC_SSH_OPTS "$host" "${_REMOTE_MAC_PATH_PREFIX}; brew install e2fsprogs" || die "Failed to install e2fsprogs on $host"
                             ;;
                         mount_msdos|newfs_msdos|diskutil|bless)
                             log_error "Cannot auto-install macOS built-in $cmd — macOS may need reinstallation"

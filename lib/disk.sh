@@ -52,7 +52,8 @@ check_recovery_health() {
             log "Recovery BaseSystem.dmg present — Recovery appears healthy"
             RECOVERY_MOUNT_OK=1
         else
-            warn "Recovery volume mounted but BaseSystem.dmg is MISSING"
+            log "Recovery volume mounted — BaseSystem.dmg absent (normal for macOS 12+ thin recovery)"
+            RECOVERY_MOUNT_OK=1
         fi
         remote_mac_sudo diskutil unmount "$RECOVERY_VOLUME" 2>/dev/null || true
     else
@@ -118,30 +119,34 @@ analyze_disk_layout() {
     fi
     # Remove leftover Linux partitions from previous failed installs
     # These occupy sector space that curtin needs for new partitions,
-    # causing "Could not create partition N" sgdisk errors on overlap
-    local _linux_parts
+    # causing "Could not create partition N" sgdisk errors on overlap.
+    # IMPORTANT: diskutil eraseVolume hides partitions from macOS but may
+    # leave stale GPT entries that the Linux kernel finds at boot time.
+    # MUST use gpt remove to actually scrub the GPT entry.
+    local _gpt_linux_indices
     if [ -n "${TARGET_HOST:-}" ]; then
-        _linux_parts=$(remote_mac_exec "diskutil list $_internal_disk_val 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
+        _gpt_linux_indices=$(remote_mac_sudo "gpt -r show $_internal_disk_val 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print \$3}'" || true)
     else
-        _linux_parts=$(diskutil list "$_internal_disk_val" 2>/dev/null | grep 'Linux Filesystem' || true)
+        _gpt_linux_indices=$(sudo gpt -r show "$_internal_disk_val" 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print $3}' || true)
     fi
-    if [ -n "$_linux_parts" ]; then
-        printf '\r%b  %b▸%b Removing leftover Linux partitions    \r' "$CLR" "$CYAN" "$NC" >&2
-        log_info "Found leftover Linux partitions from previous install — removing"
-        echo "$_linux_parts" | while IFS= read -r _line; do
-            _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
-            if [ -n "$_linux_dev" ]; then
-                if [ -n "${TARGET_HOST:-}" ]; then
-                    dry_run_exec "Remove Linux partition /dev/${_linux_dev}" \
-                        remote_mac_exec "sudo -n diskutil eraseVolume free none /dev/${_linux_dev}" 2>/dev/null || true
-                else
-                    dry_run_exec "Remove Linux partition /dev/${_linux_dev}" \
-                        diskutil eraseVolume free none "/dev/${_linux_dev}" 2>/dev/null || true
-                fi
-                log_info "Removed leftover Linux partition /dev/${_linux_dev}"
+    if [ -n "$_gpt_linux_indices" ]; then
+        printf '\r%b  %b▸%b Removing leftover Linux GPT entries    \r' "$CLR" "$CYAN" "$NC" >&2
+        log_info "Found leftover Linux GPT entries from previous install — removing"
+        for _idx in $_gpt_linux_indices; do
+            if ! [[ "$_idx" =~ ^[0-9]+$ ]] || [ "$_idx" -le 2 ]; then
+                warn "Skipping invalid GPT index $_idx — must be numeric and > 2 (preserves EFI+APFS)"
+                continue
             fi
+            if [ -n "${TARGET_HOST:-}" ]; then
+                dry_run_exec "Remove Linux GPT entry index $_idx" \
+                    remote_mac_sudo "gpt remove -i $_idx $_internal_disk_val" 2>/dev/null || true
+            else
+                dry_run_exec "Remove Linux GPT entry index $_idx" \
+                    sudo gpt remove -i "$_idx" "$_internal_disk_val" 2>/dev/null || true
+            fi
+            log_info "Removed leftover GPT entry index $_idx from $_internal_disk_val"
         done
-        printf '\r%b  %b✓%b Leftover Linux partitions removed        \n' "$CLR" "$GREEN" "$NC" >&2
+        printf '\r%b  %b✓%b Leftover Linux GPT entries removed       \n' "$CLR" "$GREEN" "$NC" >&2
     fi
 
     printf '\r%b  %b✓%b Disk layout analyzed                   \n' "$CLR" "$GREEN" "$NC" >&2

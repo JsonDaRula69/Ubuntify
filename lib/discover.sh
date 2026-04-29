@@ -125,6 +125,27 @@ resolve_hostname() {
         candidates="$input"$'\n'"${input}.local"$'\n'"${input}.lan"
     fi
 
+    local _resolve_ssh_opts="-o ConnectTimeout=$timeout -o BatchMode=yes -o StrictHostKeyChecking=no"
+    local _resolve_real_home="${HOME}"
+    if [ -n "${SUDO_USER:-}" ]; then
+        local _rh="$(eval echo "~${SUDO_USER}")"
+        [ -d "$_rh" ] && _resolve_real_home="$_rh"
+    fi
+    if [ -f "${_resolve_real_home}/.ssh/config" ]; then
+        _resolve_ssh_opts="$_resolve_ssh_opts -F ${_resolve_real_home}/.ssh/config"
+    fi
+    if [ -f "${_resolve_real_home}/.ssh/known_hosts" ]; then
+        _resolve_ssh_opts="$_resolve_ssh_opts -o UserKnownHostsFile=${_resolve_real_home}/.ssh/known_hosts"
+    fi
+    local _resolve_key=""
+    for _rk in "${_resolve_real_home}"/.ssh/id_rsa "${_resolve_real_home}"/.ssh/id_ed25519 "${_resolve_real_home}"/.ssh/id_ecdsa; do
+        if [ -f "$_rk" ]; then
+            _resolve_key="$_rk"
+            break
+        fi
+    done
+    [ -n "$_resolve_key" ] && _resolve_ssh_opts="$_resolve_ssh_opts -i $_resolve_key"
+
     local candidate
     local tried=""
     while IFS= read -r candidate; do
@@ -132,9 +153,7 @@ resolve_hostname() {
         tried="${tried:+$tried, }$candidate"
 
         log_info "Trying SSH connectivity to: $candidate"
-        if ssh -o ConnectTimeout="$timeout" -o BatchMode=yes \
-             -o StrictHostKeyChecking=no \
-             "$candidate" "echo ok" >/dev/null 2>&1; then
+        if ssh $_resolve_ssh_opts "$candidate" "echo ok" >/dev/null 2>&1; then
             log_info "SSH connectivity confirmed: $candidate"
             echo "$candidate"
             return 0

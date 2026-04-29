@@ -77,7 +77,6 @@ generate_autoinstall() {
       flag: boot
       partition_type: c12a7328-f81f-11d2-ba4b-00a0c93ec93b
       grub_device: true
-      number: 1
     - type: format
       id: efi-format
       volume: efi-partition
@@ -90,7 +89,6 @@ generate_autoinstall() {
       id: boot-partition
       device: root-disk
       size: 1G
-      number: 2
     - type: format
       id: boot-format
       volume: boot-partition
@@ -103,7 +101,6 @@ generate_autoinstall() {
       id: root-partition
       device: root-disk
       size: -1
-      number: 3
     - type: format
       id: root-format
       volume: root-partition
@@ -424,7 +421,11 @@ if not has_apfs_container:
     print("the installer will DESTROY all macOS data including Recovery. Aborting.", file=sys.stderr)
     sys.exit(1)
 
-next_num = max_part_num + 1
+# New partitions have no explicit 'number' field — curtin auto-assigns
+# partition numbers based on ordering in the config list. This avoids
+# collisions with leftover partitions from failed installs (e.g. a
+# previous curtin run that created sda4 but didn't complete).
+# See: curtin block_meta.py determine_partition_number()
 
 # Build the new storage section
 new_storage = f"""  storage:
@@ -441,7 +442,6 @@ new_storage = f"""  storage:
       flag: boot
       partition_type: c12a7328-f81f-11d2-ba4b-00a0c93ec93b
       grub_device: true
-      number: {next_num}
     - type: format
       id: efi-format
       volume: efi-partition
@@ -454,7 +454,6 @@ new_storage = f"""  storage:
       id: boot-partition
       device: root-disk
       size: 1G
-      number: {next_num + 1}
     - type: format
       id: boot-format
       volume: boot-partition
@@ -467,7 +466,6 @@ new_storage = f"""  storage:
       id: root-partition
       device: root-disk
       size: -1
-      number: {next_num + 2}
     - type: format
       id: root-format
       volume: root-partition

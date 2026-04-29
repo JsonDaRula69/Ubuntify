@@ -78,17 +78,20 @@ revert_changes() {
         fi
 
         # Remove leftover Linux partitions created by Subiquity/curtin
-        local _linux_parts
-        _linux_parts=$(remote_mac_exec "diskutil list $INTERNAL_DISK 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
-        if [ -n "$_linux_parts" ]; then
-            log "Found leftover Linux partitions — removing..."
-            echo "$_linux_parts" | while IFS= read -r _line; do
-                _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
-                if [ -n "$_linux_dev" ]; then
-                    dry_run_exec "Remove Linux partition /dev/${_linux_dev}" \
-                        remote_mac_sudo diskutil eraseVolume free none "/dev/${_linux_dev}" 2>/dev/null || true
-                    log "Removed Linux partition /dev/${_linux_dev}"
+        # diskutil eraseVolume hides from macOS but leaves stale GPT entries;
+        # the Linux kernel finds them at boot — use gpt remove to scrub.
+        local _gpt_linux_indices
+        _gpt_linux_indices=$(remote_mac_sudo "gpt -r show $INTERNAL_DISK 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print \$3}'" || true)
+        if [ -n "$_gpt_linux_indices" ]; then
+            log "Found leftover Linux GPT entries — removing..."
+            for _idx in $_gpt_linux_indices; do
+                if ! [[ "$_idx" =~ ^[0-9]+$ ]] || [ "$_idx" -le 2 ]; then
+                    warn "Skipping invalid GPT index $_idx — must be numeric and > 2"
+                    continue
                 fi
+                dry_run_exec "Remove Linux GPT entry index $_idx" \
+                    remote_mac_sudo "gpt remove -i $_idx $INTERNAL_DISK" 2>/dev/null || true
+                log "Removed GPT entry index $_idx from $INTERNAL_DISK"
             done
         fi
 
