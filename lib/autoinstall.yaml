@@ -396,6 +396,7 @@ __SSH_KEYS__
   # - macOS APFS (sda2): preserved
   # - CIDATA ESP (sda3): preserved during install, removed after
   # - Root partition (sda4): pre-created from macOS, wipe: superblock
+  # - Apple Boot / Recovery (sda5): macOS recovery partition, must be preserved
   # No separate /boot or EFI partition — GRUB installs to Apple ESP.
   # Generated dynamically by generate_dualboot_storage() in lib/autoinstall.sh.
   storage:
@@ -434,6 +435,13 @@ __SSH_KEYS__
         number: 4
         size: __ROOT_SIZE_BYTES__
         wipe: superblock
+      - type: partition
+        id: recovery
+        device: root-disk
+        number: 5
+        size: 134217728
+        preserve: true
+        partition_type: 426f6f74-0000-11aa-aa11-00306543ecac
       - type: format
         id: efi-format
         volume: efi

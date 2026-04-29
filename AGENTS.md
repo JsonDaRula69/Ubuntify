@@ -210,8 +210,8 @@ The dual-boot storage config uses a simplified approach: no separate 512M EFI or
 |---|---------|------|------|
 | sda1 | Apple ESP (shared by both OSes) | EFI System | `c12a7328-f81f-11d2-ba4b-00a0c93ec93b` |
 | sda2 | APFS container (macOS) | Apple APFS | `7c3457ef-0000-11aa-aa11-00306543ecac` |
-| sda3 | Apple Boot / Recovery HD | Apple Boot | `426f6f74-0000-11aa-aa11-00306543ecac` |
-| CIDATA | CIDATA ESP (5GB, created by `create_esp_partition`) | EFI System | `c12a7328-f81f-11d2-ba4b-00a0c93ec93b` |
+| sda3 | CIDATA ESP (5GB, created by `create_esp_partition`) | EFI System | `c12a7328-f81f-11d2-ba4b-00a0c93ec93b` |
+| sda5 | Apple Boot / Recovery HD | Apple Boot | `426f6f74-0000-11aa-aa11-00306543ecac` |
 
 ### New Root Partition (single new entry)
 
@@ -230,7 +230,7 @@ No separate `/boot` partition. `/boot` lives on the root partition. `GRUB` uses 
 
 The `generate_dualboot_storage()` function:
 - Reads GPT after APFS shrink + root partition creation
-- Generates `preserve: true` entries for all 4 existing partitions
+- Generates `preserve: true` entries for all 5 existing partitions (ESP + APFS + CIDATA + Recovery)
 - Appends the single root partition entry with exact byte size
 - Uses `storage: version: 2` (required for editing existing partition tables — Subiquity bug #2018589)
 - Uses `refresh-installer: { update: false }` (snap refresh loses NoCloud datasource — LP #2132014; Apple EFI fix already in 24.04 ISO)
@@ -737,7 +737,7 @@ The erase operation (managed via the TUI Storage menu) performs these steps:
 | Mounted at `/boot/efi` | EFI System Partition | **DO NOT DELETE** — shared by both OSes |
 | FSTYPE contains `apfs` | macOS | Target for deletion |
 | TYPE GUID `7C3457EF-...` | Apple APFS container | Target for deletion |
-| TYPE GUID `426F6F74-...` | Apple Boot/Recovery | Target for deletion |
+| TYPE GUID `426F6F74-...` | Apple Boot/Recovery | Only delete during macOS erasure (explicit user action) |
 | LABEL contains `Macintosh` or `Recovery` | macOS | Target for deletion |
 | Swap partition (FSTYPE=`swap`) | Ubuntu | **DO NOT DELETE** |
 

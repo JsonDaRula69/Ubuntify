@@ -387,6 +387,12 @@ content = content.replace('__ROOT_SIZE_BYTES__', str(root_size))
 content = content.replace('size: 209715200', f'size: {sizes[1]}')
 content = content.replace('size: 49999998976', f'size: {sizes[2]}')
 content = content.replace('size: 4999999488', f'size: {sizes[3]}')
+if 5 in sizes:
+    content = content.replace('size: 134217728', f'size: {sizes[5]}')
+else:
+    # No partition 5 (Recovery) found — remove the recovery partition entry
+    import re
+    content = re.sub(r'\n      - type: partition\n        id: recovery\n        device: root-disk\n        number: 5\n        size: 134217728\n        preserve: true\n        partition_type: 426f6f74-0000-11aa-aa11-00306543ecac', '', content)
 
 # Log what we're preserving
 for p_num in sorted(sizes.keys()):
@@ -399,6 +405,6 @@ print(f"  Root partition (4): {root_size} bytes, wipe: superblock", file=sys.std
 with open(output_path, 'w') as f:
     f.write(content)
 
-print(f"  Preserving {len([p for p in sizes if p != 4])} existing partitions (ESP + APFS + CIDATA) + 1 root (wipe)")
+print(f"  Preserving {len([p for p in sizes if p != 4])} existing partitions (ESP + APFS + CIDATA + Recovery) + 1 root (wipe)")
 PYEOF
 }
