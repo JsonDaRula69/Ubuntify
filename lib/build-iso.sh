@@ -127,25 +127,30 @@ if [ "$VM_MODE" -eq 1 ]; then
         -e "/authorized-keys:/,/^[^ ]/ s|authorized-keys:.*|authorized-keys: []|" \
         -e "/^[[:space:]]*__SSH_KEYS__[[:space:]]*$/d" \
         -e "s|__SSH_KEYS_LIST__||g" \
-         "$STAGING/iso_root/autoinstall.yaml" || iso_die "Failed to substitute VM placeholders"
-    rm -f "$STAGING/iso_root/autoinstall.yaml.bak"
-    cp "$STAGING/iso_root/autoinstall.yaml" "$STAGING/iso_root/cidata/user-data"
-    echo "instance-id: vmtest-i1" > "$STAGING/iso_root/cidata/meta-data"
-    cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || iso_die "Failed to copy .deb packages"
-    mkdir -p "$STAGING/iso_root/macpro-pkgs/dkms-patches"
-    cp "${PKGS_DIR}/dkms-patches/"*.patch "$STAGING/iso_root/macpro-pkgs/dkms-patches/" 2>/dev/null || true
-    cp "${PKGS_DIR}/dkms-patches/series" "$STAGING/iso_root/macpro-pkgs/dkms-patches/" 2>/dev/null || true
+          "$STAGING/iso_root/autoinstall.yaml" || iso_die "Failed to substitute VM placeholders"
+     rm -f "$STAGING/iso_root/autoinstall.yaml.bak"
+     { echo "#cloud-config"; cat "$STAGING/iso_root/autoinstall.yaml"; } > "$STAGING/iso_root/cidata/user-data"
+      echo "instance-id: vmtest-i1" > "$STAGING/iso_root/cidata/meta-data"
+      cp "$STAGING/iso_root/cidata/user-data" "$STAGING/iso_root/user-data"
+      cp "$STAGING/iso_root/cidata/meta-data" "$STAGING/iso_root/meta-data"
+     cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || iso_die "Failed to copy .deb packages"
+     mkdir -p "$STAGING/iso_root/macpro-pkgs/dkms-patches"
+     cp "${PKGS_DIR}/dkms-patches/"*.patch "$STAGING/iso_root/macpro-pkgs/dkms-patches/" 2>/dev/null || true
+     cp "${PKGS_DIR}/dkms-patches/series" "$STAGING/iso_root/macpro-pkgs/dkms-patches/" 2>/dev/null || true
 else
-    cp "$AUTOINSTALL" "$STAGING/iso_root/autoinstall.yaml" || \
-    iso_die "autoinstall.yaml not found: $AUTOINSTALL"
-    cp "$AUTOINSTALL" "$STAGING/iso_root/cidata/user-data"
-    echo "instance-id: macpro-linux-i1" > "$STAGING/iso_root/cidata/meta-data"
+     cp "$AUTOINSTALL" "$STAGING/iso_root/autoinstall.yaml" || \
+     iso_die "autoinstall.yaml not found: $AUTOINSTALL"
+     { echo "#cloud-config"; cat "$STAGING/iso_root/autoinstall.yaml"; } > "$STAGING/iso_root/cidata/user-data"
+      echo "instance-id: macpro-linux-i1" > "$STAGING/iso_root/cidata/meta-data"
+     cp "$STAGING/iso_root/cidata/user-data" "$STAGING/iso_root/user-data"
+     cp "$STAGING/iso_root/cidata/meta-data" "$STAGING/iso_root/meta-data"
     cp "$PKGS_DIR"/*.deb "$STAGING/iso_root/macpro-pkgs/" || iso_die "Failed to copy .deb packages"
     mkdir -p "$STAGING/iso_root/macpro-pkgs/dkms-patches"
     cp "${PKGS_DIR}/dkms-patches/"*.patch "$STAGING/iso_root/macpro-pkgs/dkms-patches/" || iso_die "Failed to copy DKMS patches"
     cp "${PKGS_DIR}/dkms-patches/series" "$STAGING/iso_root/macpro-pkgs/dkms-patches/" || iso_die "Failed to copy DKMS series file"
 fi
 touch "$STAGING/iso_root/cidata/vendor-data"
+cp "$STAGING/iso_root/cidata/vendor-data" "$STAGING/iso_root/vendor-data"
 
 if [ "$VM_MODE" -eq 1 ]; then
     cat > "$STAGING/grub.cfg" << 'GRUBEOF'

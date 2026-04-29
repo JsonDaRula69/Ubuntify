@@ -717,17 +717,17 @@ tui_splash_init() {
     local subtitle="$1"
     shift
 
-    local steps=("$@")
-
     if [ "${AGENT_MODE:-0}" -eq 1 ]; then
         tui_cool_header "$subtitle"
-        local i=1
-        local total=${#steps[@]}
-        for step in "${steps[@]}"; do
-            local pct=$((i * 100 / total))
-            agent_output "progress" "Initializing" "$step" "percent" "$pct"
-            i=$((i + 1))
-        done
+        if [ $# -gt 0 ]; then
+            local i=1
+            local total=$#
+            for step in "$@"; do
+                local pct=$((i * 100 / total))
+                agent_output "progress" "Initializing" "$step" "percent" "$pct"
+                i=$((i + 1))
+            done
+        fi
         return 0
     fi
 

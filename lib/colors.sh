@@ -11,6 +11,7 @@ _COLORS_SH_SOURCED=1
 
 # Standard colors
 readonly RED='\033[0;31m'
+readonly BRIGHT_RED='\033[1;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[0;33m'
 readonly BLUE='\033[0;34m'
@@ -30,7 +31,8 @@ readonly WHITE='\033[0;37m'
 readonly BRIGHT_WHITE='\033[1;37m'
 readonly BOLD_WHITE='\033[1;37m'
 readonly MAGENTA='\033[0;35m'
-readonly BRIGHT_RED='\033[1;31m'
+# Terminal control sequences
+readonly CLR='\033[K'  # Clear to end of line (prevents artifacting with \r)
 
 # Semantic retro aliases
 readonly RETRO_BORDER="$PHOSPHOR"

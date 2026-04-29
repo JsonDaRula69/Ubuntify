@@ -23,11 +23,27 @@ verify_esp_contents() {
 
     log "Verifying ESP contents..."
 
+    local is_remote=0
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        is_remote=1
+    fi
+
+    _vec_file_exists() {
+        local path="$1"
+        if [ "$is_remote" -eq 1 ]; then
+            remote_mac_file_exists "$path"
+        else
+            [ -f "$path" ]
+        fi
+    }
+
     local REQUIRED_FILES=(
         "EFI/boot/bootx64.efi"
         "EFI/boot/grub.cfg"
         "casper/vmlinuz"
         "casper/initrd"
+        "user-data"
+        "meta-data"
         "autoinstall.yaml"
         "cidata/user-data"
         "cidata/meta-data"
@@ -35,7 +51,7 @@ verify_esp_contents() {
 
     local ALL_OK=true
     for f in "${REQUIRED_FILES[@]}"; do
-        if [ -f "$ESP_MOUNT/$f" ] || [ -f "$ESP_MOUNT/$(echo "$f" | tr '[:lower:]' '[:upper:]')" ]; then
+        if _vec_file_exists "$ESP_MOUNT/$f" || _vec_file_exists "$ESP_MOUNT/$(echo "$f" | tr '[:lower:]' '[:upper:]')"; then
             log "  ✓ $f"
         else
             warn "  ✗ $f (not found)"
@@ -43,20 +59,40 @@ verify_esp_contents() {
         fi
     done
 
-    if ls "$ESP_MOUNT/macpro-pkgs/"broadcom-sta-dkms_*.deb 1>/dev/null 2>&1; then
-        log "  ✓ macpro-pkgs/broadcom-sta-dkms_*.deb"
-    else
-        warn "  ✗ macpro-pkgs/broadcom-sta-dkms (not found)"
-        ALL_OK=false
-    fi
+    if [ "$is_remote" -eq 1 ]; then
+        if remote_mac_exec "test -n \"\$(ls $ESP_MOUNT/macpro-pkgs/broadcom-sta-dkms_*.deb 2>/dev/null)\""; then
+            log "  ✓ macpro-pkgs/broadcom-sta-dkms_*.deb"
+        else
+            warn "  ✗ macpro-pkgs/broadcom-sta-dkms (not found)"
+            ALL_OK=false
+        fi
 
-    if [ -f "$ESP_MOUNT/macpro-pkgs/dkms-patches/series" ]; then
-        local PATCH_COUNT
-        PATCH_COUNT=$(ls "$ESP_MOUNT/macpro-pkgs/dkms-patches/"*.patch 2>/dev/null | wc -l | tr -d ' ')
-        log "  ✓ macpro-pkgs/dkms-patches/ ($PATCH_COUNT patches)"
+        local PATCH_SERIES_OK
+        PATCH_SERIES_OK=$(remote_mac_exec "test -f $ESP_MOUNT/macpro-pkgs/dkms-patches/series && echo ok || echo fail" 2>/dev/null || echo "fail")
+        if [ "$PATCH_SERIES_OK" = "ok" ]; then
+            local PATCH_COUNT
+            PATCH_COUNT=$(remote_mac_exec "ls $ESP_MOUNT/macpro-pkgs/dkms-patches/*.patch 2>/dev/null | wc -l | tr -d ' '" 2>/dev/null || echo "0")
+            log "  ✓ macpro-pkgs/dkms-patches/ ($PATCH_COUNT patches)"
+        else
+            warn "  ✗ macpro-pkgs/dkms-patches/ (missing)"
+            ALL_OK=false
+        fi
     else
-        warn "  ✗ macpro-pkgs/dkms-patches/ (missing)"
-        ALL_OK=false
+        if ls "$ESP_MOUNT/macpro-pkgs/"broadcom-sta-dkms_*.deb 1>/dev/null 2>&1; then
+            log "  ✓ macpro-pkgs/broadcom-sta-dkms_*.deb"
+        else
+            warn "  ✗ macpro-pkgs/broadcom-sta-dkms (not found)"
+            ALL_OK=false
+        fi
+
+        if [ -f "$ESP_MOUNT/macpro-pkgs/dkms-patches/series" ]; then
+            local PATCH_COUNT
+            PATCH_COUNT=$(ls "$ESP_MOUNT/macpro-pkgs/dkms-patches/"*.patch 2>/dev/null | wc -l | tr -d ' ')
+            log "  ✓ macpro-pkgs/dkms-patches/ ($PATCH_COUNT patches)"
+        else
+            warn "  ✗ macpro-pkgs/dkms-patches/ (missing)"
+            ALL_OK=false
+        fi
     fi
 
     if [ "$ALL_OK" = "false" ]; then
