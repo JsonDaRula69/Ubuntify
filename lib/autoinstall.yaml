@@ -37,10 +37,19 @@ __SSH_KEYS__
     - |
       set -x
       LOG="/run/macpro.log"
+      CIDATA=""
+      for _cidata_mp in /cdrom /isodevice /mnt; do
+        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
+          CIDATA="$_cidata_mp"
+          break
+        fi
+      done
+      CIDATA_LOG_DIR="${CIDATA}/logs"
+      _sync_log() { if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null; cp "$LOG" "$CIDATA_LOG_DIR/macpro-early.log" 2>/dev/null || true; dmesg > "$CIDATA_LOG_DIR/dmesg-early.log" 2>/dev/null || true; fi; }
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
       diag() { { echo "=== DIAGNOSTIC DUMP ==="; echo "Date: $(date 2>/dev/null)"; echo "Kernel: $(uname -r 2>/dev/null)"; echo "Args: $*"; echo "--- lsmod wl ---"; lsmod 2>/dev/null | grep -E 'wl|cfg80211|mac80211'; echo "--- ip link ---"; ip link show 2>/dev/null; echo "--- ip addr ---"; ip addr show 2>/dev/null; echo "--- iwconfig ---"; iwconfig 2>/dev/null; echo "--- netplan ---"; cat /etc/netplan/01-wifi.yaml 2>/dev/null; echo "--- wpa_supplicant ---"; which wpa_supplicant 2>/dev/null || echo "NOT FOUND"; ps aux 2>/dev/null | grep -E 'wpa|networkd|dhclient' | grep -v grep; echo "--- dkms ---"; dkms status 2>/dev/null; echo "--- dmesg wl ---"; dmesg 2>/dev/null | grep -iE 'wl|broadcom|wifi|wlan|b43' | tail -10; echo "--- $LOG ---"; cat "$LOG" 2>/dev/null; echo "=== END DIAGNOSTIC ==="; } > /tmp/macpro-diag.txt 2>/dev/null; cat /tmp/macpro-diag.txt > /dev/console 2>/dev/null; wh "{\"progress\":${2:-0},\"stage\":\"early\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag at /tmp/macpro-diag.txt\"}"; }
-      die() { echo "[early] FATAL: $1" >> "$LOG"; diag "$1"; exit 1; }
+      die() { echo "[early] FATAL: $1" >> "$LOG"; diag "$1"; _sync_log; exit 1; }
       log() { echo "[early] $1" >> "$LOG"; }
       _dump_log() { cat "$LOG" > /dev/console 2>/dev/null || true; }
       trap '_dump_log' EXIT
@@ -60,21 +69,17 @@ __SSH_KEYS__
       fi
       KVER="$(uname -r)"
       ABI_VER="${KVER%-generic}"
-      PKGS=""
-      for _mp in /cdrom /isodevice /mnt; do
-        if [ -d "$_mp/macpro-pkgs" ]; then
-          PKGS="$_mp/macpro-pkgs"
-          break
-        fi
-      done
-      if [ -z "$PKGS" ]; then
-        die "Cannot find macpro-pkgs on any mount point" 2
+      PKGS="${CIDATA}/macpro-pkgs"
+      if [ ! -d "$PKGS" ]; then
+        die "Cannot find macpro-pkgs at $PKGS" 2
       fi
 
       echo "=== MAC PRO 2013 AUTOINSTALL ===" > "$LOG"
       echo "Kernel: $(uname -r)" >> "$LOG"
       echo "Target: $KVER" >> "$LOG"
+      echo "CIDATA: $CIDATA" >> "$LOG"
       echo "Packages: $(ls $PKGS/*.deb 2>/dev/null | wc -l) debs" >> "$LOG"
+      _sync_log
 
       # Validate kernel headers exist for running kernel
       wh '{"progress":2,"stage":"prep-init","status":"running","message":"Autoinstall started — validating kernel headers"}'
@@ -465,10 +470,19 @@ __SSH_KEYS__
       KVER="$(uname -r)"
       ABI_VER="${KVER%-generic}"
       LOG="/run/macpro.log"
+      CIDATA=""
+      for _cidata_mp in /cdrom /isodevice /mnt /target/cdrom; do
+        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
+          CIDATA="$_cidata_mp"
+          break
+        fi
+      done
+      CIDATA_LOG_DIR="${CIDATA}/logs"
+      _sync_log() { if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null; cp "$LOG" "$CIDATA_LOG_DIR/macpro-late.log" 2>/dev/null || true; dmesg > "$CIDATA_LOG_DIR/dmesg-late.log" 2>/dev/null || true; fi; }
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
       diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
-      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-29},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; exit 1; }
+      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-29},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; _sync_log; exit 1; }
       log() { echo "[late] $1" >> "$LOG"; }
       _dump_log() { cat "$LOG" > /dev/console 2>/dev/null || true; }
       trap '_dump_log' EXIT
@@ -520,14 +534,8 @@ __SSH_KEYS__
       fi
 
       # Discover macpro-pkgs mount point
-      PKGS=""
-      for _mp in /cdrom /isodevice /mnt /target/cdrom; do
-        if [ -d "$_mp/macpro-pkgs" ]; then
-          PKGS="$_mp/macpro-pkgs"
-          break
-        fi
-      done
-      if [ -z "$PKGS" ]; then
+      PKGS="${CIDATA}/macpro-pkgs"
+      if [ ! -d "$PKGS" ]; then
         die "Cannot find macpro-pkgs on any mount point" 29
       fi
 
@@ -854,6 +862,21 @@ __SSH_KEYS__
       mkdir -p /target/var/log/macpro-install
       cp /run/macpro.log /target/var/log/macpro-install/early-commands.log || true
       dmesg > /target/var/log/macpro-install/dmesg.log || true
+      # Also sync logs to CIDATA (survives reboot — readable from macOS)
+      if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then
+        mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null || true
+        cp /run/macpro.log "$CIDATA_LOG_DIR/macpro-late.log" 2>/dev/null || true
+        cp /target/var/log/macpro-install/early-commands.log "$CIDATA_LOG_DIR/" 2>/dev/null || true
+        dmesg > "$CIDATA_LOG_DIR/dmesg-late.log" 2>/dev/null || true
+        # Copy curtin/subiquity installer logs if they exist
+        for _logdir in /var/log/installer /var/log; do
+          for _log in curtin-install.log curtin.log subiquity-server.log syslog; do
+            if [ -f "$_logdir/$_log" ]; then
+              cp "$_logdir/$_log" "$CIDATA_LOG_DIR/" 2>/dev/null || true
+            fi
+          done
+        done
+      fi
 
       wh '{"progress":97,"stage":"late-verify","status":"verifying","message":"Verifying target system before reboot"}'
 
@@ -935,6 +958,25 @@ __SSH_KEYS__
       dkms status > "$ERR_DIR/error-dkms-status.log" 2>/dev/null || true
       lsmod > "$ERR_DIR/error-lsmod.log" 2>/dev/null || true
       lspci -nn > "$ERR_DIR/error-lspci.log" 2>/dev/null || true
+      # Copy curtin/subiquity crash logs
+      for _logdir in /var/log/installer /var/log/install-logs-*; do
+        if [ -d "$_logdir" ]; then
+          cp -r "$_logdir" "$ERR_DIR/" 2>/dev/null || true
+        fi
+      done
+      # Sync ALL error logs to CIDATA (survives reboot — readable from macOS)
+      CIDATA=""
+      for _cidata_mp in /cdrom /isodevice /mnt; do
+        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
+          CIDATA="$_cidata_mp"
+          break
+        fi
+      done
+      if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then
+        mkdir -p "$CIDATA/logs" 2>/dev/null || true
+        cp -r "$ERR_DIR/"* "$CIDATA/logs/" 2>/dev/null || true
+        cp /run/macpro.log "$CIDATA/logs/error-macpro.log" 2>/dev/null || true
+      fi
       if [ -d /target ]; then
         mkdir -p /target/var/log/macpro-install 2>/dev/null || true
         cp "$ERR_DIR/"* /target/var/log/macpro-install/ 2>/dev/null || true
