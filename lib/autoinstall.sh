@@ -21,6 +21,7 @@ write_grub_config() {
 
     log "Writing GRUB configuration..."
 
+    mkdir -p "$ESP_MOUNT/EFI/boot"
     cat > "$ESP_MOUNT/EFI/boot/grub.cfg" << 'GRUBEOF'
 set default=0
 set timeout=3
@@ -268,28 +269,71 @@ generate_dualboot_storage() {
     local TEMPLATE_PATH="$1"
     local OUTPUT_PATH="$2"
     local DISK_DEV="$3"
+    local SKIP_PART_NUM="${4:-}"
 
     log "Generating dual-boot storage config..."
+    log_debug "generate_dualboot_storage: DISK_DEV=$DISK_DEV, SKIP_PART_NUM=$SKIP_PART_NUM, DEPLOY_MODE=${DEPLOY_MODE:-remote}, TARGET_HOST=${TARGET_HOST:-}"
 
-    python3 - "$TEMPLATE_PATH" "$OUTPUT_PATH" "$DISK_DEV" << 'PYEOF' || die "Failed to generate dual-boot storage config"
-import sys, subprocess, re, os
+    local PARTITION_DATA
+    local PARTITION_DETAIL=""
+    local part_num
+
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        PARTITION_DATA=$(remote_mac_sudo "sgdisk -p $DISK_DEV" 2>/dev/null) || true
+        local _pd_lines=$(echo "$PARTITION_DATA" | wc -l | tr -d ' ')
+        log_debug "generate_dualboot_storage: PARTITION_DATA has ${_pd_lines} lines"
+        log_debug "generate_dualboot_storage: first 3 lines: $(echo "$PARTITION_DATA" | head -3 | tr '\n' ' | ')"
+        for part_num in $(echo "$PARTITION_DATA" | awk '{print $1}' | grep -E '^[0-9]+$'); do
+            PARTITION_DETAIL="${PARTITION_DETAIL}===PART:${part_num}===
+$(remote_mac_sudo "sgdisk -i $part_num $DISK_DEV" 2>/dev/null)
+"
+        done
+    else
+        PARTITION_DATA=$(sgdisk -p "$DISK_DEV" 2>/dev/null) || true
+        for part_num in $(echo "$PARTITION_DATA" | awk '{print $1}' | grep -E '^[0-9]+$'); do
+            PARTITION_DETAIL="${PARTITION_DETAIL}===PART:${part_num}===
+$(sgdisk -i "$part_num" "$DISK_DEV" 2>/dev/null)
+"
+        done
+    fi
+
+    local _part_data_file="${OUTPUT_PATH}.partdata"
+    local _part_detail_file="${OUTPUT_PATH}.partdetail"
+    printf '%s' "$PARTITION_DATA" > "$_part_data_file"
+    printf '%s' "$PARTITION_DETAIL" > "$_part_detail_file"
+
+    python3 - "$TEMPLATE_PATH" "$OUTPUT_PATH" "$_part_data_file" "$_part_detail_file" "${SKIP_PART_NUM}" << 'PYEOF' || { rm -f "$_part_data_file" "$_part_detail_file"; die "Failed to generate dual-boot storage config"; }
+import sys, re
 
 template_path = sys.argv[1]
 output_path = sys.argv[2]
-disk_dev = sys.argv[3]
+part_data_path = sys.argv[3]
+part_detail_path = sys.argv[4]
+skip_part_num = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else None
 
 with open(template_path) as f:
     content = f.read()
 
-# Read GPT partition table using sgdisk
-try:
-    result = subprocess.run(['sgdisk', '-p', disk_dev], capture_output=True, text=True)
-    part_lines = result.stdout.strip().split('\n')
-except Exception as e:
-    print(f"WARNING: Could not read partition table: {e}", file=sys.stderr)
-    with open(output_path, 'w') as f:
-        f.write(content)
-    sys.exit(0)
+with open(part_data_path) as f:
+    partition_data = f.read()
+
+with open(part_detail_path) as f:
+    partition_detail_raw = f.read()
+
+import os
+os.unlink(part_data_path)
+os.unlink(part_detail_path)
+
+part_lines = partition_data.strip().split('\n')
+
+partition_info = {}
+for section in partition_detail_raw.split('===PART:'):
+    if not section.strip():
+        continue
+    header_match = re.match(r'(\d+)==', section)
+    if header_match:
+        p_num = int(header_match.group(1))
+        partition_info[p_num] = section.split('\n', 1)[1] if '\n' in section else ''
 
 # Parse existing partitions
 preserved_yaml = ""
@@ -298,7 +342,7 @@ part_count = 0
 
 for line in part_lines:
     fields = line.split()
-    if len(fields) < 7:
+    if len(fields) < 6:
         continue
     try:
         part_num = int(fields[0])
@@ -306,11 +350,16 @@ for line in part_lines:
     except (ValueError, IndexError):
         continue
 
+    if skip_part_num is not None and part_num == skip_part_num:
+        # CIDATA ESP: include as preserved partition so curtin doesn't try to
+        # create a new partition overlapping it. Curtin will NOT delete EFI-type
+        # partitions (safety check), so skipping it causes sector overlap with
+        # new partitions. Preserve it instead.
+        print(f"  Including CIDATA ESP partition {part_num} as preserved (curtin cannot delete EFI-type partitions)", file=sys.stderr)
+        # Fall through to include in preserved_yaml with grub_device: false
+
     try:
-        # Get detailed partition info
-        info = subprocess.run(['sgdisk', '-i', str(part_num), disk_dev],
-                             capture_output=True, text=True)
-        info_text = info.stdout
+        info_text = partition_info.get(part_num, '')
 
         part_type_guid = ''
         part_uuid = ''
@@ -318,7 +367,7 @@ for line in part_lines:
         last_sector = None
 
         for info_line in info_text.split('\n'):
-            if 'Partition type GUID code:' in info_line or 'Partition type code:' in info_line:
+            if 'Partition GUID code:' in info_line or 'Partition type GUID code:' in info_line or 'Partition type code:' in info_line:
                 guid_match = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', info_line)
                 if guid_match:
                     part_type_guid = guid_match.group(1).lower()
@@ -363,10 +412,8 @@ for line in part_lines:
         continue
 
 if not preserved_yaml:
-    print("WARNING: No preserved partitions found — copying template as-is", file=sys.stderr)
-    with open(output_path, 'w') as f:
-        f.write(content)
-    sys.exit(0)
+    print("ERROR: No preserved partitions found — dual-boot requires partition preservation to avoid wiping macOS", file=sys.stderr)
+    sys.exit(1)
 
 APPLE_APFS_GUID = "7c3457ef-0000-11aa-aa11-00306543ecac"
 APPLE_EFI_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
@@ -387,7 +434,6 @@ new_storage = f"""  storage:
       path: /dev/sda
       ptable: gpt
       preserve: true
-      wipe: superblock
 {preserved_yaml}    - type: partition
       id: efi-partition
       device: root-disk

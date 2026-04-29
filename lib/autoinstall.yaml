@@ -23,7 +23,7 @@ autoinstall:
     install-server: true
     allow-pw: true
     authorized-keys:
-      __SSH_KEYS__
+__SSH_KEYS__
 
   reporting:
     builtin:
@@ -39,7 +39,8 @@ autoinstall:
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[early] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-0},\"stage\":\"early\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      diag() { { echo "=== DIAGNOSTIC DUMP ==="; echo "Date: $(date 2>/dev/null)"; echo "Kernel: $(uname -r 2>/dev/null)"; echo "Args: $*"; echo "--- lsmod wl ---"; lsmod 2>/dev/null | grep -E 'wl|cfg80211|mac80211'; echo "--- ip link ---"; ip link show 2>/dev/null; echo "--- ip addr ---"; ip addr show 2>/dev/null; echo "--- iwconfig ---"; iwconfig 2>/dev/null; echo "--- netplan ---"; cat /etc/netplan/01-wifi.yaml 2>/dev/null; echo "--- wpa_supplicant ---"; which wpa_supplicant 2>/dev/null || echo "NOT FOUND"; ps aux 2>/dev/null | grep -E 'wpa|networkd|dhclient' | grep -v grep; echo "--- dkms ---"; dkms status 2>/dev/null; echo "--- dmesg wl ---"; dmesg 2>/dev/null | grep -iE 'wl|broadcom|wifi|wlan|b43' | tail -10; echo "--- $LOG ---"; cat "$LOG" 2>/dev/null; echo "=== END DIAGNOSTIC ==="; } > /tmp/macpro-diag.txt 2>/dev/null; cat /tmp/macpro-diag.txt > /dev/console 2>/dev/null; wh "{\"progress\":${2:-0},\"stage\":\"early\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag at /tmp/macpro-diag.txt\"}"; }
+      die() { echo "[early] FATAL: $1" >> "$LOG"; diag "$1"; exit 1; }
       log() { echo "[early] $1" >> "$LOG"; }
       _dump_log() { cat "$LOG" > /dev/console 2>/dev/null || true; }
       trap '_dump_log' EXIT
@@ -212,26 +213,63 @@ autoinstall:
       fi
       wh "{\"progress\":22,\"stage\":\"prep-wifi\",\"status\":\"online\",\"message\":\"WiFi interface detected: ${WIFI_IFACE}\"}"
 
-      # Write netplan for live environment with detected interface name
-      # (networkd does not support match: for wifis — must use actual interface name)
+      # Install wpasupplicant + all deps + wireless-tools in live environment (packages: section installs to /target, not live env)
+      # Order matters: runtime libs (libpcsclite1, libiw30t64) must be installed BEFORE their dependents (wpasupplicant, wireless-tools)
+      _PKGS=""
+      for _mp in /cdrom/macpro-pkgs /isodevice/macpro-pkgs /mnt/macpro-pkgs; do
+        if ls "$_mp/libpcsclite1_"*.deb 1>/dev/null 2>&1; then
+          _PKGS="$_mp"
+          break
+        fi
+      done
+      # Stage 1: Runtime library dependencies (must be installed before their dependents)
+      if [ -n "$_PKGS" ]; then
+        dpkg --force-depends -i "$_PKGS/libpcsclite1_"*.deb "$_PKGS/libiw30t64_"*.deb 2>>"$LOG" || true
+      fi
+      # Stage 2: wpasupplicant + libnl deps from ISO pool
+      if ! command -v wpa_supplicant >/dev/null 2>&1; then
+        _WPA_DEBS=""
+        for _mp in /cdrom /isodevice /mnt; do
+          if ls $_mp/pool/main/w/wpa/wpasupplicant_*.deb 1>/dev/null 2>&1; then
+            _WPA_DEBS="$_mp/pool/main/libn/libnl3/libnl-3-200_*.deb $_mp/pool/main/libn/libnl3/libnl-genl-3-200_*.deb $_mp/pool/main/libn/libnl3/libnl-route-3-200_*.deb $_mp/pool/main/w/wpa/wpasupplicant_*.deb"
+            break
+          fi
+        done
+        if [ -n "$_WPA_DEBS" ]; then
+          dpkg --force-depends -i $_WPA_DEBS 2>>"$LOG" || true
+        fi
+      fi
+      # Stage 3: wireless-tools (depends on libiw30t64 already installed in Stage 1)
+      if ! command -v iwconfig >/dev/null 2>&1; then
+        if [ -n "$_PKGS" ]; then
+          dpkg --force-depends -i "$_PKGS/wireless-tools_"*.deb 2>>"$LOG" || true
+        fi
+      fi
+
+      # Write wpa_supplicant conf and associate directly (netplan is unreliable in live env)
+      mkdir -p /etc/wpa_supplicant 2>/dev/null
+      printf 'network={\n  ssid="%s"\n  psk="%s"\n}\n' '__WIFI_SSID__' '__WIFI_PASSWORD__' > /etc/wpa_supplicant/wpa_supplicant.conf
+      chmod 600 /etc/wpa_supplicant/wpa_supplicant.conf
+      log "wpa_supplicant conf written for $WIFI_IFACE"
+      ip link set "$WIFI_IFACE" up 2>>"$LOG" || true
+      kill $(pgrep -f "wpa_supplicant.*$WIFI_IFACE") 2>/dev/null || true
+      sleep 1
+      wpa_supplicant -B -i "$WIFI_IFACE" -c /etc/wpa_supplicant/wpa_supplicant.conf 2>>"$LOG" || log "WARN: wpa_supplicant start failed"
+      sleep 5
+      if command -v dhclient >/dev/null 2>&1; then
+        dhclient "$WIFI_IFACE" 2>>"$LOG" || log "WARN: dhclient failed"
+      elif command -v dhcpcd >/dev/null 2>&1; then
+        dhcpcd "$WIFI_IFACE" 2>>"$LOG" || log "WARN: dhcpcd failed"
+      else
+        log "WARN: no DHCP client available"
+      fi
+      sleep 3
+
+      # Write netplan for target system (not used in live env)
       rm -f /etc/netplan/50-cloud-init.yaml 2>/dev/null || true
       { printf "network:\n"; printf "  version: 2\n"; printf "  renderer: networkd\n"; printf "  wifis:\n"; printf "    %s:\n" "$WIFI_IFACE"; printf "      dhcp4: true\n"; printf "      optional: true\n"; printf "      access-points:\n"; printf "        \"%s\":\n" '__WIFI_SSID__'; printf "          password: \"%s\"\n" '__WIFI_PASSWORD__'; } > /etc/netplan/01-wifi.yaml
       chmod 600 /etc/netplan/01-wifi.yaml
-      log "Live netplan written for interface: $WIFI_IFACE"
-      if command -v netplan 2>/dev/null >/dev/null; then
-        if ! netplan generate 2>>"$LOG"; then
-          log "WARN: netplan generate failed — retrying after 3s"
-          sleep 3
-          if ! netplan generate 2>>"$LOG"; then
-            die "netplan generate failed (twice) — WiFi config may be invalid" 22
-          fi
-        fi
-        if ! netplan apply 2>>"$LOG"; then
-          log "WARN: netplan apply failed — retrying after 3s"
-          sleep 3
-          netplan apply 2>>"$LOG" || die "netplan apply failed (twice) — cannot bring up WiFi" 22
-        fi
-      fi
+      log "Netplan written for target system"
 
       # Start SSH server for remote debugging
       wh '{"progress":23,"stage":"prep-ssh","status":"starting","message":"Starting SSH server for remote debugging"}'
@@ -264,7 +302,10 @@ autoinstall:
       WIFI_ASSOC=0
       _i=1
       while [ $_i -le 6 ]; do
-        _essid=$(iwconfig "$WIFI_IFACE" 2>/dev/null | grep -oE 'ESSID:"[^"]+"' | head -1)
+        _essid=$(wpa_cli -i "$WIFI_IFACE" status 2>/dev/null | grep '^ssid=' | head -1)
+        if [ -z "$_essid" ]; then
+          _essid=$(iwconfig "$WIFI_IFACE" 2>/dev/null | grep -oE 'ESSID:"[^"]+"' | head -1)
+        fi
         if [ -n "$_essid" ]; then
           WIFI_ASSOC=1
           break
@@ -273,6 +314,7 @@ autoinstall:
         _i=$((_i + 1))
       done
       if [ "$WIFI_ASSOC" -ne 1 ]; then
+        wpa_cli -i "$WIFI_IFACE" scan_results 2>/dev/null | head -20 >> "$LOG" || true
         iwlist "$WIFI_IFACE" scan 2>/dev/null | head -20 >> "$LOG" || true
         log "WARN: WiFi not associated after 30s — check SSID/password"
       fi
@@ -338,11 +380,11 @@ autoinstall:
     - openssh-server
     - wpasupplicant
     - curl
+    - efibootmgr
+    - ufw
     - wireless-tools
     - avahi-daemon
     - libnss-mdns
-    - efibootmgr
-    - ufw
 
   # DANGER: This template does NOT include preserve:true on existing partitions.
   # The prepare-deployment.sh script MUST inject preserve:true for all
@@ -355,7 +397,6 @@ autoinstall:
         path: /dev/sda
         ptable: gpt
         preserve: true
-        wipe: superblock
       - type: partition
         id: efi-partition
         device: root-disk
@@ -403,7 +444,8 @@ autoinstall:
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-29},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
+      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-29},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; exit 1; }
       log() { echo "[late] $1" >> "$LOG"; }
       _dump_log() { cat "$LOG" > /dev/console 2>/dev/null || true; }
       trap '_dump_log' EXIT
@@ -587,7 +629,8 @@ autoinstall:
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-70},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
+      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-70},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; exit 1; }
       log() { echo "[late] $1" >> "$LOG"; }
 
       wh '{"progress":70,"stage":"late-netplan","status":"configuring","message":"Writing WiFi network configuration"}'
@@ -615,7 +658,8 @@ autoinstall:
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-75},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
+      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-75},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; exit 1; }
       log() { echo "[late] $1" >> "$LOG"; }
 
       wh '{"progress":75,"stage":"late-grub","status":"configuring","message":"Configuring GRUB bootloader"}'
@@ -658,8 +702,26 @@ autoinstall:
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-80},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
+      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-80},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; exit 1; }
       log() { echo "[late] $1" >> "$LOG"; }
+
+      wh '{"progress":80,"stage":"late-mdns","status":"installing","message":"Installing mDNS and WiFi tools into target"}'
+      PKGS=""
+      for _mp in /cdrom/macpro-pkgs /isodevice/macpro-pkgs /mnt/macpro-pkgs; do
+        if ls "$_mp/libavahi-common3_"*.deb 1>/dev/null 2>&1; then
+          PKGS="$_mp"
+          break
+        fi
+      done
+      if [ -n "$PKGS" ]; then
+        dpkg --root /target --force-depends --skip-same-version -i \
+          "$PKGS/libpcsclite1_"*.deb "$PKGS/libiw30t64_"*.deb \
+          "$PKGS/libavahi-common3_"*.deb "$PKGS/libavahi-core7_"*.deb "$PKGS/libdaemon0_"*.deb \
+          "$PKGS/avahi-daemon_"*.deb "$PKGS/libnss-mdns_"*.deb "$PKGS/wireless-tools_"*.deb 2>>"$LOG" || log "WARN: mDNS/wifi-tools dpkg returned non-zero"
+      else
+        log "WARN: macpro-pkgs not found for mDNS/wifi-tools installation"
+      fi
 
       wh '{"progress":80,"stage":"late-mdns","status":"configuring","message":"Configuring mDNS hostname resolution"}'
       if grep -q '^hosts:' /target/etc/nsswitch.conf; then
@@ -676,7 +738,8 @@ autoinstall:
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-85},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
+      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-85},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; exit 1; }
       log() { echo "[late] $1" >> "$LOG"; }
 
       wh '{"progress":85,"stage":"late-hold","status":"configuring","message":"Pinning kernel version and disabling auto-updates"}'
@@ -725,7 +788,8 @@ autoinstall:
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-88},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
+      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-88},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; exit 1; }
       log() { echo "[late] $1" >> "$LOG"; }
 
       wh '{"progress":88,"stage":"late-firewall","status":"configuring","message":"Configuring firewall"}'
@@ -742,7 +806,8 @@ autoinstall:
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-90},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
+      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-90},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; exit 1; }
       log() { echo "[late] $1" >> "$LOG"; }
 
       wh '{"progress":90,"stage":"late-sudo","status":"configuring","message":"Configuring sudo for user __USERNAME__"}'
@@ -754,7 +819,8 @@ autoinstall:
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
-      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-97},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1\"}"; exit 1; }
+      diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
+      die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-97},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; exit 1; }
       log() { echo "[late] $1" >> "$LOG"; }
 
       wh '{"progress":95,"stage":"late-logs","status":"saving","message":"Saving installation logs"}'
