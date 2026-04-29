@@ -507,32 +507,55 @@ rollback_internal() {
         printf '\r%b  %b✓%b Root partition removed                  \n' "$CLR" "$GREEN" "$NC" >&2
     fi
 
-    # Step 3: Remove any leftover Linux partitions created by Subiquity
-    # (curtin creates a "Linux Filesystem" partition that rollback must clean up)
+     # Step 3: Remove any leftover Linux partitions created by Subiquity
+     # (curtin creates a "Linux Filesystem" partition that rollback must clean up)
+     if [ -n "${TARGET_HOST:-}" ]; then
+         _linux_parts=$(remote_mac_exec "diskutil list /dev/disk0 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
+     else
+         _linux_parts=$(diskutil list /dev/disk0 2>/dev/null | grep 'Linux Filesystem' || true)
+     fi
+     if [ -n "$_linux_parts" ]; then
+         printf '\r%b  %b▸%b Removing leftover Linux partitions         \r' "$CLR" "$CYAN" "$NC" >&2
+         log_info "Found leftover Linux partitions — removing"
+         # Extract partition identifiers (e.g. disk0s4)
+         echo "$_linux_parts" | while IFS= read -r _line; do
+             _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
+             if [ -n "$_linux_dev" ]; then
+                 if [ -n "${TARGET_HOST:-}" ]; then
+                     dry_run_exec "Removing Linux partition /dev/${_linux_dev}" \
+                         remote_mac_exec "sudo -n diskutil eraseVolume free none /dev/${_linux_dev}" 2>/dev/null || true
+                 else
+                     dry_run_exec "Removing Linux partition /dev/${_linux_dev}" \
+                         diskutil eraseVolume free none "/dev/${_linux_dev}" 2>/dev/null || true
+                 fi
+                 log_info "Removed Linux partition /dev/${_linux_dev}"
+             fi
+         done
+         printf '\r%b  %b✓%b Linux partitions removed                   \n' "$CLR" "$GREEN" "$NC" >&2
+         rollback_status="${rollback_status}linux_removed "
+     fi
+
+    # Step 3b: Scrub ghost GPT entries left by diskutil eraseVolume
+    # diskutil eraseVolume hides partitions from macOS but leaves stale GPT entries.
+    # These cause curtin "Could not create partition N" on next deploy.
     if [ -n "${TARGET_HOST:-}" ]; then
-        _linux_parts=$(remote_mac_exec "diskutil list /dev/disk0 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
-    else
-        _linux_parts=$(diskutil list /dev/disk0 2>/dev/null | grep 'Linux Filesystem' || true)
-    fi
-    if [ -n "$_linux_parts" ]; then
-        printf '\r%b  %b▸%b Removing leftover Linux partitions         \r' "$CLR" "$CYAN" "$NC" >&2
-        log_info "Found leftover Linux partitions — removing"
-        # Extract partition identifiers (e.g. disk0s4)
-        echo "$_linux_parts" | while IFS= read -r _line; do
-            _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
-            if [ -n "$_linux_dev" ]; then
-                if [ -n "${TARGET_HOST:-}" ]; then
-                    dry_run_exec "Removing Linux partition /dev/${_linux_dev}" \
-                        remote_mac_exec "sudo -n diskutil eraseVolume free none /dev/${_linux_dev}" 2>/dev/null || true
-                else
-                    dry_run_exec "Removing Linux partition /dev/${_linux_dev}" \
-                        diskutil eraseVolume free none "/dev/${_linux_dev}" 2>/dev/null || true
+        local _gpt_linux_indices
+        _gpt_linux_indices=$(remote_mac_sudo "gpt -r show /dev/disk0 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print \$3}'" || true)
+        if [ -n "$_gpt_linux_indices" ]; then
+            printf '\r%b  %b▸%b Scrubbing ghost GPT entries              \r' "$CLR" "$CYAN" "$NC" >&2
+            log_info "Found leftover Linux GPT entries — scrubbing"
+            for _idx in $_gpt_linux_indices; do
+                if ! [[ "$_idx" =~ ^[0-9]+$ ]] || [ "$_idx" -le 2 ]; then
+                    warn "Skipping invalid GPT index $_idx — must be numeric and > 2"
+                    continue
                 fi
-                log_info "Removed Linux partition /dev/${_linux_dev}"
-            fi
-        done
-        printf '\r%b  %b✓%b Linux partitions removed                   \n' "$CLR" "$GREEN" "$NC" >&2
-        rollback_status="${rollback_status}linux_removed "
+                dry_run_exec "Remove Linux GPT entry index $_idx" \
+                    remote_mac_sudo "gpt remove -i $_idx /dev/disk0" 2>/dev/null || true
+                log_info "Removed ghost GPT entry index $_idx"
+            done
+            printf '\r%b  %b✓%b Ghost GPT entries scrubbed               \n' "$CLR" "$GREEN" "$NC" >&2
+            rollback_status="${rollback_status}gpt_scrubbed "
+        fi
     fi
 
     # Step 4: Restore APFS size if resized
@@ -547,36 +570,55 @@ rollback_internal() {
         local _original_target="${JOURNAL_ORIGINAL_APFS_SIZE:-0}"
         local _grow_target="0"
 
-        # diskutil apfs resizeContainer may return non-zero on success
+        # APFS resize guard: skip if container already near full disk size
+        local _current_apfs_bytes _disk_total_bytes _should_resize=1
         if [ -n "${TARGET_HOST:-}" ]; then
-            remote_mac_retry_diskutil apfs resizeContainer "$apfs_container" "$_grow_target" 2>/dev/null || true
+            _current_apfs_bytes=$(remote_mac_exec diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
+            _disk_total_bytes=$(remote_mac_exec diskutil info /dev/disk0 2>/dev/null | grep -E "Total Size|Disk Size" | head -1 | grep -oE '\([0-9]+ Bytes\)' | grep -oE '[0-9]+' || true)
         else
-            dry_run_exec "Expanding APFS to fill available space" \
-                diskutil apfs resizeContainer "$apfs_container" "$_grow_target" 2>/dev/null || true
+            _current_apfs_bytes=$(diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
+            _disk_total_bytes=$(diskutil info /dev/disk0 2>/dev/null | grep -E "Total Size|Disk Size" | head -1 | grep -oE '\([0-9]+ Bytes\)' | grep -oE '[0-9]+' || true)
+        fi
+        if [ -n "$_current_apfs_bytes" ] && [ -n "$_disk_total_bytes" ]; then
+            local _size_gap=$(( _disk_total_bytes - _current_apfs_bytes ))
+            if [ "$_size_gap" -lt 10000000000 ] 2>/dev/null; then
+                log_info "APFS container already near full disk size (${_size_gap:-0} bytes gap) — skipping expansion"
+                _should_resize=0
+            fi
         fi
 
-        # Verify actual APFS size instead of trusting exit code
-        sleep 2
-        local _verify_size=""
-        if [ -n "${TARGET_HOST:-}" ]; then
-            _verify_size=$(remote_mac_exec diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
-        else
-            _verify_size=$(diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
-        fi
+        if [ "$_should_resize" = "1" ]; then
+            # diskutil apfs resizeContainer may return non-zero on success
+            if [ -n "${TARGET_HOST:-}" ]; then
+                remote_mac_retry_diskutil apfs resizeContainer "$apfs_container" "$_grow_target" 2>/dev/null || true
+            else
+                dry_run_exec "Expanding APFS to fill available space" \
+                    diskutil apfs resizeContainer "$apfs_container" "$_grow_target" 2>/dev/null || true
+            fi
 
-        # With grow-to-fill (target=0), verify container expanded beyond original size
-        # _original_target is in GB (decimal, as reported by diskutil) — convert to bytes for comparison
-        # diskutil uses decimal GB (10^9), not binary GiB (2^30)
-        # GB display rounds up, so allow ±1GB tolerance
-        local _original_bytes
-        _original_bytes=$(awk -v gb="${_original_target:-0}" 'BEGIN { printf "%.0f", gb * 1000000000 }')
-        local _min_bytes=$(( ${_original_bytes:-0} - 1000000000 ))
-        if [ -n "$_verify_size" ] && [ "$_verify_size" -ge "${_min_bytes:-0}" ] 2>/dev/null; then
-            rollback_status="${rollback_status}apfs_restored "
-            printf '\r%b  %b✓%b APFS container expanded                \n' "$CLR" "$GREEN" "$NC" >&2
+            # Verify actual APFS size instead of trusting exit code
+            sleep 2
+            local _verify_size=""
+            if [ -n "${TARGET_HOST:-}" ]; then
+                _verify_size=$(remote_mac_exec diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
+            else
+                _verify_size=$(diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
+            fi
+
+            # With grow-to-fill (target=0), verify container expanded beyond original size
+            local _original_bytes
+            _original_bytes=$(awk -v gb="${_original_target:-0}" 'BEGIN { printf "%.0f", gb * 1000000000 }')
+            local _min_bytes=$(( ${_original_bytes:-0} - 1000000000 ))
+            if [ -n "$_verify_size" ] && [ "$_verify_size" -ge "${_min_bytes:-0}" ] 2>/dev/null; then
+                rollback_status="${rollback_status}apfs_restored "
+                printf '\r%b  %b✓%b APFS container expanded                \n' "$CLR" "$GREEN" "$NC" >&2
+            else
+                warn "rollback_internal: APFS container did not expand (current: ${_verify_size:-unknown})"
+                rollback_status="${rollback_status}apfs_failed "
+            fi
         else
-            warn "rollback_internal: APFS container did not expand (current: ${_verify_size:-unknown})"
-            rollback_status="${rollback_status}apfs_failed "
+            rollback_status="${rollback_status}apfs_skipped(already_full) "
+            printf '\r%b  %b✓%b APFS container already full             \n' "$CLR" "$GREEN" "$NC" >&2
         fi
     fi
 
