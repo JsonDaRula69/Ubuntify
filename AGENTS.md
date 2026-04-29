@@ -233,7 +233,7 @@ The `generate_dualboot_storage()` function:
 - Generates `preserve: true` entries for all 4 existing partitions
 - Appends the single root partition entry with exact byte size
 - Uses `storage: version: 2` (required for editing existing partition tables — Subiquity bug #2018589)
-- Adds `refresh-installer: { update: true }` (Apple EFI 1.1 fix — Subiquity bug #2040190)
+- Uses `refresh-installer: { update: false }` (snap refresh loses NoCloud datasource — LP #2132014; Apple EFI fix already in 24.04 ISO)
 - Normalizes partition type GUIDs to lowercase (curtin compatibility)
 - Uses string-based regex replacement (NOT `yaml.dump`) to preserve `|` block scalars
 - Uses `wipe: superblock` (not `preserved-partition` check) for the root partition
@@ -417,7 +417,7 @@ const MAX_UPDATES = 200;
 - v0.2.99–v0.2.106 made all verification, rollback, disk, bless, and deploy ops remote-aware
 - **Live testing milestone (v0.2.98)**: Broadcom BCM4360 WiFi driver compiled and connected successfully, SSH verified on headless Mac Pro. Disk partitioning (dual-boot ESP setup) identified as primary remaining issue.
 - v0.3.0 begins dead code cleanup (unused TUI widgets, vestigial local-mode branches, duplicate functions) and partitioning fixes
-- v0.3.0 simplifies dual-boot partitioning: removes separate 512M EFI and 1G /boot partitions, uses existing Apple ESP via `grub_device: true`, pre-creates root partition from macOS with `wipe: superblock`, adds `storage: version: 2` and `refresh-installer: { update: true }`
+- v0.3.0 simplifies dual-boot partitioning: removes separate 512M EFI and 1G /boot partitions, uses existing Apple ESP via `grub_device: true`, pre-creates root partition from macOS with `wipe: superblock`, adds `storage: version: 2`, sets `refresh-installer: { update: false }` (snap refresh breaks NoCloud)
 
 ## deploy.conf Configuration
 
@@ -828,7 +828,7 @@ The `remote_toggle_apt_sources(host, action)` function (line 234 in lib/remote.s
 - **Root partition pre-created from macOS** — `create_root_partition()` runs before the installer, using `ROOT_SIZE_BYTES` for exact byte sizing
 - **`ROOT_SIZE_BYTES` env var** — passed through deploy.sh to autoinstall.sh as `generate_dualboot_storage()` 4th argument
 - **`storage: version: 2`** — required in autoinstall YAML for editing existing partition tables (Subiquity bug #2018589)
-- **`refresh-installer: { update: true }`** — required for Apple EFI 1.1 compatibility (Subiquity bug #2040190)
+- **`refresh-installer: { update: false }`** — snap refresh loses NoCloud datasource on restart (LP #2132014); Apple EFI 1.1 fix is already in 24.04 ISO's Subiquity snap
 - **`wipe: superblock`** (not `preserved-partition`) — used for the pre-created root partition; the partition exists but needs superblock wipe
 - **Partition type GUIDs must be lowercase** — curtin normalizes to lowercase; uppercase causes verification mismatches
 - **Autoinstall YAML must use string-based replacement** — `yaml.dump` converts `|` block scalars to quoted strings with `\n` escapes
