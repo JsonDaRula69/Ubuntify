@@ -3,7 +3,7 @@
 # lib/disk.sh - Disk and partition management functions
 #
 # Provides analyze_disk_layout, shrink_apfs_if_needed, create_esp_partition,
-# and extract_iso_to_esp for managing Mac disk partitions and ESP creation.
+# and disk management for Mac Pro remote deployment.
 #
 # Dependencies: lib/colors.sh, lib/logging.sh
 #
@@ -120,7 +120,7 @@ analyze_disk_layout() {
     # These occupy sector space that curtin needs for new partitions,
     # causing "Could not create partition N" sgdisk errors on overlap
     local _linux_parts
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         _linux_parts=$(remote_mac_exec "diskutil list $_internal_disk_val 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
     else
         _linux_parts=$(diskutil list "$_internal_disk_val" 2>/dev/null | grep 'Linux Filesystem' || true)
@@ -131,7 +131,7 @@ analyze_disk_layout() {
         echo "$_linux_parts" | while IFS= read -r _line; do
             _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
             if [ -n "$_linux_dev" ]; then
-                if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+                if [ -n "${TARGET_HOST:-}" ]; then
                     dry_run_exec "Remove Linux partition /dev/${_linux_dev}" \
                         remote_mac_exec "sudo -n diskutil eraseVolume free none /dev/${_linux_dev}" 2>/dev/null || true
                 else
@@ -368,38 +368,4 @@ create_esp_partition() {
     fi
 }
 
-extract_iso_to_esp() {
-    local ISO_PATH="$1"
-    local ESP_MOUNT="$2"
 
-    log "Extracting ISO contents to ESP..."
-
-    local ESP_AVAIL ISO_TOTAL
-    ESP_AVAIL=$(remote_mac_exec df -m "$ESP_MOUNT" | tail -1 | awk '{print $4}')
-    ISO_TOTAL=$(remote_mac_exec du -sm "$ISO_PATH" 2>/dev/null | cut -f1 || echo "0")
-    if [ -n "$ESP_AVAIL" ] && [ "$ESP_AVAIL" -gt 0 ] && [ -n "$ISO_TOTAL" ] && [ "$ISO_TOTAL" -gt 0 ]; then
-        local REQUIRED_MIN=$((ISO_TOTAL + ISO_TOTAL / 10))
-        if [ "$ESP_AVAIL" -lt "$REQUIRED_MIN" ]; then
-            die "ESP too small: ${ESP_AVAIL}MB available, ${REQUIRED_MIN}MB needed"
-        fi
-        log "Space check: ${ESP_AVAIL}MB available, ${REQUIRED_MIN}MB needed"
-    fi
-
-    dry_run_exec "Extract ISO to ESP" \
-        remote_mac_exec retry_xorriso -osirrox on -indev "$ISO_PATH" \
-        -extract / "$ESP_MOUNT" 2>/dev/null || \
-        die "Failed to extract ISO contents"
-
-    dry_run_exec "Clean up unnecessary files" \
-        remote_mac_exec rm -rf "$ESP_MOUNT/pool" "$ESP_MOUNT/dists" "$ESP_MOUNT/.disk" "$ESP_MOUNT/boot/grub" 2>/dev/null || true
-
-    # Verify required files
-    remote_mac_file_exists "$ESP_MOUNT/EFI/boot/bootx64.efi" || remote_mac_file_exists "$ESP_MOUNT/EFI/boot/BOOTX64.EFI" || die "BOOTX64.EFI missing"
-    remote_mac_file_exists "$ESP_MOUNT/casper/vmlinuz" || die "casper/vmlinuz missing"
-    remote_mac_file_exists "$ESP_MOUNT/casper/initrd" || die "casper/initrd missing"
-    if ! remote_mac_exec "ls $ESP_MOUNT/casper/*.squashfs >/dev/null 2>&1"; then
-        die "No .squashfs files in casper/"
-    fi
-
-    echo "$ESP_MOUNT"
-}

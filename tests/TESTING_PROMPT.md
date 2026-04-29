@@ -1,5 +1,7 @@
 # COMPREHENSIVE AUTOMATED CODE REVIEW AND TESTING PROTOCOL
 
+> **v0.3.0+ Note:** `DEPLOY_MODE` was removed in v0.3.0. The system is now remote-only. All former `DEPLOY_MODE=remote` conditionals have been simplified to `TARGET_HOST` checks (`[ -n "${TARGET_HOST:-}" ]`). The config key `DEPLOY_MODE` is silently ignored if present in `deploy.conf`. References to `DEPLOY_MODE` in this document reflect pre-v0.3.0 behavior and should be read as `TARGET_HOST` being set/non-empty.
+
 > **Purpose:** This document is a prompt for LLM agents performing systematic code review and testing of the Mac Pro 2013 Ubuntu Autoinstall project. It provides exhaustive checklists for every phase, with project-specific checks grounded in how Subiquity, Ubuntu, and macOS actually work. Every script and flow path must be checked line by line.
 >
 > **Critical principle:** The checklists in this document define the MINIMUM scope of review — they are a starting point, not an exhaustive list of everything that could be wrong. The reviewer MUST go beyond the specific items listed here and perform thorough, original analysis on every line of code and every execution path. Do not limit your review to checking items off a list; actively seek bugs, logic errors, and structural problems that are NOT anticipated by the checklists. The goal is to discover ALL issues, not just confirm that listed checks pass.
@@ -406,7 +408,7 @@ Platform-specific line-by-line checks:
 - **macOS (host) scripts** (prepare-deployment.sh, build-iso.sh, lib/disk.sh, lib/bless.sh, lib/detect.sh, lib/revert.sh): Use BSD tool semantics. `stat -f%z`, `diskutil`, `bless`, `newfs_msdos`, `hdiutil`
 - **autoinstall YAML `- |` blocks** (lib/autoinstall.sh embedded content, generated autoinstall.yaml): Run via `sh -c` in Subiquity installer — POSIX ONLY, no `[[ ]]`, no arrays, no `<<<`. Variables are NOT shared between different `- |` blocks
 - **Remote management scripts** (lib/remote.sh): SSH commands execute on the target Ubuntu system. `apt`, `dkms`, `systemctl`, `efibootmgr` commands
-- **Remote deployment scripts** (lib/remote_mac.sh): Shell commands execute on macOS target via SSH when DEPLOY_MODE=remote, or locally when DEPLOY_MODE=local. All macOS-specific commands MUST be routed through `remote_mac_exec` or `remote_mac_sudo`
+- **Remote deployment scripts** (lib/remote_mac.sh): Shell commands execute on macOS target via SSH when TARGET_HOST is set. All macOS-specific commands MUST be routed through `remote_mac_exec` or `remote_mac_sudo`
 - **Node.js** (macpro-monitor/server.js): Node.js semantics, Promises, HTTP server
 
 **FRESH EYES PRINCIPLE:** After completing the per-line checklist for a file, re-read the entire file WITHOUT the checklist and ask: "What would break this? What assumptions does this code make? What happens if those assumptions are violated?" The checklist catches known patterns. Fresh-eyes reading catches unknown bugs that no checklist can anticipate. Do not limit your review to confirming checklist items pass.
@@ -548,18 +550,16 @@ Trace all manage mode operation paths:
 
 #### 1.7.4b lib/remote_mac.sh Path Walkthrough
 
-Trace all deployment mode routing paths:
+Trace all remote deployment routing paths:
 
-- DEPLOY_MODE=local: remote_mac_exec → direct local execution (pass-through)
-- DEPLOY_MODE=local: remote_mac_sudo → direct local execution (assumes already root)
-- DEPLOY_MODE=remote: remote_mac_exec → ssh $TARGET_HOST "$*"
-- DEPLOY_MODE=remote: remote_mac_sudo → ssh $TARGET_HOST "sudo -S -p '' $*" (with REMOTE_SUDO_PASSWORD via stdin)
-- DEPLOY_MODE=remote: remote_mac_cp → scp $SSH_OPTS $src $host:$dst
-- DEPLOY_MODE=remote: remote_mac_cp_dir → scp -r $SSH_OPTS $src $host:$dst
-- DEPLOY_MODE=remote: remote_mac_file_exists → ssh $TARGET_HOST "test -f '$path'"
-- DEPLOY_MODE=remote: remote_mac_dir_exists → ssh $TARGET_HOST "test -d '$path'"
-- DEPLOY_MODE=remote: remote_mac_mkdir → ssh $TARGET_HOST "mkdir -p '$path'"
-- DEPLOY_MODE=remote: remote_mac_rm → ssh $TARGET_HOST "rm -f '$path'"
+- remote_mac_exec → ssh $TARGET_HOST "$*"
+- remote_mac_sudo → ssh $TARGET_HOST "sudo -S -p '' $*" (with REMOTE_SUDO_PASSWORD via stdin)
+- remote_mac_cp → scp $SSH_OPTS $src $host:$dst
+- remote_mac_cp_dir → scp -r $SSH_OPTS $src $host:$dst
+- remote_mac_file_exists → ssh $TARGET_HOST "test -f '$path'"
+- remote_mac_dir_exists → ssh $TARGET_HOST "test -d '$path'"
+- remote_mac_mkdir → ssh $TARGET_HOST "mkdir -p '$path'"
+- remote_mac_rm → ssh $TARGET_HOST "rm -f '$path'"
 - remote_mac_preflight: SSH test → command availability check → sudo access check
 
 **Verify:**
@@ -587,12 +587,11 @@ Trace all deployment mode routing paths:
 - Verify: SSH failure mid-operation leaves the target in a recoverable state
 
 **prepare-deployment.sh → lib/remote_mac.sh routing:**
-- In DEPLOY_MODE=local: all commands run locally (pass-through)
-- In DEPLOY_MODE=remote: all macOS commands run via SSH on TARGET_HOST
+- All macOS commands run via SSH on TARGET_HOST
 - Verify: every `diskutil`, `sgdisk`, `bless`, `xorriso`, `newfs_msdos`, `sw_vers`, `systemsetup`, `bless --info` call is wrapped with `remote_mac_exec` or `remote_mac_sudo`
 - Verify: file operations use `remote_mac_cp`, `remote_mac_cp_dir`, `remote_mac_file_exists`, `remote_mac_dir_exists`, `remote_mac_mkdir`, `remote_mac_rm`
 - Verify: `remote_mac_preflight` is called before any remote deployment
-- Verify: root/sudo check skipped when DEPLOY_MODE=remote (no local sudo needed)
+- Verify: root/sudo check skipped when TARGET_HOST is set (no local sudo needed)
 - Verify: ISO transfer to target uses SCP (`remote_mac_cp`) then remote xorriso extraction
 - Verify: configuration generated locally, validated locally, then SCP'd to target
 
@@ -659,8 +658,8 @@ Test save_config and encrypt_config round-trip
 Test with missing required arguments (--method without value)
 Test with invalid input types (--method foo, --storage bar)
 Test with missing/invalid file paths (nonexistent ISO, missing prereqs/ directory)
-Test with insufficient permissions (running without sudo when DEPLOY_MODE=local)
-Test remote mode without SSH connectivity (DEPLOY_MODE=remote with unreachable TARGET_HOST)
+Test with insufficient permissions (running without sudo)
+Test remote mode without SSH connectivity (unreachable TARGET_HOST)
 Test remote mode with missing prerequisites on target (xorriso, sgdisk, etc. not installed on Mac Pro)
 Test remote mode with incorrect sudo password (REMOTE_SUDO_PASSWORD wrong)
 Test resource exhaustion scenarios (disk full simulation, large ISO)
@@ -676,8 +675,8 @@ Remote mode error paths:
 - What happens when SCP transfer fails (disk full on target, permission denied)?
 - What happens when target macOS tools are missing (no xorriso on Mac Pro)?
 - What happens when remote_mac_exec returns non-zero mid-phase?
-- What happens when DEPLOY_MODE=remote but TARGET_HOST is empty?
-- What happens when DEPLOY_MODE=remote but no SSH key configured?
+- What happens when TARGET_HOST is empty?
+- What happens when no SSH key is configured?
 
 Verify error messages are clear and actionable
 Verify exit codes match documented values (E_SUCCESS=0 through E_AGENT_DENIED=13)
@@ -890,7 +889,6 @@ Sanitization: [quoting, escaping, validation applied before execution]
 | SSH_KEY | deploy.conf / tui_menu | autoinstall.yaml, /target/.ssh/authorized_keys | Newline handling, key format |
 | HOSTNAME | deploy.conf / --hostname | autoinstall.yaml, target /etc/hostname | RFC 952 violations |
 | DEPLOY_METHOD | --method / tui_menu | case dispatch to deploy_* functions | Invalid value handling |
-| DEPLOY_MODE | deploy.conf / --deploy-mode | remote_mac_exec routing, sudo check bypass | Invalid mode handling |
 | TARGET_HOST | deploy.conf / --target-host | ssh $TARGET_HOST commands | SSH injection, unreachable host |
 | REMOTE_SUDO_PASSWORD | deploy.conf / --remote-password | ssh sudo -S -p '' via stdin | Password in process args |
 | USB_DEVICE | tui_menu / auto-detect | diskutil, sgdisk, dd commands | Partition path injection |
@@ -2041,7 +2039,7 @@ Before completion, verify:
 - [ ] Orphan audit: all lib/ modules have at least one external function call
 - [ ] Bash 3.2: no bash 4.0+ features (local -n, mapfile, declare -A, ${var,,}, etc.)
 - [ ] Platform boundaries: macOS commands wrapped with remote_mac_* for remote mode, not in remote.sh
-- [ ] Remote mode: DEPLOY_MODE=remote routes all macOS commands via SSH (remote_mac_exec/remote_mac_sudo)
+- [ ] Remote mode: TARGET_HOST routes all macOS commands via SSH (remote_mac_exec/remote_mac_sudo)
 - [ ] Remote mode: preflight checks run on target host (remote_mac_preflight)
 - [ ] Remote mode: root check skipped on local machine (no local sudo needed)
 - [ ] Remote mode: ISO transfer, config generation, and verification all handle remote path correctly
@@ -2350,7 +2348,7 @@ Scripts in this project run on different platforms: macOS (host), Ubuntu install
 - macOS-only commands in lib/disk.sh, lib/bless.sh, lib/detect.sh, lib/deploy.sh MUST be wrapped with `remote_mac_exec` or `remote_mac_sudo` (so they route via SSH in remote mode)
 - Linux-only commands (`dkms`, `apt-get`, `efibootmgr`, `systemctl`) MUST NOT appear in prepare-deployment.sh main flow (runs on macOS)
 - Every external command must be checked: which platform runs it? Is it available there?
-- In DEPLOY_MODE=remote, macOS commands run on TARGET_HOST via SSH — verify all deployment phases (disk, bless, detect, deploy, revert) correctly route commands
+- macOS commands run on TARGET_HOST via SSH — verify all deployment phases (disk, bless, detect, deploy, revert) correctly route commands
 
 ### 2.13.3 Flag Syntax Platform Differences
 

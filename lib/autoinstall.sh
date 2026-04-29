@@ -272,13 +272,13 @@ generate_dualboot_storage() {
     local SKIP_PART_NUM="${4:-}"
 
     log "Generating dual-boot storage config..."
-    log_debug "generate_dualboot_storage: DISK_DEV=$DISK_DEV, SKIP_PART_NUM=$SKIP_PART_NUM, DEPLOY_MODE=${DEPLOY_MODE:-remote}, TARGET_HOST=${TARGET_HOST:-}"
+    log_debug "generate_dualboot_storage: DISK_DEV=$DISK_DEV, SKIP_PART_NUM=$SKIP_PART_NUM, TARGET_HOST=${TARGET_HOST:-}"
 
     local PARTITION_DATA
     local PARTITION_DETAIL=""
     local part_num
 
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         PARTITION_DATA=$(remote_mac_sudo "sgdisk -p $DISK_DEV" 2>/dev/null) || true
         local _pd_lines=$(echo "$PARTITION_DATA" | wc -l | tr -d ' ')
         log_debug "generate_dualboot_storage: PARTITION_DATA has ${_pd_lines} lines"

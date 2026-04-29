@@ -300,57 +300,12 @@ log_fatal() {
     exit 1
 }
 
-log_serial() {
-    local message="$1"
-    local timestamp severity_name
-
-    [ -z "$LOG_SERIAL_FD" ] && return 0
-
-    timestamp="$(_log_get_timestamp)"
-    severity_name="$(_log_get_severity_name "$LOG_LEVEL_INFO")"
-
-    # Write only to serial, not file or webhook
-    printf "[%s] [%s] %s\n" "$severity_name" "$timestamp" "$message" >&"$LOG_SERIAL_FD" || true
-}
-
-log_progress() {
-    local percent="$1"
-    local stage="$2"
-    local status="$3"
-    local message="$4"
-    local payload
-
-    # Enforce monotonically increasing progress
-    if [ "$percent" -lt "$LOG_LAST_PROGRESS" ]; then
-        percent=$((LOG_LAST_PROGRESS + 1))
-    fi
-    LOG_LAST_PROGRESS="$percent"
-
-    # Clamp to 0-100
-    [ "$percent" -lt 0 ] && percent=0
-    [ "$percent" -gt 100 ] && percent=100
-
-    # Escape special characters in message for JSON
-    local escaped_message
-    escaped_message="$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\n/\\n/g')"
-
-    # Build JSON payload
-    payload="{\"progress\": $percent, \"stage\": \"$stage\", \"status\": \"$status\", \"message\": \"$escaped_message\"}"
-
-    # Queue webhook call
-    _log_queue_webhook "$payload"
-
-    # Also log to file and terminal
-    _log_internal "$LOG_LEVEL_INFO" "Progress [$percent%] $stage: $status - $message"
-}
-
 ## Backward Compatibility Aliases
 
 log()   { log_info "$1"; }
 warn()  { log_warn "$1"; }
 error() { log_error "$1"; }
 die()   { log_fatal "$1"; }
-vlog()  { log_debug "$1"; }
 
 ## Utility Functions
 
@@ -396,8 +351,7 @@ log_get_last_progress() {
 if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
     export -f log_init log_shutdown 2>/dev/null || true
     export -f log_debug log_info log_warn log_error log_fatal 2>/dev/null || true
-    export -f log_serial log_progress 2>/dev/null || true
-    export -f log warn error die vlog 2>/dev/null || true
+    export -f log warn error die 2>/dev/null || true
     export -f log_set_level log_get_level_name log_get_file_path 2>/dev/null || true
     export -f log_is_initialized log_is_serial_available log_is_webhook_configured 2>/dev/null || true
     export -f log_get_serial_device log_get_webhook_url log_get_last_progress 2>/dev/null || true

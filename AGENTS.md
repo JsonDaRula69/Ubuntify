@@ -165,8 +165,6 @@ Method 4 (VM test) uses fixed Ethernet and single disk — no storage or network
 
 The script operates in remote deployment mode only, controlled via SSH to the target Mac Pro. All macOS-specific operations (diskutil, sgdisk, bless, xorriso) execute on the target via SSH. The local machine only generates configuration files and transfers them via SCP.
 
-The `--deploy-mode` CLI flag is accepted but ignored (for backward compatibility). DEPLOY_MODE is always "remote".
-
 **Command routing** (`lib/remote_mac.sh`):
 - `remote_mac_exec <command>` — runs command via SSH on target
 - `remote_mac_sudo <command>` — same with sudo prefix (uses REMOTE_SUDO_PASSWORD)
@@ -184,7 +182,7 @@ The `--deploy-mode` CLI flag is accepted but ignored (for backward compatibility
 - Preflight checks run on the target host (xorriso, sgdisk, python3, diskutil, bless)
 - No local sudo required — all elevated operations run on the target
 - Revert can also operate remotely
-- Verification functions (`verify_esp_mount`, `verify_iso_extraction`, `verify_cidata_structure`, `verify_esp_contents`, `verify_bless_result`, `verify_disk_space`) and snapshot functions (`snapshot_disk_layout`) are **remote-aware** — they detect `DEPLOY_MODE=remote` and `TARGET_HOST` to route filesystem checks via `remote_mac_exec`/`remote_mac_dir_exists`/`remote_mac_file_exists` instead of local `[ -d ]`, `[ -f ]`, `df`, `mount` checks. **When adding new verification functions, ALWAYS check `DEPLOY_MODE` and use the appropriate remote or local command path.**
+- Verification functions (`verify_esp_mount`, `verify_iso_extraction`, `verify_cidata_structure`, `verify_esp_contents`, `verify_bless_result`, `verify_disk_space`) and snapshot functions (`snapshot_disk_layout`) are **remote-aware** — they detect `TARGET_HOST` to route filesystem checks via `remote_mac_exec`/`remote_mac_dir_exists`/`remote_mac_file_exists` instead of local `[ -d ]`, `[ -f ]`, `df`, `mount` checks. **When adding new verification functions, ALWAYS check `TARGET_HOST` and use the appropriate remote or local command path.**
 
 **CLI flags for remote mode**:
 ```bash
@@ -380,7 +378,6 @@ SSH_KEYS_FILE=/path/to/file  # Load keys from external file
 | `SSH_KEYS_FILE` | Path to file containing SSH public keys |
 | `ENCRYPTION` | Password encryption mode (see below) |
 | `OUTPUT_DIR` | Override runtime output directory (default: ~/.Ubuntify/) |
-| `DEPLOY_MODE` | Deployment mode (always `remote`, accepted for backward compatibility) |
 | `TARGET_HOST` | SSH hostname/IP for Mac Pro's macOS partition |
 | `REMOTE_SUDO_PASSWORD` | Sudo password for target Mac Pro (stored encrypted if encryption enabled) |
 

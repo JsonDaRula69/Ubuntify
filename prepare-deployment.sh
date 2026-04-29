@@ -76,7 +76,6 @@ HOSTNAME=""
 SSH_KEYS=""
 SSH_KEYS_FILE=""
 ENCRYPTION="plaintext"
-DEPLOY_MODE="remote"
 TARGET_HOST=""
 REMOTE_SUDO_PASSWORD=""
 WHURL=""
@@ -262,15 +261,13 @@ parse_conf() {
             WEBHOOK_PORT)   WEBHOOK_PORT="$value" ;;
             # Encryption
             ENCRYPTION)     ENCRYPTION="$value" ;;
-            # Deployment mode
-            DEPLOY_MODE)    DEPLOY_MODE="$value" ;;
             TARGET_HOST)    TARGET_HOST="$value" ;;
             REMOTE_SUDO_PASSWORD) REMOTE_SUDO_PASSWORD="$value" ;;
             MACOS_SIZE_MODE) MACOS_SIZE_MODE="$value" ;;
             MACOS_SIZE_GB)  MACOS_SIZE_GB="$value" ;;
             # Output directory
             OUTPUT_DIR)     OUTPUT_DIR="${value:-$HOME/.Ubuntify}" ;;
-            *)              warn "Unknown config key: $key" ;;
+            *)              ;;
         esac
     done < "$conf"
 }
@@ -380,7 +377,7 @@ prompt_config() {
     _prompt_wifi_password
     _prompt_webhook
     _prompt_hostname
-    prompt_deploy_mode
+    prompt_target_host
     prompt_encryption_mode
     configure_ssh_config
 
@@ -435,8 +432,7 @@ EOF
             webhook)       _prompt_webhook ;;
             hostname)      _prompt_hostname ;;
             target_host)
-                _DEPLOY_MODE_PROMPTED=0
-                prompt_deploy_mode
+                prompt_target_host
                 ;;
             encryption)    prompt_encryption_mode ;;
             done)          break ;;
@@ -446,7 +442,7 @@ EOF
     WHURL="http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/webhook"
     export USERNAME REALNAME PASSWORD_HASH HOSTNAME SSH_KEYS SSH_KEYS_FILE
     export WIFI_SSID WIFI_PASSWORD WEBHOOK_HOST WEBHOOK_PORT WHURL
-    export DEPLOY_MODE TARGET_HOST REMOTE_SUDO_PASSWORD
+    export TARGET_HOST REMOTE_SUDO_PASSWORD
     return 0
 }
 
@@ -1068,7 +1064,6 @@ EOF
         printf 'WEBHOOK_HOST="%s"\n' "$(_conf_escape "$WEBHOOK_HOST")"
         printf 'WEBHOOK_PORT="%s"\n' "$(_conf_escape "$WEBHOOK_PORT")"
         printf 'ENCRYPTION="%s"\n' "$(_conf_escape "$ENCRYPTION")"
-        printf 'DEPLOY_MODE="%s"\n' "$(_conf_escape "$DEPLOY_MODE")"
         printf 'TARGET_HOST="%s"\n' "$(_conf_escape "$TARGET_HOST")"
         printf 'REMOTE_SUDO_PASSWORD="%s"\n' "$(_conf_escape "$REMOTE_SUDO_PASSWORD")"
         printf 'MACOS_SIZE_MODE="%s"\n' "$(_conf_escape "${MACOS_SIZE_MODE:-}")"
@@ -1087,12 +1082,9 @@ EOF
     fi
 }
 
-prompt_deploy_mode() {
-    [ "${_DEPLOY_MODE_PROMPTED:-0}" -eq 1 ] && return 0
-    log_info "prompt_deploy_mode: prompting for target host"
-
-    DEPLOY_MODE="remote"
-    save_config_key "DEPLOY_MODE" "remote"
+prompt_target_host() {
+    [ "${_TARGET_HOST_PROMPTED:-0}" -eq 1 ] && return 0
+    log_info "prompt_target_host: prompting for target host"
 
     if [ -z "${TARGET_HOST:-}" ] || [ "${TARGET_HOST:-}" = "__REPLACE__" ]; then
         while true; do
@@ -1239,7 +1231,7 @@ prompt_deploy_mode() {
         done
     fi
 
-    _DEPLOY_MODE_PROMPTED=1
+    _TARGET_HOST_PROMPTED=1
 }
 
 prompt_encryption_mode() {
@@ -1466,8 +1458,7 @@ while [ $# -gt 0 ]; do
         --webhook-port=*)    WEBHOOK_PORT="${1#*=}"; shift ;;
         --encryption)        ENCRYPTION="$2"; shift 2 ;;
         --encryption=*)        ENCRYPTION="${1#*=}"; shift ;;
-        --deploy-mode)          : ;; # ignored — remote-only mode
-        --deploy-mode=*)       : ;; # ignored — remote-only mode
+
         --target-host)          TARGET_HOST="$2"; shift 2 ;;
         --target-host=*)        TARGET_HOST="${1#*=}"; shift ;;
         --remote-password)      REMOTE_SUDO_PASSWORD="$2"; shift 2 ;;
@@ -1813,7 +1804,7 @@ Proceed?"; then
     tui_msgbox "Revert Complete" "Deployment changes have been reverted."
 }
 
-run_deploy_mode() {
+run_deploy() {
     while true; do
         local choice
         choice=$(deploy_menu) || break
@@ -2417,7 +2408,7 @@ main() {
 
         case "$mode" in
             deploy)
-                run_deploy_mode
+                run_deploy
                 ;;
             manage)
                 run_manage_mode

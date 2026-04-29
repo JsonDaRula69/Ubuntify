@@ -256,7 +256,7 @@ preflight_checks() {
 
     if type verify_headless_readiness >/dev/null 2>&1; then
         local vhr_host=""
-        if [ "${DEPLOY_MODE:-}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        if [ -n "${TARGET_HOST:-}" ]; then
             vhr_host="$TARGET_HOST"
         fi
         verify_headless_readiness "$vhr_host" || warn "Headless readiness issues detected on target — deployment may require manual intervention"
@@ -667,31 +667,6 @@ _phase_verify_usb() {
     fi
     verify_esp_contents "$USB_MOUNT"
     remote_mac_retry_diskutil unmountDisk "$TARGET_DEVICE" 2>/dev/null || true
-}
-
-show_blind_boot_instructions() {
-    echo ""
-    echo "========================================="
-    echo " READY TO REBOOT - MANUAL BOOT REQUIRED"
-    echo "========================================="
-    echo ""
-    echo "Boot device NOT set automatically (bless NVRAM write restricted)."
-    echo "Manual keyboard selection required at boot."
-    echo ""
-    echo "BOOT PROCEDURE:"
-    echo ""
-    echo "  1. Run: sudo reboot"
-    echo "  2. After startup chime, press and HOLD Option key"
-    echo "  3. Release Option — Startup Manager shows disk icons"
-    echo "  4. Select CIDATA (Ubuntu installer) using arrow keys"
-    echo "  5. Press Enter to boot"
-    echo ""
-    echo "  Left:  Macintosh HD (macOS)"
-    echo "  Right: CIDATA (Ubuntu installer)"
-    echo ""
-    echo "POST-INSTALL:"
-    echo "  After Ubuntu installs, run 'sudo boot-macos' to return to macOS"
-    echo ""
 }
 
 show_success_instructions() {

@@ -191,19 +191,6 @@ remote_mac_cp_dir() {
 }
 
 # ── Directory Contents Copy (flattens) ──
-# rsync src/ dst/ copies contents; scp -r src/ dst/ copies the directory itself.
-remote_mac_cp_contents() {
-    local src="$1"
-    local dst="$2"
-    local host="${TARGET_HOST:-macpro}"
-    case "$src" in
-        */) ;;
-        *) src="${src}/" ;;
-    esac
-    rsync -aze "ssh $_REMOTE_MAC_SSH_OPTS" "$src" "${host}:${dst}"
-}
-
-# ── Directory Contents Copy (flattens) ──
 # Copies the CONTENTS of a local directory to a remote directory via rsync.
 # rsync src/ dst/ copies contents; scp -r src/ dst/ copies the directory itself.
 remote_mac_cp_contents() {

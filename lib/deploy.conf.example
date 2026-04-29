@@ -22,9 +22,6 @@ WEBHOOK_PORT="8080"
 # Password storage: plaintext, aes256, keychain
 ENCRYPTION="plaintext"
 
-# Deployment mode (always remote)
-DEPLOY_MODE="remote"
-
 # Target Mac Pro SSH hostname/IP
 TARGET_HOST="__REPLACE__"
 

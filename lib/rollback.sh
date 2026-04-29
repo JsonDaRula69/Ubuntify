@@ -206,7 +206,7 @@ snapshot_disk_layout() {
 
     mkdir -p "$STATE_DIR"
 
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         local remote_backup="/tmp/macpro-gpt-backup.bin"
         local remote_layout="/tmp/macpro-gpt-layout.txt"
         local remote_diskutil="/tmp/macpro-diskutil-list.txt"
@@ -408,7 +408,7 @@ rollback_internal() {
     if [ -n "$original_boot" ]; then
         printf '\r%b  %b▸%b Restoring boot device to %s            \r' "$CLR" "$CYAN" "$NC" "$original_boot" >&2
         log_info "Attempting to restore boot device to ${original_boot}"
-        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        if [ -n "${TARGET_HOST:-}" ]; then
             if dry_run_exec "Restoring boot device to ${original_boot}" \
                 remote_mac_sudo bless --mount "$original_boot" --setBoot 2>/dev/null; then
                 rollback_status="${rollback_status}boot_restored "
@@ -443,7 +443,7 @@ rollback_internal() {
         printf '\r%b  %b▸%b Removing ESP partition %s            \r' "$CLR" "$CYAN" "$NC" "$esp_device" >&2
         log_info "Removing created ESP partition ${esp_device}"
 
-        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        if [ -n "${TARGET_HOST:-}" ]; then
             dry_run_exec "Unmounting ESP /dev/${esp_device}" \
                 remote_mac_exec diskutil unmount "/dev/${esp_device}" 2>/dev/null || true
         else
@@ -455,7 +455,7 @@ rollback_internal() {
         local _erase_stderr
         _erase_stderr="$(mktemp)"
         local _erase_rc=0
-        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        if [ -n "${TARGET_HOST:-}" ]; then
             remote_mac_retry_diskutil eraseVolume free none "/dev/${esp_device}" 2>"$_erase_stderr" || _erase_rc=$?
         else
             dry_run_exec "Erasing ESP partition ${esp_device} to free space" \
@@ -464,7 +464,7 @@ rollback_internal() {
         rm -f "$_erase_stderr" 2>/dev/null || true
 
         # Verify ESP actually removed — diskutil eraseVolume can return non-zero on success
-        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        if [ -n "${TARGET_HOST:-}" ]; then
             if remote_mac_exec diskutil list 2>/dev/null | grep -q "$esp_device"; then
                 warn "rollback_internal: ESP partition ${esp_device} still present after erase"
                 rollback_status="${rollback_status}esp_failed "
@@ -485,7 +485,7 @@ rollback_internal() {
 
     # Step 3: Remove any leftover Linux partitions created by Subiquity
     # (curtin creates a "Linux Filesystem" partition that rollback must clean up)
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         _linux_parts=$(remote_mac_exec "diskutil list /dev/disk0 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
     else
         _linux_parts=$(diskutil list /dev/disk0 2>/dev/null | grep 'Linux Filesystem' || true)
@@ -497,7 +497,7 @@ rollback_internal() {
         echo "$_linux_parts" | while IFS= read -r _line; do
             _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
             if [ -n "$_linux_dev" ]; then
-                if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+                if [ -n "${TARGET_HOST:-}" ]; then
                     dry_run_exec "Removing Linux partition /dev/${_linux_dev}" \
                         remote_mac_exec "sudo -n diskutil eraseVolume free none /dev/${_linux_dev}" 2>/dev/null || true
                 else
@@ -524,7 +524,7 @@ rollback_internal() {
         local _grow_target="0"
 
         # diskutil apfs resizeContainer may return non-zero on success
-        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        if [ -n "${TARGET_HOST:-}" ]; then
             remote_mac_retry_diskutil apfs resizeContainer "$apfs_container" "$_grow_target" 2>/dev/null || true
         else
             dry_run_exec "Expanding APFS to fill available space" \
@@ -534,7 +534,7 @@ rollback_internal() {
         # Verify actual APFS size instead of trusting exit code
         sleep 2
         local _verify_size=""
-        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        if [ -n "${TARGET_HOST:-}" ]; then
             _verify_size=$(remote_mac_exec diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
         else
             _verify_size=$(diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)

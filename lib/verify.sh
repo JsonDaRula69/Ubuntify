@@ -14,7 +14,7 @@ verify_apfs_resize() {
     local expected_gb="$2"
     local actual_gb
 
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         if ! remote_mac_exec diskutil info "$container_device" >/dev/null 2>&1; then
             error "verify_apfs_resize: cannot access $container_device on ${TARGET_HOST}"
             return 1
@@ -155,7 +155,7 @@ if 'identity' in ai:
 
 # verify_esp_mount mount_point [esp_device]
 # Returns 0 if mount_point exists, writable, FAT32, and has >=100MB free
-# In remote deployment mode (DEPLOY_MODE=remote), all checks run via SSH
+# In remote deployment mode, all checks run via SSH
 # on the target Mac Pro. In local mode, checks run on this machine.
 # macOS auto-unmounts FAT32 ESP volumes, so this function proactively
 # re-mounts if the volume is not found.
@@ -167,7 +167,7 @@ verify_esp_mount() {
 
     # Determine if we're in remote mode — use SSH commands if so
     local is_remote=0
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         is_remote=1
     fi
 
@@ -347,7 +347,7 @@ verify_iso_extraction() {
     local missing_count=0
 
     local is_remote=0
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         is_remote=1
     fi
 
@@ -441,7 +441,7 @@ verify_cidata_structure() {
     local vendor_data="$mount_point/cidata/vendor-data"
 
     local is_remote=0
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         is_remote=1
     fi
 
@@ -537,7 +537,7 @@ verify_disk_space() {
     local available_mb
 
     # Get available space in MB using df -m
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         available_mb=$(remote_mac_exec "df -m '$path' 2>/dev/null | tail -1 | awk '{print \$4}'" || echo "")
         if [ -z "$available_mb" ]; then
             local parent_dir
@@ -579,8 +579,8 @@ verify_headless_readiness() {
     local errors=0
     local warnings=0
 
-    # In remote deploy mode, always check the target host
-    if [ -z "$host" ] && [ "${DEPLOY_MODE:-}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    # If no host specified, check the target host
+    if [ -z "$host" ] && [ -n "${TARGET_HOST:-}" ]; then
         host="$TARGET_HOST"
     fi
 
@@ -760,7 +760,7 @@ collect_error_context() {
 
     {
         local _is_remote=0
-        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        if [ -n "${TARGET_HOST:-}" ]; then
             _is_remote=1
         fi
 
@@ -832,7 +832,7 @@ collect_error_context() {
 verify_bless_result() {
     local mount_point="$1"
     local is_remote=0
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         is_remote=1
     fi
 

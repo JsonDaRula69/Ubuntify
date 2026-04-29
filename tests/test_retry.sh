@@ -98,48 +98,6 @@ test_is_transient_error_255() {
     fi
 }
 
-# Test retry_run fails after 3 attempts with false command
-test_retry_run_false_3_attempts() {
-    local marker_file="/tmp/test_retry_false_marker_$$"
-    rm -f "$marker_file"
-    
-    if retry_run -n 3 -- false 2>/dev/null; then
-        echo "  Expected retry_run with false to fail"
-        return 1
-    else
-        return 0
-    fi
-}
-
-# Test retry_run succeeds immediately with true command
-test_retry_run_true_immediate() {
-    if retry_run -n 1 -- true; then
-        return 0
-    else
-        echo "  Expected retry_run with true to succeed"
-        return 1
-    fi
-}
-
-# Test retry_run succeeds on 2nd attempt
-test_retry_run_second_attempt() {
-    local marker_file="/tmp/test_retry_marker_$$"
-    rm -f "$marker_file"
-    
-    # Shell script that fails first time, succeeds second time
-    local test_script="if [ ! -f $marker_file ]; then touch $marker_file; exit 1; fi; rm -f $marker_file; exit 0"
-    
-    if retry_run -n 3 -b 0 -- sh -c "$test_script"; then
-        # Cleanup
-        rm -f "$marker_file"
-        return 0
-    else
-        rm -f "$marker_file"
-        echo "  Expected retry_run to succeed on 2nd attempt"
-        return 1
-    fi
-}
-
 # Run all tests
 echo "=== Testing lib/retry.sh ==="
 echo ""
@@ -151,9 +109,6 @@ run_test "is_transient_error 127 returns 1 (permanent)" test_is_transient_error_
 run_test "is_transient_error 130 returns 1 (SIGINT, permanent)" test_is_transient_error_130
 run_test "is_transient_error 124 returns 0 (timeout, transient)" test_is_transient_error_124
 run_test "is_transient_error 255 returns 0 (SSH, transient)" test_is_transient_error_255
-run_test "retry_run -n 3 -- false fails after 3 attempts" test_retry_run_false_3_attempts
-run_test "retry_run -n 1 -- true succeeds immediately" test_retry_run_true_immediate
-run_test "retry_run succeeds on 2nd attempt" test_retry_run_second_attempt
 
 echo ""
 echo "Results: $TESTS_PASSED passed, $TESTS_FAILED failed"

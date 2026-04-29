@@ -24,7 +24,7 @@ verify_esp_contents() {
     log "Verifying ESP contents..."
 
     local is_remote=0
-    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+    if [ -n "${TARGET_HOST:-}" ]; then
         is_remote=1
     fi
 
