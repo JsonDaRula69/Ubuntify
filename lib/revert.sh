@@ -56,15 +56,20 @@ revert_changes() {
                 mount_point=$(remote_mac_exec diskutil info "/dev/$esp_device" 2>/dev/null | grep "Mount Point" | awk '{print $NF}' || true)
                 if [ -z "$mount_point" ] || [ "$mount_point" = "N/A" ]; then
                     log "ESP not mounted, attempting to mount..."
-                    remote_mac_sudo diskutil mount "/dev/$esp_device" 2>/dev/null || true
+                    mount_point="/Volumes/CIDATA"
+                    remote_mac_exec mkdir -p "$mount_point" 2>/dev/null || true
+                    remote_mac_sudo mount_msdos "/dev/$esp_device" "$mount_point" 2>/dev/null || \
+                        remote_mac_sudo diskutil mount "/dev/$esp_device" 2>/dev/null || true
                 fi
 
-remote_mac_sudo diskutil unmount "/dev/$esp_device" 2>/dev/null || true
+                remote_mac_sudo diskutil unmount "/dev/$esp_device" 2>/dev/null || true
                 dry_run_exec "Remove ESP partition /dev/$esp_device" \
-                    remote_mac_sudo diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || {
-                    warn "Could not remove ESP partition /dev/$esp_device"
+                    remote_mac_sudo diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || true
+                # Verify ESP actually removed — diskutil eraseVolume can return non-zero on success
+                if remote_mac_exec diskutil list 2>/dev/null | grep -q "$esp_device"; then
+                    warn "ESP partition /dev/$esp_device still present after erase"
                     REVERT_ERRORS=1
-                }
+                fi
             else
                 warn "ESP device not found for removal"
                 REVERT_ERRORS=1
@@ -72,25 +77,34 @@ remote_mac_sudo diskutil unmount "/dev/$esp_device" 2>/dev/null || true
             _ESP_CREATED=0
         fi
 
-        # APFS container restoration - prefer journal values
-        if [ "$apfs_resized" = "1" ] && [ -n "$apfs_container" ] && [ -n "$original_size" ]; then
-            log "Restoring APFS container to ${original_size}GB..."
-            dry_run_exec "Restore APFS container to ${original_size}GB" \
-                remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null || {
-                warn "Could not restore APFS container size"
-                REVERT_ERRORS=1
-            }
-            _APFS_RESIZED=0
+        # Remove leftover Linux partitions created by Subiquity/curtin
+        local _linux_parts
+        _linux_parts=$(remote_mac_exec "diskutil list $INTERNAL_DISK 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
+        if [ -n "$_linux_parts" ]; then
+            log "Found leftover Linux partitions — removing..."
+            echo "$_linux_parts" | while IFS= read -r _line; do
+                _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
+                if [ -n "$_linux_dev" ]; then
+                    dry_run_exec "Remove Linux partition /dev/${_linux_dev}" \
+                        remote_mac_sudo diskutil eraseVolume free none "/dev/${_linux_dev}" 2>/dev/null || true
+                    log "Removed Linux partition /dev/${_linux_dev}"
+                fi
+            done
         fi
 
-        # After ESP removal, expand APFS to fill freed space
-        if [ -n "$apfs_container" ]; then
+        if [ "$apfs_resized" = "1" ] && [ -n "$apfs_container" ]; then
             log "Expanding APFS container to fill available space..."
             dry_run_exec "Expand APFS container to fill free space" \
-                remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || {
-                warn "Could not expand APFS container to fill space"
+                remote_mac_sudo diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || true
+            # Verify expansion — diskutil apfs resizeContainer can return non-zero on success
+            sleep 2
+            local _revert_size
+            _revert_size=$(remote_mac_exec diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
+            if [ -z "$_revert_size" ]; then
+                warn "Could not verify APFS container size after expansion"
                 REVERT_ERRORS=1
-            }
+            fi
+            _APFS_RESIZED=0
         fi
 
         # Restore macOS boot device
@@ -151,40 +165,55 @@ cleanup_on_error() {
     [ "${_CLEANUP_DONE:-0}" -eq 1 ] && return
     _CLEANUP_DONE=1
 
-    # Trigger rollback for any error or signal exit (>=128 is signal-caused)
-    if [ "$EXIT_CODE" -ne 0 ] || [ "$EXIT_CODE" -ge 128 ]; then
-        # Skip rollback for agent remote operations (sysinfo, kernel_status, etc.)
-        # These don't modify local disk state so there's nothing to roll back
-        if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
-            if [ "$EXIT_CODE" -ge 128 ]; then
-                local signal_num=$((EXIT_CODE - 128))
-                warn "Agent operation interrupted by signal $signal_num (exit code $EXIT_CODE)"
-            fi
-            return
-        fi
+    if [ "$EXIT_CODE" -eq 0 ]; then
+        return
+    fi
 
-        log "Cleanup triggered (exit code $EXIT_CODE)"
-
-        # Use rollback_from_journal if available (more comprehensive)
-        if command -v rollback_from_journal >/dev/null 2>&1; then
-            rollback_from_journal
+    # Deployment completed successfully — do NOT rollback
+    if [ "${_DEPLOY_COMPLETED:-0}" -eq 1 ]; then
+        if [ "$EXIT_CODE" -ge 128 ]; then
+            local signal_num=$((EXIT_CODE - 128))
+            log "Deployment completed — ignoring signal $signal_num (deploy already succeeded)"
         else
-            # Fallback to basic revert
-            revert_changes
+            log "Deployment completed — ignoring exit code $EXIT_CODE (deploy already succeeded)"
         fi
+        return
+    fi
 
-        # Destroy journal after successful rollback
+    if [ "${AGENT_MODE:-0}" -eq 1 ] && [ -n "${REMOTE_OPERATION:-}" ]; then
+        if [ "$EXIT_CODE" -ge 128 ]; then
+            local signal_num=$((EXIT_CODE - 128))
+            warn "Agent operation interrupted by signal $signal_num (exit code $EXIT_CODE)"
+        fi
+        return
+    fi
+
+    if [ "${_DEPLOY_STARTED:-0}" -ne 1 ]; then
+        if [ "$EXIT_CODE" -ge 128 ]; then
+            local signal_num=$((EXIT_CODE - 128))
+            warn "Interrupted by signal $signal_num (exit code $EXIT_CODE) — no deployment to roll back"
+        else
+            warn "Exit code $EXIT_CODE — no deployment to roll back"
+        fi
+        return
+    fi
+
+    log "Cleanup triggered (exit code $EXIT_CODE)"
+
+    if command -v rollback_from_journal >/dev/null 2>&1; then
+        rollback_from_journal
+    else
+        revert_changes
         if command -v journal_destroy >/dev/null 2>&1; then
             journal_destroy
         fi
+    fi
 
-        if [ "$EXIT_CODE" -ge 128 ]; then
-            # Signal exit codes: 130=SIGINT, 143=SIGTERM, etc.
-            local signal_num=$((EXIT_CODE - 128))
-            warn "Deployment interrupted by signal $signal_num (exit code $EXIT_CODE)"
-        else
-            error "Deployment failed (exit code $EXIT_CODE)."
-        fi
+    if [ "$EXIT_CODE" -ge 128 ]; then
+        local signal_num=$((EXIT_CODE - 128))
+        warn "Deployment interrupted by signal $signal_num (exit code $EXIT_CODE)"
+    else
+        error "Deployment failed (exit code $EXIT_CODE)."
     fi
 }
 
@@ -231,9 +260,27 @@ handle_revert_flag() {
         if [ -n "${esp_device:-}" ]; then
             log "Removing ESP partition /dev/$esp_device..."
             remote_mac_sudo diskutil unmount "/dev/$esp_device" 2>/dev/null || true
-            dry_run_exec "Erase ESP partition /dev/$esp_device" remote_mac_sudo diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || warn "Could not remove ESP partition /dev/$esp_device"
+            dry_run_exec "Erase ESP partition /dev/$esp_device" remote_mac_sudo diskutil eraseVolume free none "/dev/$esp_device" 2>/dev/null || true
+            if remote_mac_exec diskutil list 2>/dev/null | grep -q "$esp_device"; then
+                warn "ESP partition /dev/$esp_device still present after erase"
+            fi
         else
             warn "No $ESP_NAME partition found"
+        fi
+
+        # Remove leftover Linux partitions created by Subiquity/curtin
+        local _linux_parts_rev
+        _linux_parts_rev=$(remote_mac_exec "diskutil list $internal_disk 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
+        if [ -n "$_linux_parts_rev" ]; then
+            log "Found leftover Linux partitions — removing..."
+            echo "$_linux_parts_rev" | while IFS= read -r _line; do
+                _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
+                if [ -n "$_linux_dev" ]; then
+                    dry_run_exec "Remove Linux partition /dev/${_linux_dev}" \
+                        remote_mac_sudo diskutil eraseVolume free none "/dev/${_linux_dev}" 2>/dev/null || true
+                    log "Removed Linux partition /dev/${_linux_dev}"
+                fi
+            done
         fi
 
         # Restore macOS boot device

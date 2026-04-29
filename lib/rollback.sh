@@ -18,6 +18,7 @@ _ROLLBACK_SH_SOURCED=1
 source "${LIB_DIR:-./lib}/logging.sh"
 source "${LIB_DIR:-./lib}/retry.sh"
 source "${LIB_DIR:-./lib}/dryrun.sh"
+source "${LIB_DIR:-./lib}/colors.sh"
 
 ## Constants
 
@@ -42,24 +43,16 @@ journal_init() {
     # Create state directory
     mkdir -p "$STATE_DIR"
 
-    # Check for existing state from incomplete run
+    # Never resume a failed deployment — always start fresh
     if [ -f "$STATE_FILE" ]; then
-        journal_read
-
-        local phase_name
-        phase_name="${JOURNAL_PHASE:-unknown}"
-
-        # Ask user: resume or start fresh?
-        if tui_confirm "Incomplete Deployment" "Previous deployment incomplete at phase: ${phase_name}\n\nResume from where it left off, or start fresh?" 2>/dev/null; then
-            log_info "Resuming deployment from phase: ${phase_name}"
-            return 0
-        else
-            # User chose fresh start - backup old state
-            local backup_file
-            backup_file="${STATE_FILE}.$(date +%Y%m%d_%H%M%S).bak"
-            mv "$STATE_FILE" "$backup_file" 2>/dev/null || true
-            log_info "Starting fresh deployment (old state backed up to ${backup_file})"
-        fi
+        local backup_file
+        backup_file="${STATE_FILE}.$(date +%Y%m%d_%H%M%S).bak"
+        mv -f "$STATE_FILE" "$backup_file" 2>/dev/null || true
+        # Clear all JOURNAL_ variables from previous run
+        for _var in $(set 2>/dev/null | grep '^JOURNAL_' | cut -d= -f1); do
+            unset "$_var" 2>/dev/null || true
+        done
+        log_info "Previous deployment state found — starting fresh (old state backed up to ${backup_file})"
     fi
 
     # Create fresh state file with timestamp
@@ -72,7 +65,7 @@ journal_init() {
     fi
 
     # Atomic move
-    mv "$tmpfile" "$STATE_FILE"
+    mv -f "$tmpfile" "$STATE_FILE"
 
     return 0
 }
@@ -132,7 +125,7 @@ journal_set() {
     } > "$tmpfile"
 
     # Atomic rename
-    if mv "$tmpfile" "$STATE_FILE"; then
+    if mv -f "$tmpfile" "$STATE_FILE"; then
         return 0
     else
         error "journal_set: failed to update state file"
@@ -205,24 +198,46 @@ journal_destroy() {
 
 # snapshot_disk_layout internal_disk
 # Saves GPT backup before any disk modifications
+# In remote deployment mode, runs sgdisk and diskutil on the target Mac Pro
 snapshot_disk_layout() {
     local internal_disk="$1"
 
     log_info "Creating disk layout snapshot for ${internal_disk}"
 
-    # Save binary GPT backup (this is a WRITE operation)
-    if ! dry_run_exec "Saving GPT backup for ${internal_disk} to ${GPT_BACKUP_FILE}" \
-        sgdisk -b "$GPT_BACKUP_FILE" "$internal_disk"; then
-        warn "snapshot_disk_layout: sgdisk backup failed for ${internal_disk}"
-        return 1
+    mkdir -p "$STATE_DIR"
+
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        local remote_backup="/tmp/macpro-gpt-backup.bin"
+        local remote_layout="/tmp/macpro-gpt-layout.txt"
+        local remote_diskutil="/tmp/macpro-diskutil-list.txt"
+
+        if ! dry_run_exec "Saving GPT backup on remote ${internal_disk}" \
+            remote_mac_sudo "sgdisk -b '$remote_backup' '$internal_disk'"; then
+            warn "snapshot_disk_layout: sgdisk backup failed for ${internal_disk} on remote"
+            return 1
+        fi
+
+        dry_run_exec "Saving GPT layout text on remote ${internal_disk}" \
+            remote_mac_sudo "sgdisk -p '$internal_disk' > '$remote_layout' 2>/dev/null" || true
+
+        dry_run_exec "Saving diskutil list on remote ${internal_disk}" \
+            remote_mac_exec "diskutil list '$internal_disk' > '$remote_diskutil' 2>/dev/null" || true
+
+        remote_mac_cp "${TARGET_HOST:-macpro}:$remote_backup" "$GPT_BACKUP_FILE" 2>/dev/null || true
+        remote_mac_cp "${TARGET_HOST:-macpro}:$remote_layout" "${STATE_DIR}/gpt-layout.txt" 2>/dev/null || true
+        remote_mac_cp "${TARGET_HOST:-macpro}:$remote_diskutil" "${STATE_DIR}/diskutil-list.txt" 2>/dev/null || true
+    else
+        if ! dry_run_exec "Saving GPT backup for ${internal_disk} to ${GPT_BACKUP_FILE}" \
+            sgdisk -b "$GPT_BACKUP_FILE" "$internal_disk"; then
+            warn "snapshot_disk_layout: sgdisk backup failed for ${internal_disk}"
+            return 1
+        fi
+
+        dry_run_exec "Saving GPT layout text for ${internal_disk}" \
+            sh -c "sgdisk -p '$internal_disk' > '${STATE_DIR}/gpt-layout.txt' 2>/dev/null" || true
+
+        diskutil list "$internal_disk" > "${STATE_DIR}/diskutil-list.txt" 2>/dev/null || true
     fi
-
-    # Save text version for reference
-    dry_run_exec "Saving GPT layout text for ${internal_disk}" \
-        sh -c "sgdisk -p '$internal_disk' > '${STATE_DIR}/gpt-layout.txt' 2>/dev/null" || true
-
-    # Save diskutil list output
-    diskutil list "$internal_disk" > "${STATE_DIR}/diskutil-list.txt" 2>/dev/null || true
 
     journal_set "GPT_BACKUP" "yes"
     log_info "Disk layout saved to ${GPT_BACKUP_FILE}"
@@ -281,6 +296,11 @@ run_phased() {
     local total_phases=${#phases[@]}
     local current_idx=0
 
+    if command -v tui_splash_init >/dev/null 2>&1; then
+        SPLASH_STEP_COUNT=$total_phases
+        SPLASH_STEP_CURRENT=0
+    fi
+
     while [ $current_idx -lt $total_phases ]; do
         local phase_name="${phases[$current_idx]}"
         local phase_func="${phase_funcs[$current_idx]}"
@@ -295,8 +315,16 @@ run_phased() {
 
         log_info "=== Phase ${phase_num}/${total_phases}: ${phase_name} ==="
 
+        local phase_label="Phase ${phase_num}/${total_phases}: ${phase_name}"
+        if command -v tui_splash_step >/dev/null 2>&1; then
+            tui_splash_step "$phase_label"
+        fi
+
         if is_dry_run; then
             log_info "[DRY-RUN] Would execute phase: ${phase_name}"
+            if command -v tui_splash_step_done >/dev/null 2>&1; then
+                tui_splash_step_done "${phase_label} (dry-run)"
+            fi
             current_idx=$((current_idx + 1))
             continue
         fi
@@ -319,7 +347,13 @@ run_phased() {
         if [ $exit_code -eq 0 ]; then
             journal_set_phase "$phase_name"
             log_info "Phase ${phase_name} completed successfully"
+            if command -v tui_splash_step_done >/dev/null 2>&1; then
+                tui_splash_step_done "$phase_label"
+            fi
         else
+            if command -v tui_splash_fail >/dev/null 2>&1; then
+                tui_splash_fail "$phase_label"
+            fi
             handle_phase_failure "$phase_name" "$exit_code"
             return 1
         fi
@@ -372,16 +406,32 @@ rollback_internal() {
     # Step 1: Restore boot device
     local original_boot="${JOURNAL_ORIGINAL_BOOT_DEVICE:-}"
     if [ -n "$original_boot" ]; then
+        printf '\r%b  %b▸%b Restoring boot device to %s            \r' "$CLR" "$CYAN" "$NC" "$original_boot" >&2
         log_info "Attempting to restore boot device to ${original_boot}"
-        if dry_run_exec "Restoring boot device to ${original_boot}" \
-            bless --mount "$original_boot" --setBoot 2>/dev/null; then
-            rollback_status="${rollback_status}boot_restored "
-            log_info "Boot device restored successfully"
+        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+            if dry_run_exec "Restoring boot device to ${original_boot}" \
+                remote_mac_sudo bless --mount "$original_boot" --setBoot 2>/dev/null; then
+                rollback_status="${rollback_status}boot_restored "
+                log_info "Boot device restored successfully"
+                printf '\r%b  %b✓%b Boot device restored                    \n' "$CLR" "$GREEN" "$NC" >&2
+            else
+                warn "rollback_internal: bless failed on remote — firmware may not support NVRAM boot device changes"
+                warn "  Workaround: Option key at startup → Startup Disk"
+                rollback_status="${rollback_status}boot_failed(firmware) "
+                printf '\r%b  %b✗%b Boot device restore failed (firmware)   \n' "$CLR" "$YELLOW" "$NC" >&2
+            fi
         else
-            # bless may fail on this hardware/firmware
-            warn "rollback_internal: bless failed — firmware may not support NVRAM boot device changes"
-            warn "rollback_internal: Workaround: Use keyboard Option key at startup to select boot device, or System Preferences → Startup Disk"
-            rollback_status="${rollback_status}boot_failed(firmware) "
+            if dry_run_exec "Restoring boot device to ${original_boot}" \
+                bless --mount "$original_boot" --setBoot 2>/dev/null; then
+                rollback_status="${rollback_status}boot_restored "
+                log_info "Boot device restored successfully"
+                printf '\r%b  %b✓%b Boot device restored                    \n' "$CLR" "$GREEN" "$NC" >&2
+            else
+                warn "rollback_internal: bless failed — firmware may not support NVRAM boot device changes"
+                warn "  Workaround: Option key at startup → Startup Disk"
+                rollback_status="${rollback_status}boot_failed(firmware) "
+                printf '\r%b  %b✗%b Boot device restore failed (firmware)   \n' "$CLR" "$YELLOW" "$NC" >&2
+            fi
         fi
     fi
 
@@ -390,51 +440,127 @@ rollback_internal() {
     local esp_device="${JOURNAL_ESP_DEVICE:-}"
 
     if [ "$esp_created" = "1" ] && [ -n "$esp_device" ]; then
+        printf '\r%b  %b▸%b Removing ESP partition %s            \r' "$CLR" "$CYAN" "$NC" "$esp_device" >&2
         log_info "Removing created ESP partition ${esp_device}"
 
-        # Unmount first
-        dry_run_exec "Unmounting ESP /dev/${esp_device}" \
-            diskutil unmount "/dev/${esp_device}" 2>/dev/null || true
-
-        # Erase to free space
-        if dry_run_exec "Erasing ESP partition ${esp_device} to free space" \
-            remote_mac_retry_diskutil eraseVolume free none "/dev/${esp_device}" 2>/dev/null; then
-            rollback_status="${rollback_status}esp_removed "
-            log_info "ESP partition removed"
+        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+            dry_run_exec "Unmounting ESP /dev/${esp_device}" \
+                remote_mac_exec diskutil unmount "/dev/${esp_device}" 2>/dev/null || true
         else
-            warn "rollback_internal: failed to remove ESP partition ${esp_device}"
-            rollback_status="${rollback_status}esp_failed "
+            dry_run_exec "Unmounting ESP /dev/${esp_device}" \
+                diskutil unmount "/dev/${esp_device}" 2>/dev/null || true
+        fi
+
+        # Erase to free space — diskutil eraseVolume may return non-zero on success
+        local _erase_stderr
+        _erase_stderr="$(mktemp)"
+        local _erase_rc=0
+        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+            remote_mac_retry_diskutil eraseVolume free none "/dev/${esp_device}" 2>"$_erase_stderr" || _erase_rc=$?
+        else
+            dry_run_exec "Erasing ESP partition ${esp_device} to free space" \
+                diskutil eraseVolume free none "/dev/${esp_device}" 2>"$_erase_stderr" || _erase_rc=$?
+        fi
+        rm -f "$_erase_stderr" 2>/dev/null || true
+
+        # Verify ESP actually removed — diskutil eraseVolume can return non-zero on success
+        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+            if remote_mac_exec diskutil list 2>/dev/null | grep -q "$esp_device"; then
+                warn "rollback_internal: ESP partition ${esp_device} still present after erase"
+                rollback_status="${rollback_status}esp_failed "
+            else
+                rollback_status="${rollback_status}esp_removed "
+                printf '\r%b  %b✓%b ESP partition removed                   \n' "$CLR" "$GREEN" "$NC" >&2
+            fi
+        else
+            if diskutil list 2>/dev/null | grep -q "$esp_device"; then
+                warn "rollback_internal: ESP partition ${esp_device} still present after erase"
+                rollback_status="${rollback_status}esp_failed "
+            else
+                rollback_status="${rollback_status}esp_removed "
+                printf '\r%b  %b✓%b ESP partition removed                   \n' "$CLR" "$GREEN" "$NC" >&2
+            fi
         fi
     fi
 
-    # Step 3: Restore APFS size if resized
+    # Step 3: Remove any leftover Linux partitions created by Subiquity
+    # (curtin creates a "Linux Filesystem" partition that rollback must clean up)
+    if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+        _linux_parts=$(remote_mac_exec "diskutil list /dev/disk0 2>/dev/null | grep 'Linux Filesystem'" 2>/dev/null || true)
+    else
+        _linux_parts=$(diskutil list /dev/disk0 2>/dev/null | grep 'Linux Filesystem' || true)
+    fi
+    if [ -n "$_linux_parts" ]; then
+        printf '\r%b  %b▸%b Removing leftover Linux partitions         \r' "$CLR" "$CYAN" "$NC" >&2
+        log_info "Found leftover Linux partitions — removing"
+        # Extract partition identifiers (e.g. disk0s4)
+        echo "$_linux_parts" | while IFS= read -r _line; do
+            _linux_dev=$(echo "$_line" | grep -oE 'disk[0-9]+s[0-9]+' | head -1)
+            if [ -n "$_linux_dev" ]; then
+                if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+                    dry_run_exec "Removing Linux partition /dev/${_linux_dev}" \
+                        remote_mac_exec "sudo -n diskutil eraseVolume free none /dev/${_linux_dev}" 2>/dev/null || true
+                else
+                    dry_run_exec "Removing Linux partition /dev/${_linux_dev}" \
+                        diskutil eraseVolume free none "/dev/${_linux_dev}" 2>/dev/null || true
+                fi
+                log_info "Removed Linux partition /dev/${_linux_dev}"
+            fi
+        done
+        printf '\r%b  %b✓%b Linux partitions removed                   \n' "$CLR" "$GREEN" "$NC" >&2
+        rollback_status="${rollback_status}linux_removed "
+    fi
+
+    # Step 4: Restore APFS size if resized
     local apfs_resized="${JOURNAL_APFS_RESIZED:-}"
     local original_size="${JOURNAL_ORIGINAL_APFS_SIZE:-}"
-    local apfs_container="${JOURNAL_APFS_CONTAINER:-}"
+    local apfs_container="${JOURNAL_ORIGINAL_APFS_CONTAINER:-${JOURNAL_APFS_CONTAINER:-}}"
 
     if [ "$apfs_resized" = "1" ] && [ -n "$apfs_container" ]; then
-        if [ -n "$original_size" ]; then
-            log_info "Restoring APFS container to ${original_size}GB"
-            if dry_run_exec "Restoring APFS container to ${original_size}GB" \
-                remote_mac_retry_diskutil apfs resizeContainer "$apfs_container" "${original_size}g" 2>/dev/null; then
-                rollback_status="${rollback_status}apfs_restored "
-                log_info "APFS container restored"
-            else
-                warn "rollback_internal: failed to restore APFS size"
-                rollback_status="${rollback_status}apfs_failed "
-            fi
+        printf '\r%b  %b▸%b Expanding APFS container to fill disk   \r' "$CLR" "$CYAN" "$NC" >&2
+        log_info "Expanding APFS container to fill available space"
+
+        local _original_target="${JOURNAL_ORIGINAL_APFS_SIZE:-0}"
+        local _grow_target="0"
+
+        # diskutil apfs resizeContainer may return non-zero on success
+        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+            remote_mac_retry_diskutil apfs resizeContainer "$apfs_container" "$_grow_target" 2>/dev/null || true
+        else
+            dry_run_exec "Expanding APFS to fill available space" \
+                diskutil apfs resizeContainer "$apfs_container" "$_grow_target" 2>/dev/null || true
         fi
 
-        # Expand to fill any freed space (best effort)
-        log_info "Expanding APFS to fill available space"
-        dry_run_exec "Expanding APFS to fill available space" \
-            remote_mac_retry_diskutil apfs resizeContainer "$apfs_container" 0 2>/dev/null || true
+        # Verify actual APFS size instead of trusting exit code
+        sleep 2
+        local _verify_size=""
+        if [ "${DEPLOY_MODE:-remote}" = "remote" ] && [ -n "${TARGET_HOST:-}" ]; then
+            _verify_size=$(remote_mac_exec diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
+        else
+            _verify_size=$(diskutil apfs list "$apfs_container" 2>/dev/null | grep "Size (Capacity Ceiling)" | awk '{print $4}' || true)
+        fi
+
+        # With grow-to-fill (target=0), verify container expanded beyond original size
+        # _original_target is in GB (decimal, as reported by diskutil) — convert to bytes for comparison
+        # diskutil uses decimal GB (10^9), not binary GiB (2^30)
+        # GB display rounds up, so allow ±1GB tolerance
+        local _original_bytes
+        _original_bytes=$(awk -v gb="${_original_target:-0}" 'BEGIN { printf "%.0f", gb * 1000000000 }')
+        local _min_bytes=$(( ${_original_bytes:-0} - 1000000000 ))
+        if [ -n "$_verify_size" ] && [ "$_verify_size" -ge "${_min_bytes:-0}" ] 2>/dev/null; then
+            rollback_status="${rollback_status}apfs_restored "
+            printf '\r%b  %b✓%b APFS container expanded                \n' "$CLR" "$GREEN" "$NC" >&2
+        else
+            warn "rollback_internal: APFS container did not expand (current: ${_verify_size:-unknown})"
+            rollback_status="${rollback_status}apfs_failed "
+        fi
     fi
 
     log_info "Internal partition rollback completed (status: ${rollback_status:-none})"
 
     case "$rollback_status" in
         *failed*)
+            printf '\r%b  %b✗%b Rollback completed with partial failures     \n' "$CLR" "$YELLOW" "$NC" >&2
             warn "Rollback had partial failures"
             return 1
             ;;
@@ -503,6 +629,7 @@ rollback_vm() {
 # Reads journal and dispatches to appropriate rollback function
 rollback_from_journal() {
     log_info "Initiating rollback from journal"
+    printf '\n  %b── Rollback ──%b\n' "$CYAN" "$NC" >&2
 
     journal_read
 
@@ -519,10 +646,15 @@ rollback_from_journal() {
             rollback_vm
             ;;
         *)
-            # Try to infer from journal state
-            if [ -n "${JOURNAL_USB_DEVICE:-}" ]; then
+            # Infer from journal state
+            local has_usb="${JOURNAL_USB_DEVICE:-}"
+            local has_vm="${JOURNAL_VM_NAME:-}"
+            if [ -n "$has_usb" ]; then
                 log_info "Inferred USB rollback from journal state"
                 rollback_usb
+            elif [ -n "$has_vm" ]; then
+                log_info "Inferred VM rollback from journal state"
+                rollback_vm
             elif [ -n "${JOURNAL_APFS_CONTAINER:-}" ]; then
                 log_info "Inferred internal rollback from journal state"
                 rollback_internal
@@ -533,7 +665,15 @@ rollback_from_journal() {
     esac
 
     log_info "Rollback completed"
-    return 0
+    printf '\r%b  %b✓%b Rollback completed                          \n' "$CLR" "$GREEN" "$NC" >&2
+
+    # Destroy journal after rollback — never resume a failed deployment
+    journal_destroy
+    # Clear all JOURNAL_ vars from shell environment
+    for _jrvar in $(set 2>/dev/null | grep '^JOURNAL_' | cut -d= -f1); do
+        unset "$_jrvar" 2>/dev/null || true
+    done
+    unset _jrvar
 }
 
 ## Error Reporting
@@ -633,7 +773,7 @@ show_recovery_instructions() {
     echo "  1. To revert all changes: sudo ./prepare-deployment.sh --revert"
     echo "  2. To boot macOS: Hold Option key at startup, select macOS"
     echo "  3. For Recovery Mode: Hold Cmd+R at startup"
-    echo "  4. If SIP blocks bless: Recovery Mode → csrutil enable --without nvram → reboot → retry"
+    echo "  4. If bless fails: Recovery Mode → csrutil enable --without nvram → reboot → retry"
 
     return 0
 }
