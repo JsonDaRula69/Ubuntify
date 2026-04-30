@@ -22,8 +22,12 @@ WEBHOOK_PORT="8080"
 # Password storage: plaintext, aes256, keychain
 ENCRYPTION="plaintext"
 
-# Target Mac Pro SSH hostname/IP
+# Target Mac Pro SSH hostname/IP (macOS partition)
 TARGET_HOST="__REPLACE__"
+
+# Linux host for Manage mode (Ubuntu SSH endpoint, e.g. macpro-linux or 192.168.1.x)
+# If not set, defaults to "macpro-linux" (resolved via SSH config)
+LINUX_HOST=""
 
 # Remote sudo password (stored encrypted if encryption is enabled)
 REMOTE_SUDO_PASSWORD="__REPLACE__"

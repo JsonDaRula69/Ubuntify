@@ -799,6 +799,39 @@ tui_splash_hold() {
     printf '\n'
 }
 
+# Show a countdown timer that auto-proceeds after N seconds.
+# Press 'c' to cancel. Returns 0 if countdown completes, 1 if cancelled.
+# Usage: tui_countdown "Title" "Message" 30
+tui_countdown() {
+    local title="$1"
+    local message="$2"
+    local seconds="${3:-30}"
+
+    if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        agent_output "countdown" "$title" "auto-proceed in ${seconds}s"
+        return 0
+    fi
+
+    if ! test -r /dev/tty 2>/dev/null || ! test -w /dev/tty 2>/dev/null; then
+        printf '\n  %s — auto-proceed in %ds (no TTY)\n' "$title" "$seconds" >&2
+        sleep "$seconds"
+        return 0
+    fi
+
+    local remaining="$seconds"
+    while [ "$remaining" -gt 0 ]; do
+        printf '\r  %s — %s [Press c to cancel] \033[1m%3ds\033[0m    ' "$title" "$message" "$remaining" >&2
+        IFS= read -r -t 1 -n 1 key < /dev/tty 2>/dev/null || true
+        if [ "$key" = "c" ] || [ "$key" = "C" ]; then
+            printf '\r  %s — cancelled.                                  \n' "$title" >&2
+            return 1
+        fi
+        remaining=$((remaining - 1))
+    done
+    printf '\r  %s — proceeding.                                     \n' "$title" >&2
+    return 0
+}
+
 
 
 

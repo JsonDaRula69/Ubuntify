@@ -12,6 +12,7 @@ _REVERT_REQUESTED=0
 CONFIRM_YES=0
 JSON_OUTPUT=0
 REMOTE_HOST=""
+LINUX_HOST=""
 REMOTE_OPERATION=""
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -262,6 +263,7 @@ parse_conf() {
             # Encryption
             ENCRYPTION)     ENCRYPTION="$value" ;;
             TARGET_HOST)    TARGET_HOST="$value" ;;
+            LINUX_HOST)     LINUX_HOST="$value" ;;
             REMOTE_SUDO_PASSWORD) REMOTE_SUDO_PASSWORD="$value" ;;
             MACOS_SIZE_MODE) MACOS_SIZE_MODE="$value" ;;
             MACOS_SIZE_GB)  MACOS_SIZE_GB="$value" ;;
@@ -417,6 +419,7 @@ EOF
             "Webhook:         ${WEBHOOK_HOST}:${WEBHOOK_PORT}" "webhook" \
             "Hostname:        ${HOSTNAME:-(not set)}" "hostname" \
             "Target Host:     ${TARGET_HOST:-(not set)}" "target_host" \
+            "Linux Host:      ${LINUX_HOST:-macpro-linux}" "linux_host" \
             "Encryption:      ${ENCRYPTION:-plaintext}" "encryption" \
             "▸ Done — proceed" "done" || return 1
         local choice="$_TUI_RESULT"
@@ -442,7 +445,7 @@ EOF
     WHURL="http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/webhook"
     export USERNAME REALNAME PASSWORD_HASH HOSTNAME SSH_KEYS SSH_KEYS_FILE
     export WIFI_SSID WIFI_PASSWORD WEBHOOK_HOST WEBHOOK_PORT WHURL
-    export TARGET_HOST REMOTE_SUDO_PASSWORD
+    export TARGET_HOST LINUX_HOST REMOTE_SUDO_PASSWORD
     return 0
 }
 
@@ -930,6 +933,7 @@ EOF
     summary="${summary}SSH Keys:    ${ssh_key_count} key(s)\n"
     summary="${summary}\n"
     summary="${summary}Target Host:      ${TARGET_HOST:-macpro}\n"
+    summary="${summary}Linux Host:       ${LINUX_HOST:-macpro-linux}\n"
     summary="${summary}Deployment Method: ${method_name}\n"
     summary="${summary}Storage Layout:      ${storage_name}\n"
     if [ "${STORAGE_LAYOUT:-1}" = "1" ]; then
@@ -1073,6 +1077,7 @@ EOF
         printf 'WEBHOOK_PORT="%s"\n' "$(_conf_escape "$WEBHOOK_PORT")"
         printf 'ENCRYPTION="%s"\n' "$(_conf_escape "$ENCRYPTION")"
         printf 'TARGET_HOST="%s"\n' "$(_conf_escape "$TARGET_HOST")"
+        printf 'LINUX_HOST="%s"\n' "$(_conf_escape "${LINUX_HOST:-}")"
         printf 'REMOTE_SUDO_PASSWORD="%s"\n' "$(_conf_escape "$REMOTE_SUDO_PASSWORD")"
         printf 'MACOS_SIZE_MODE="%s"\n' "$(_conf_escape "${MACOS_SIZE_MODE:-}")"
         printf 'MACOS_SIZE_GB="%s"\n' "$(_conf_escape "${MACOS_SIZE_GB:-}")"
@@ -1205,6 +1210,16 @@ prompt_target_host() {
                 esac
             done
         fi
+    fi
+
+    # Auto-derive LINUX_HOST from TARGET_HOST if not set
+    # Convention: if TARGET_HOST is "macpro.local", LINUX_HOST defaults to "macpro-linux"
+    if [ -z "${LINUX_HOST:-}" ] && [ -n "${TARGET_HOST:-}" ]; then
+        local _base_host
+        _base_host="$(echo "$TARGET_HOST" | sed 's/\.[^.]*$//' | sed 's/-mac$//' | sed 's/\.local$//')"
+        LINUX_HOST="${_base_host}-linux"
+        log_info "Auto-detected Linux host: $LINUX_HOST (from TARGET_HOST=$TARGET_HOST)"
+        save_config_key "LINUX_HOST" "$LINUX_HOST"
     fi
 
     if [ "$AGENT_MODE" -ne 1 ]; then
@@ -1405,6 +1420,7 @@ show_help() {
     echo "  --webhook-port PORT   Override webhook port from deploy.conf"
     echo "  --encryption MODE     Password storage: plaintext, aes256, keychain (default: plaintext)"
     echo "  --target-host HOST    Mac Pro SSH hostname/IP (e.g., macpro)"
+    echo "  --linux-host HOST     Linux host for Manage mode (default: derived from TARGET_HOST)"
     echo "  --remote-password PWD Remote sudo password (Warning: visible in ps; prefer deploy.conf)"
     echo "  --username USER       Override username from deploy.conf"
     echo "  --hostname HOST       Override hostname from deploy.conf"
@@ -1452,8 +1468,8 @@ while [ $# -gt 0 ]; do
         --macos-size=*)      MACOS_SIZE_MODE="${1#*=}"; shift ;;
         --macos-gb)          MACOS_SIZE_GB="$2"; shift 2 ;;
         --macos-gb=*)        MACOS_SIZE_GB="${1#*=}"; shift ;;
-        --host)              REMOTE_HOST="$2"; shift 2 ;;
-        --host=*)            REMOTE_HOST="${1#*=}"; shift ;;
+        --host)              REMOTE_HOST="$2"; LINUX_HOST="${LINUX_HOST:-$REMOTE_HOST}"; shift 2 ;;
+        --host=*)            REMOTE_HOST="${1#*=}"; LINUX_HOST="${LINUX_HOST:-$REMOTE_HOST}"; shift ;;
         --operation)         REMOTE_OPERATION="$2"; shift 2 ;;
         --operation=*)       REMOTE_OPERATION="${1#*=}"; shift ;;
         --wifi-ssid)         WIFI_SSID="$2"; shift 2 ;;
@@ -1469,6 +1485,8 @@ while [ $# -gt 0 ]; do
 
         --target-host)          TARGET_HOST="$2"; shift 2 ;;
         --target-host=*)        TARGET_HOST="${1#*=}"; shift ;;
+        --linux-host)           LINUX_HOST="$2"; shift 2 ;;
+        --linux-host=*)         LINUX_HOST="${1#*=}"; shift ;;
         --remote-password)      REMOTE_SUDO_PASSWORD="$2"; shift 2 ;;
         --remote-password=*)    REMOTE_SUDO_PASSWORD="${1#*=}"; shift ;;
         --username)            USERNAME="$2"; shift 2 ;;
@@ -1652,16 +1670,17 @@ menu_deploy() {
 
     tui_msgbox "Deployment Complete" "Deployment preparation complete!\n\nBoot device: CIDATA (set via bless --nextonly)\nLog: $(log_get_file_path)"
 
-    if tui_confirm "Reboot Mac Pro Now?" "The Mac Pro will boot into the Ubuntu installer.\n\nFrom macOS: sudo reboot\n\nReboot remote Mac Pro now?"; then
-        log_info "Rebooting Mac Pro per user confirmation..."
+    if tui_countdown "Rebooting Mac Pro" "The Mac Pro will boot into the Ubuntu installer" 30; then
+        log_info "Rebooting Mac Pro (auto)..."
         if remote_mac_exec "sudo reboot" 2>/dev/null; then
             log_info "Reboot command sent to Mac Pro"
-            tui_msgbox "Rebooting" "Reboot command sent to Mac Pro.\n\nMonitor the webhook server for installation progress:\n  http://${WEBHOOK_HOST:-192.168.1.115}:${WEBHOOK_PORT:-8080}\n\nAfter Ubuntu installs, use 'macpro-linux' as SSH hostname."
+            tui_msgbox "Rebooting" "Reboot command sent to Mac Pro.\n\nMonitor the webhook server for installation progress:\n  http://${WEBHOOK_HOST:-192.168.1.115}:${WEBHOOK_PORT:-8080}\n\nAfter Ubuntu installs, connect via: ssh ${LINUX_HOST:-macpro-linux}"
         else
-            tui_msgbox "Reboot Failed" "Could not send reboot command.\n\nManually reboot: ssh macpro 'sudo reboot'"
+            tui_msgbox "Reboot Failed" "Could not send reboot command.\n\nManually reboot: ssh ${TARGET_HOST:-macpro} 'sudo reboot'"
         fi
     else
-        log_info "Reboot deferred by user"
+        log_info "Reboot cancelled by user"
+        tui_msgbox "Reboot Cancelled" "Mac Pro will NOT reboot.\n\nTo reboot manually:\n  ssh ${TARGET_HOST:-macpro} 'sudo reboot'"
     fi
 }
 
@@ -2125,7 +2144,7 @@ _agent_manage() {
     local op="${REMOTE_OPERATION:-}"
     [ -z "$op" ] && agent_error "Missing --operation for manage mode. Available: $_AGENT_OPERATIONS" "$E_AGENT_PARAM"
 
-    local host="${REMOTE_HOST:-macpro-linux}"
+    local host="${LINUX_HOST:-${REMOTE_HOST:-macpro-linux}}"
 
     case "$op" in
         sysinfo)         remote_get_info "$host" ;;
