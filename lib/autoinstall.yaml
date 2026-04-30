@@ -92,11 +92,14 @@ __SSH_KEYS__
       fi
 
       # Install kernel headers
-      wh '{"progress":5,"stage":"prep-headers","status":"installing","message":"Installing kernel headers"}'
-      log "Installing kernel headers..."
+      wh '{"progress":5,"stage":"prep-headers","status":"installing","message":"Installing kernel headers and extra modules"}'
+      log "Installing kernel headers and extra modules..."
       dpkg --force-depends --skip-same-version -i $PKGS/linux-headers-${ABI_VER}_*.deb \
               $PKGS/linux-headers-${KVER}_*.deb \
               $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { die "kernel headers install failed" 5; }
+      # linux-modules-extra contains cfg80211, mac80211 — required by wl driver
+      dpkg --force-depends --skip-same-version -i $PKGS/linux-modules-extra-${KVER}_*.deb 2>>"$LOG" || { die "linux-modules-extra install failed — WiFi driver will not work without cfg80211" 5; }
+      depmod -a "$KVER" 2>>"$LOG" || log "WARN: depmod in live env returned non-zero"
 
       # Install build toolchain
       wh '{"progress":10,"stage":"prep-toolchain","status":"installing","message":"Installing build toolchain (gcc, make, binutils)"}'
@@ -549,15 +552,17 @@ __SSH_KEYS__
         die "DKMS patches missing — broadcom-sta cannot compile on kernel 6.8+" 30
       fi
 
-      # Stage 1: Kernel headers (no deps)
-      wh '{"progress":35,"stage":"late-headers","status":"installing","message":"Stage 1/4: Installing kernel headers into target"}'
-      dpkg --root /target --force-depends --skip-same-version -i \
-        $PKGS/linux-headers-${ABI_VER}_*.deb \
-        $PKGS/linux-headers-${KVER}_*.deb \
-        $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { die "Stage 1 (headers) failed" 35; }
+       # Stage 1: Kernel headers (no deps)
+       wh '{"progress":35,"stage":"late-headers","status":"installing","message":"Stage 1/5: Installing kernel headers and extra modules into target"}'
+       dpkg --root /target --force-depends --skip-same-version -i \
+         $PKGS/linux-headers-${ABI_VER}_*.deb \
+         $PKGS/linux-headers-${KVER}_*.deb \
+         $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { die "Stage 1 (headers) failed" 35; }
+       dpkg --root /target --force-depends --skip-same-version -i $PKGS/linux-modules-extra-${KVER}_*.deb 2>>"$LOG" || { die "Stage 1 (linux-modules-extra) failed — cfg80211 required for WiFi" 35; }
+       chroot /target depmod -a "$KVER" 2>>"$LOG" || log "WARN: depmod in target returned non-zero"
 
       # Stage 2: Base libraries first, then binaries that depend on them
-      wh '{"progress":45,"stage":"late-libs","status":"installing","message":"Stage 2/4: Installing base libraries into target"}'
+      wh '{"progress":45,"stage":"late-libs","status":"installing","message":"Stage 2/5: Installing base libraries into target"}'
       dpkg --root /target --force-depends --skip-same-version -i \
         $PKGS/binutils-common_*.deb $PKGS/libbinutils_*.deb \
         $PKGS/libctf-nobfd0_*.deb $PKGS/libctf0_*.deb \
@@ -574,14 +579,14 @@ __SSH_KEYS__
         $PKGS/gcc-13-x86-64-linux-gnu_*.deb $PKGS/gcc-13_*.deb 2>>"$LOG" || { die "Stage 2 (libs) failed" 45; }
 
       # Stage 3: Build tools (depend on stage 2)
-      wh '{"progress":55,"stage":"late-tools","status":"installing","message":"Stage 3/4: Installing build tools into target"}'
+      wh '{"progress":55,"stage":"late-tools","status":"installing","message":"Stage 3/5: Installing build tools into target"}'
       dpkg --root /target --force-depends --skip-same-version -i \
         $PKGS/make_*.deb $PKGS/build-essential_*.deb \
         $PKGS/fakeroot_*.deb $PKGS/libfakeroot_*.deb \
         $PKGS/patch_*.deb 2>>"$LOG" || { die "Stage 3 (tools) failed" 55; }
 
       # Stage 4: DKMS and driver (depend on stage 3)
-      wh '{"progress":60,"stage":"late-dkms","status":"building","message":"Stage 4/4: Installing DKMS and compiling WiFi driver for target"}'
+      wh '{"progress":60,"stage":"late-dkms","status":"building","message":"Stage 4/5: Installing DKMS and compiling WiFi driver for target"}'
       # broadcom-sta-dkms postinst auto-runs 'dkms add' — non-fatal, we build manually after patches
       dpkg --root /target --force-depends --skip-same-version -i $PKGS/dkms_*.deb $PKGS/broadcom-sta-dkms_*.deb 2>>"$LOG" || log "WARN: dkms/broadcom dpkg returned non-zero (expected if postinst dkms build fails before patches)"
       # dkms add handled by postinst; clean any broken auto-build before patching
@@ -894,13 +899,22 @@ __SSH_KEYS__
         VERIFY_OK=false
       fi
       WIFI_MODULE_FOUND=false
-      if ls /target/lib/modules/*/updates/dkms/wl.ko 2>/dev/null | head -1 > /dev/null 2>&1; then
+      if ls /target/lib/modules/*/updates/dkms/wl.ko* 2>/dev/null | head -1 > /dev/null 2>&1; then
         WIFI_MODULE_FOUND=true
-      elif ls /target/lib/modules/*/extra/wl.ko 2>/dev/null | head -1 > /dev/null 2>&1; then
+      elif ls /target/lib/modules/*/extra/wl.ko* 2>/dev/null | head -1 > /dev/null 2>&1; then
         WIFI_MODULE_FOUND=true
       fi
       if [ "$WIFI_MODULE_FOUND" = "false" ]; then
         log "FATAL: No WiFi driver module in /target — no network after reboot"
+        WIFI_OK=false
+        VERIFY_OK=false
+      fi
+      CFG80211_FOUND=false
+      if ls /target/lib/modules/*/kernel/net/wireless/cfg80211.ko* 2>/dev/null | head -1 > /dev/null 2>&1; then
+        CFG80211_FOUND=true
+      fi
+      if [ "$CFG80211_FOUND" = "false" ]; then
+        log "FATAL: No cfg80211 module in /target — wl driver will fail to load"
         WIFI_OK=false
         VERIFY_OK=false
       fi
