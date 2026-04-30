@@ -22,8 +22,10 @@ source "${LIB_DIR:-./lib}/dryrun.sh"
 
 ## Connection Helpers
 
+# Remote management targets the Ubuntu instance, not macOS.
+# Precedence: explicit arg > LINUX_HOST (from config) > macpro-linux
 remote__get_host() {
-    local host="${1:-macpro-linux}"
+    local host="${1:-${LINUX_HOST:-macpro-linux}}"
     echo "$host"
 }
 
@@ -34,7 +36,8 @@ remote__ssh_cmd() {
 }
 
 remote__exec() {
-    local host="${1:-macpro-linux}"
+    local host
+    host=$(remote__get_host "$1")
     shift
     local cmd="$*"
 
@@ -861,13 +864,40 @@ remote_boot_macos() {
 
     log "Setting macOS as next boot device..."
     local boot_entry
-    boot_entry=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -i macos | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || {
-        error "Could not find macOS boot entry"
-        return 1
-    }
+    boot_entry=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -i macos | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || true
+
+    # Also check Apple's standard boot numbers (Boot80/81)
+    if [ -z "$boot_entry" ]; then
+        boot_entry=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep 'Boot80\|Boot81' | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || true
+    fi
+
+    # If still no entry, try to create one from the Apple ESP
+    if [ -z "$boot_entry" ]; then
+        log "No macOS boot entry found — attempting to create one from ESP..."
+        boot_entry=$(remote__exec "$host" "sudo bash -c 'export LIBEFIVAR_OPS=efivarfs; \
+            ESP_DEV=\"\"; \
+            for dev in /dev/sda1 /dev/nvme0n1p1; do [ -b \"\$dev\" ] && ESP_DEV=\"\$dev\" && break; done; \
+            if [ -z \"\$ESP_DEV\" ]; then ESP_DEV=\$(lsblk -no NAME,FSTYPE /dev/sda 2>/dev/null | grep -m1 vfat | awk \"{print \\\"/dev/\\\"\\\$1}\"); fi; \
+            if [ -z \"\$ESP_DEV\" ]; then echo \"NO_ESP\"; exit 0; fi; \
+            MNT=/tmp/esp_boot_macos; mkdir -p \$MNT; mount \$ESP_DEV \$MNT 2>/dev/null || true; \
+            if [ -f \"\$MNT/EFI/Apple/AppleEFI/Boot.efi\" ] || [ -f \"\$MNT/EFI/APPLE/APPLEEFI/BOOT.EFI\" ]; then \
+                APPLE_DISK=\$(echo \$ESP_DEV | sed \"s/[0-9]*\$//\"); \
+                APPLE_PART=\$(echo \$ESP_DEV | sed \"s/.*[^0-9]//\"); \
+                efibootmgr --create --label \"macOS\" --disk \$APPLE_DISK --part \$APPLE_PART --loader \"\\\\EFI\\\\Apple\\\\AppleEFI\\\\Boot.efi\" 2>/dev/null || true; \
+                sleep 1; \
+                efibootmgr | grep -i macos | head -1 | grep -oE \"Boot[0-9A-F]+\" | sed \"s/Boot//\"; \
+            else \
+                echo \"NO_BOOTLOADER\"; \
+            fi; \
+            umount \$MNT 2>/dev/null || true'") || true
+        if [ "$boot_entry" = "NO_ESP" ] || [ "$boot_entry" = "NO_BOOTLOADER" ]; then
+            boot_entry=""
+        fi
+    fi
 
     if [ -z "$boot_entry" ]; then
-        error "No macOS boot entry found in EFI"
+        error "No macOS boot entry found and could not create one"
+        log "Hold Option key at startup to boot into macOS"
         return 1
     fi
 
