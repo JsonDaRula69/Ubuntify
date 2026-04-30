@@ -566,7 +566,7 @@ __SSH_KEYS__
         $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { die "Stage 1 (headers) failed" 35; }
       dpkg --root /target --force-depends --skip-same-version -i $PKGS/wireless-regdb_*.deb 2>>"$LOG" || log "WARN: wireless-regdb install failed (non-critical)"
       dpkg --root /target --force-depends --skip-same-version -i $PKGS/linux-modules-extra-${KVER}_*.deb 2>>"$LOG" || log "WARN: linux-modules-extra dpkg returned non-zero (module files may still be installed)"
-      if [ ! -f "/target/lib/modules/${KVER}/kernel/net/wireless/cfg80211.ko*" ] && [ ! -f "/target/lib/modules/${KVER}/updates/dkms/wl.ko*" ]; then
+      if ! ls /target/lib/modules/${KVER}/kernel/net/wireless/cfg80211.ko* 2>/dev/null && ! ls /target/lib/modules/${KVER}/updates/dkms/wl.ko* 2>/dev/null; then
         die "Stage 1 (linux-modules-extra) failed — cfg80211.ko not found in target" 35
       fi
       chroot /target depmod -a "$KVER" 2>>"$LOG" || log "WARN: depmod in target returned non-zero"
