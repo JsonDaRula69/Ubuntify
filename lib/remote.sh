@@ -504,7 +504,7 @@ remote_kernel_update() {
         fi
 
         local wl_path
-        wl_path=$(remote__exec "$host" "ls /lib/modules/$new_kver/updates/dkms/wl.ko /lib/modules/$new_kver/extra/wl.ko 2>/dev/null | head -1")
+        wl_path=$(remote__exec "$host" "ls /lib/modules/$new_kver/updates/dkms/wl.ko* /lib/modules/$new_kver/extra/wl.ko* 2>/dev/null | head -1")
         if [ -z "$wl_path" ]; then
             error "wl.ko NOT FOUND for kernel $new_kver"
             _remote_kernel_update_rollback "$host" "3"

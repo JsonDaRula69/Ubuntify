@@ -2023,14 +2023,12 @@ menu_apt() {
 }
 
 menu_reboot_remote() {
-    local choice
-    choice=$(tui_menu "Reboot" "Select reboot option:" \
+    tui_menu "Reboot" "Select reboot option:" \
         "Reboot (restart Ubuntu)" "reboot" \
         "Boot to macOS (set next boot + restart)" "boot_macos" \
-        "Back" "back" || { echo "back"; return; })
-    choice="$_TUI_RESULT"
+        "Back" "back" || return
 
-    case "$choice" in
+    case "$_TUI_RESULT" in
         reboot)
             if tui_confirm "Reboot" "This will reboot the remote Mac Pro.\n\nProceed?"; then
                 if command -v remote_reboot >/dev/null 2>&1; then
