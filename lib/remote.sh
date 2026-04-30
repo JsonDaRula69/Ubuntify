@@ -110,7 +110,7 @@ remote_get_info() {
         \"\$(ip link show | grep -E 'wlan|wlp' | head -1)\" \
         \"\$(df -h / | tail -1)\" \
         \"\$(uptime -p)\" \
-        \"\$(grep -c '^# Types:\|^deb' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null | grep -v ':0' | wc -l)\" \
+        \"\$(grep -c '^Types: deb\|^deb' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null | grep -v ':0' | wc -l)\" \
         \"\$(sudo dkms status broadcom-sta 2>/dev/null || echo 'Not installed')\" \
     " 2>/dev/null) || { error "Failed to get system info from $host"; return 1; }
 
@@ -235,7 +235,7 @@ Pin-Priority: 1001"
                 [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; \
             done; \
             for _src in /etc/apt/sources.list.d/*.sources; do \
-                [ -f \"\$_src\" ] && sudo sed -i 's/^Types:/# Types:/' \"\$_src\"; \
+                [ -f \"\$_src\" ] && sudo sed -i 's/^Types:.*/Types:/' \"\$_src\"; \
             done; \
             sudo systemctl mask apt-daily.service apt-daily.timer 2>/dev/null; \
             sudo systemctl mask apt-daily-upgrade.service apt-daily-upgrade.timer 2>/dev/null; \
@@ -273,7 +273,7 @@ remote_toggle_apt_sources() {
                         [ -f \"\$list\" ] && sudo sed -i '/^#deb/ s/^#//' \"\$list\"; \
                     done; \
                     for _src in /etc/apt/sources.list.d/*.sources; do \
-                        [ -f \"\$_src\" ] && sudo sed -i 's/^# Types:/Types:/' \"\$_src\"; \
+                        [ -f \"\$_src\" ] && sudo sed -i 's/^Types:$/Types: deb/' \"\$_src\"; \
                     done"
             ;;
         disable)
@@ -284,7 +284,7 @@ remote_toggle_apt_sources() {
                         [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; \
                     done; \
                     for _src in /etc/apt/sources.list.d/*.sources; do \
-                        [ -f \"\$_src\" ] && sudo sed -i 's/^Types:/# Types:/' \"\$_src\"; \
+                        [ -f \"\$_src\" ] && sudo sed -i 's/^Types:.*/Types:/' \"\$_src\"; \
                     done"
             ;;
         *)
@@ -547,7 +547,7 @@ remote_non_kernel_update() {
                 [ -f \"\$list\" ] && sudo sed -i 's/^#deb/deb/' \"\$list\"; \
             done; \
             for _src in /etc/apt/sources.list.d/*.sources; do \
-                [ -f \"\$_src\" ] && sudo sed -i 's/^# Types:/Types:/' \"\$_src\"; \
+                [ -f \"\$_src\" ] && sudo sed -i 's/^Types:$/Types: deb/' \"\$_src\"; \
             done"
 
     log "Running apt-get update..."
@@ -573,7 +573,7 @@ remote_non_kernel_update() {
                 [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; \
             done; \
             for _src in /etc/apt/sources.list.d/*.sources; do \
-                [ -f \"\$_src\" ] && sudo sed -i 's/^Types:/# Types:/' \"\$_src\"; \
+                [ -f \"\$_src\" ] && sudo sed -i 's/^Types:.*/Types:/' \"\$_src\"; \
             done"
 
     log "Apt sources disabled"
