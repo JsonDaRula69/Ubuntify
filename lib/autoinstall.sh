@@ -28,13 +28,13 @@ set timeout=3
 
 menuentry "Ubuntu Server 24.04 Autoinstall (Mac Pro 2013)" {
     set gfxpayload=keep
-    linux /casper/vmlinuz autoinstall ds=nocloud nomodeset amdgpu.si.modeset=0 ---
+    linux /casper/vmlinuz autoinstall ds=nocloud nomodeset amdgpu.si.modeset=0 module.sig_enforce=0 ---
     initrd /casper/initrd
 }
 
 menuentry "Ubuntu Server 24.04 (Manual Install)" {
     set gfxpayload=keep
-    linux /casper/vmlinuz nomodeset amdgpu.si.modeset=0 ---
+    linux /casper/vmlinuz nomodeset amdgpu.si.modeset=0 module.sig_enforce=0 ---
     initrd /casper/initrd
 }
 GRUBEOF

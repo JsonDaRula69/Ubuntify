@@ -786,7 +786,7 @@ show_manual_instructions() {
     echo ""
     echo "  5. Configure GRUB for Mac Pro GPU:"
     echo "     sudo nano /etc/default/grub"
-    echo "     # Add to GRUB_CMDLINE_LINUX_DEFAULT: nomodeset amdgpu.si.modeset=0"
+    echo "     # Add to GRUB_CMDLINE_LINUX_DEFAULT: nomodeset amdgpu.si.modeset=0 module.sig_enforce=0"
     echo "     sudo update-grub"
     echo ""
     echo "  6. Install UFW:"
