@@ -635,9 +635,9 @@ autoinstall:
         VERIFY_OK=false
       fi
       WIFI_MODULE_FOUND=false
-      if ls /target/lib/modules/*/updates/dkms/wl.ko 2>/dev/null | head -1 > /dev/null 2>&1; then
+      if ls /target/lib/modules/*/updates/dkms/wl.ko* 2>/dev/null | head -1 > /dev/null 2>&1; then
         WIFI_MODULE_FOUND=true
-      elif ls /target/lib/modules/*/extra/wl.ko 2>/dev/null | head -1 > /dev/null 2>&1; then
+      elif ls /target/lib/modules/*/extra/wl.ko* 2>/dev/null | head -1 > /dev/null 2>&1; then
         WIFI_MODULE_FOUND=true
       fi
       if [ "$WIFI_MODULE_FOUND" = "false" ]; then
