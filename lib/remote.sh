@@ -899,13 +899,7 @@ remote_boot_macos() {
     local host
     host=$(remote__get_host "${1:-}")
 
-    warn "This will reboot $host into macOS"
-    if ! tui_confirm "Boot to macOS" "Reboot the remote machine into macOS?"; then
-        log "Operation cancelled"
-        return 1
-    fi
-
-    log "Setting macOS as next boot device..."
+    log "Setting macOS as next boot device on $host..."
     local boot_entry
     boot_entry=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -iE 'mac os|macos|apple' | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || true
 

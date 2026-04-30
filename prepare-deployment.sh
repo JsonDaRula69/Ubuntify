@@ -2023,14 +2023,33 @@ menu_apt() {
 }
 
 menu_reboot_remote() {
-    if tui_confirm "Reboot" "This will reboot the remote Mac Pro.\n\nProceed?"; then
-        if command -v remote_reboot >/dev/null 2>&1; then
-            remote_reboot
-            tui_msgbox "Reboot Initiated" "Reboot command sent to remote system."
-        else
-            tui_msgbox "Not Implemented" "remote_reboot not available"
-        fi
-    fi
+    local choice
+    choice=$(tui_menu "Reboot" "Select reboot option:" \
+        "Reboot (restart Ubuntu)" "reboot" \
+        "Boot to macOS (set next boot + restart)" "boot_macos" \
+        "Back" "back" || { echo "back"; return; })
+    choice="$_TUI_RESULT"
+
+    case "$choice" in
+        reboot)
+            if tui_confirm "Reboot" "This will reboot the remote Mac Pro.\n\nProceed?"; then
+                if command -v remote_reboot >/dev/null 2>&1; then
+                    remote_reboot
+                    tui_msgbox "Reboot Initiated" "Reboot command sent to remote system."
+                else
+                    tui_msgbox "Not Implemented" "remote_reboot not available"
+                fi
+            fi
+            ;;
+        boot_macos)
+            if command -v remote_boot_macos >/dev/null 2>&1; then
+                remote_boot_macos
+            else
+                tui_msgbox "Not Implemented" "remote_boot_macos not available"
+            fi
+            ;;
+        back|"") return ;;
+    esac
 }
 
 run_manage_mode() {
