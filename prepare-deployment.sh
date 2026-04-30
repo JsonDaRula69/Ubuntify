@@ -1871,12 +1871,13 @@ menu_system_info() {
 }
 
 menu_kernel() {
-    tui_checklist "Kernel Management" "Select operations:" \
-        "Status" "1" "View current kernel and pin state" off \
-        "Pin Kernel" "2" "Lock to current kernel, block updates" off \
-        "Unpin Kernel" "3" "Allow kernel updates" off \
-        "Update Kernel" "4" "Full 7-phase kernel update (risky)" off \
-        "Security Only" "5" "Non-kernel security patches only" off || return 1
+    tui_menu "Kernel Management" "Select operation:" \
+        "View Kernel Status" "status" \
+        "Pin Kernel (lock version, block updates)" "pin" \
+        "Unpin Kernel (allow updates)" "unpin" \
+        "Update Kernel (full 7-phase, risky)" "update" \
+        "Security Updates Only (non-kernel)" "security" \
+        "Back" "back" || return 1
     echo "$_TUI_RESULT"
 }
 
@@ -1885,17 +1886,11 @@ kernel_handle_choice() {
 
     case "$choice" in
         back|"") return 0 ;;
-        *[![:space:]]*)
-            for num in $choice; do
-                case "$num" in
-                    1) _kernel_status ;;
-                    2) _kernel_pin ;;
-                    3) _kernel_unpin ;;
-                    4) _kernel_update ;;
-                    5) _kernel_security ;;
-                esac
-            done
-            ;;
+        status)   _kernel_status ;;
+        pin)      _kernel_pin ;;
+        unpin)    _kernel_unpin ;;
+        update)   _kernel_update ;;
+        security) _kernel_security ;;
     esac
 }
 

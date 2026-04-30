@@ -104,14 +104,24 @@ remote_get_info() {
     log "Gathering system info from $host..."
     echo ""
 
-    local kernel wifi_status disk_usage uptime apt_sources dkms_status
+    local info
+    info=$(remote__exec "$host" "printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+        \"\$(uname -r)\" \
+        \"\$(ip link show | grep -E 'wlan|wlp' | head -1)\" \
+        \"\$(df -h / | tail -1)\" \
+        \"\$(uptime -p)\" \
+        \"\$(grep -c '^# Types:\|^deb' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null | grep -v ':0' | wc -l)\" \
+        \"\$(sudo dkms status broadcom-sta 2>/dev/null || echo 'Not installed')\" \
+    " 2>/dev/null) || { error "Failed to get system info from $host"; return 1; }
 
-    kernel=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
-    wifi_status=$(remote__exec "$host" "ip link show | grep -E 'wlan|wlp' | head -1") || wifi_status="Not detected"
-    disk_usage=$(remote__exec "$host" "df -h / | tail -1") || { error "Failed to get disk usage"; return 1; }
-    uptime=$(remote__exec "$host" "uptime -p") || { error "Failed to get uptime"; return 1; }
-    apt_sources=$(remote__exec "$host" "grep -c '^# Types:\|^deb' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null | grep -v ':0' | wc -l") || apt_sources="0"
-    dkms_status=$(remote__exec "$host" "sudo dkms status broadcom-sta 2>/dev/null || echo 'Not installed'") || dkms_status="Unknown"
+    local kernel wifi_status disk_usage uptime apt_sources dkms_status
+    kernel=$(echo "$info" | sed -n '1p')
+    wifi_status=$(echo "$info" | sed -n '2p')
+    [ -z "$wifi_status" ] && wifi_status="Not detected"
+    disk_usage=$(echo "$info" | sed -n '3p')
+    uptime=$(echo "$info" | sed -n '4p')
+    apt_sources=$(echo "$info" | sed -n '5p')
+    dkms_status=$(echo "$info" | sed -n '6p')
 
     echo "=== System Information ==="
     echo "  Host: $host"
@@ -133,11 +143,17 @@ remote_kernel_status() {
     log "Checking kernel status on $host..."
     echo ""
 
-    local kernel pinned held
+    local info
+    info=$(remote__exec "$host" "printf 'KERNEL:%s\nPINNED:%s\nHELD:%s\n' \
+        \"\$(uname -r)\" \
+        \"\$(cat /etc/apt/preferences.d/99-pin-kernel 2>/dev/null || echo 'No pinning configured')\" \
+        \"\$(sudo apt-mark showhold 2>/dev/null | grep linux || echo 'No kernel packages held')\" \
+    " 2>/dev/null) || { error "Failed to get kernel status from $host"; return 1; }
 
-    kernel=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
-    pinned=$(remote__exec "$host" "cat /etc/apt/preferences.d/99-pin-kernel 2>/dev/null || echo 'No pinning configured'")
-    held=$(remote__exec "$host" "sudo apt-mark showhold 2>/dev/null | grep linux || echo 'No kernel packages held'")
+    local kernel pinned held
+    kernel=$(echo "$info" | grep '^KERNEL:' | sed 's/^KERNEL://')
+    pinned=$(echo "$info" | grep '^PINNED:' | sed 's/^PINNED://' | sed 's/\\n/\n/g')
+    held=$(echo "$info" | grep '^HELD:' | sed 's/^HELD://' | sed 's/\\n/\n/g')
 
     echo "=== Kernel Status ==="
     echo "  Current Kernel: $kernel"
@@ -312,20 +328,27 @@ remote_apt_disable() {
 remote_driver_status() {
     local host
     host=$(remote__get_host "${1:-}")
-    local kver dkms_status wl_status
+    local kver dkms_status wl_status iw_info
 
     log "Checking WiFi/driver status on $host..."
 
-    kver=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
+    local driver_data
+    driver_data=$(remote__exec "$host" "printf 'KVER:%s\nDKMS:%s\nWL:%s\nIW:%s\n' \
+        \"\$(uname -r)\" \
+        \"\$(sudo dkms status 2>/dev/null || echo 'DKMS not available')\" \
+        \"\$(lsmod | grep '^wl ' 2>/dev/null || echo 'wl module not loaded')\" \
+        \"\$(iwconfig 2>/dev/null | grep -E 'ESSID|IEEE' || echo 'No wireless interfaces')\" \
+    " 2>/dev/null) || { error "Failed to get driver status from $host"; return 1; }
+
+    kver=$(echo "$driver_data" | grep '^KVER:' | sed 's/^KVER://')
+    dkms_status=$(echo "$driver_data" | grep '^DKMS:' | sed 's/^DKMS://')
+    wl_status=$(echo "$driver_data" | grep '^WL:' | sed 's/^WL://')
+    iw_info=$(echo "$driver_data" | grep '^IW:' | sed 's/^IW://')
+
     log "Kernel: $kver"
-
-    dkms_status=$(remote__exec "$host" "sudo dkms status 2>/dev/null || echo 'DKMS not available'")
     log "DKMS status: $dkms_status"
-
-    wl_status=$(remote__exec "$host" "lsmod | grep '^wl ' 2>/dev/null || echo 'wl module not loaded'")
     log "wl module: $wl_status"
-
-    remote__exec "$host" "iwconfig 2>/dev/null | grep -E 'ESSID|IEEE' || echo 'No wireless interfaces'"
+    log "Wireless: $iw_info"
 }
 
 ## WiFi/Driver Rebuild
@@ -596,18 +619,38 @@ remote_health_check() {
 
     local errors=0
 
-    echo "=== SSH Connectivity ==="
-    if remote_test_connection "$host"; then
-        echo "  Status: OK"
-    else
+    local ssh_ok wifi_check disk_line dkms_check kernel_info uptime_info ufw_info
+    ssh_ok=$(ssh $_REMOTE_MAC_SSH_OPTS "$host" 'echo ok' 2>/dev/null) && ssh_ok=1 || ssh_ok=0
+
+    if [ "$ssh_ok" -eq 0 ]; then
+        echo "=== SSH Connectivity ==="
         echo "  Status: FAILED"
-        errors=$((errors + 1))
+        error "Health check FAILED - cannot connect to $host"
+        return 1
     fi
+
+    echo "=== SSH Connectivity ==="
+    echo "  Status: OK"
     echo ""
 
+    local health_data
+    health_data=$(remote__exec "$host" "printf 'WIFI:%s\nDISK:%s\nDKMS:%s\nKERNEL:%s %s\nUPTIME:%s\nUFW:%s\n' \
+        \"\$(ping -c 1 -W 5 8.8.8.8 >/dev/null 2>&1 && echo connected || echo disconnected)\" \
+        \"\$(df -h / | tail -1)\" \
+        \"\$(sudo dkms status broadcom-sta 2>/dev/null || echo DKMS_unavailable)\" \
+        \"\$(uname -r)\" \"\$(uname -v)\" \
+        \"\$(uptime -p)\" \
+        \"\$(sudo ufw status 2>/dev/null || echo UFW_not_active)\" \
+    " 2>/dev/null) || { error "Health check failed to retrieve data from $host"; return 1; }
+
+    wifi_check=$(echo "$health_data" | grep '^WIFI:' | sed 's/^WIFI://')
+    disk_line=$(echo "$health_data" | grep '^DISK:' | sed 's/^DISK://')
+    dkms_check=$(echo "$health_data" | grep '^DKMS:' | sed 's/^DKMS://')
+    kernel_info=$(echo "$health_data" | grep '^KERNEL:' | sed 's/^KERNEL://')
+    uptime_info=$(echo "$health_data" | grep '^UPTIME:' | sed 's/^UPTIME://')
+    ufw_info=$(echo "$health_data" | grep '^UFW:' | sed 's/^UFW://')
+
     echo "=== WiFi Status ==="
-    local wifi_check
-    wifi_check=$(remote__exec "$host" "ping -c 1 -W 5 8.8.8.8 >/dev/null 2>&1 && echo 'connected' || echo 'disconnected'")
     if [ "$wifi_check" = "connected" ]; then
         echo "  Status: OK (can reach internet)"
     else
@@ -617,27 +660,23 @@ remote_health_check() {
     echo ""
 
     echo "=== Disk Usage ==="
-    disk_line=$(remote__exec "$host" "df -h / | tail -1") || errors=$((errors + 1))
-    echo "$disk_line"
+    echo "  $disk_line"
     echo ""
 
     echo "=== DKMS Status ==="
-    remote__exec "$host" "sudo dkms status broadcom-sta" || {
-        echo "  DKMS status unavailable"
-        errors=$((errors + 1))
-    }
+    echo "  $dkms_check"
     echo ""
 
     echo "=== Kernel ==="
-    remote__exec "$host" "uname -r && uname -v" || errors=$((errors + 1))
+    echo "  $kernel_info"
     echo ""
 
     echo "=== Uptime ==="
-    remote__exec "$host" "uptime" || errors=$((errors + 1))
+    echo "  $uptime_info"
     echo ""
 
     echo "=== UFW Status ==="
-    remote__exec "$host" "sudo ufw status 2>/dev/null || echo 'UFW not active'"
+    echo "  $ufw_info"
     echo ""
 
     if [ $errors -eq 0 ]; then
