@@ -828,6 +828,10 @@ __SSH_KEYS__
         [ -f "$_list" ] || continue
         sed -i '/^deb/ s/^/#/' "$_list" 2>>"$LOG" || true
       done
+      for _src in /target/etc/apt/sources.list.d/*.sources; do
+        [ -f "$_src" ] || continue
+        sed -i 's/^Types:/# Types:/' "$_src" 2>>"$LOG" || true
+      done
       # Disable snap auto-refresh if snap is present
       if chroot /target which snap 2>/dev/null; then
         chroot /target snap refresh --hold=forever 2>>"$LOG" || true
