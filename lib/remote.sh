@@ -170,13 +170,7 @@ remote_kernel_unpin() {
     local host
     host=$(remote__get_host "${1:-}")
 
-    warn "This will REMOVE kernel holds and pinning (Phase 2 of update process)"
-    if ! tui_confirm "Kernel Unpin" "Remove all kernel holds and apt pinning? This enables kernel updates."; then
-        log "Operation cancelled"
-        return 1
-    fi
-
-    log "Removing kernel holds on $host..."
+    log "Removing kernel holds and pinning on $host..."
 
     local kver
     kver=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
@@ -197,12 +191,6 @@ remote_kernel_unpin() {
 remote_kernel_repin() {
     local host
     host=$(remote__get_host "${1:-}")
-
-    warn "This will RE-APPLY kernel holds and pinning for the CURRENT kernel"
-    if ! tui_confirm "Kernel Pin" "Re-apply kernel holds and apt pinning for the current kernel?"; then
-        log "Operation cancelled"
-        return 1
-    fi
 
     log "Re-pinning kernel on $host..."
 
@@ -379,8 +367,7 @@ remote_kernel_update() {
     local host="${1:-macpro-linux}"
     local kver new_kver current_kver
 
-    log "Starting interactive kernel update on $host..."
-    log "This is a 7-phase process with rollback capability at each step."
+    log "Starting kernel update on $host (7-phase process with rollback)..."
     echo ""
 
     log "Pre-update checklist:"
@@ -397,26 +384,18 @@ remote_kernel_update() {
         warn "Rollback helper not available — failures will require manual recovery"
     fi
 
-    if ! tui_confirm "Kernel Update: Phase 1 of 7" "Enable apt package sources on $host?"; then
-        return 1
-    fi
-    remote_toggle_apt_sources "$host" enable || return 1
+    log "Phase 1/7: Enabling apt package sources..."
+    remote_toggle_apt_sources "$host" enable || { error "Failed to enable apt sources"; return 1; }
     dry_run_exec "Setting kernel update phase marker to 1 on $host" remote__exec "$host" "echo 'KUPDATE_PHASE=1' > /tmp/macpro-kernel-update.env"
-    log "Phase 1 complete: apt sources enabled"
+    log "✓ Phase 1 complete: apt sources enabled"
 
-    if ! tui_confirm "Kernel Update: Phase 2 of 7" "Remove kernel pinning and apt holds?"; then
-        _remote_kernel_update_rollback "$host" "1"
-        return 1
-    fi
+    log "Phase 2/7: Removing kernel pinning and holds..."
     remote_unpin_kernel "$host" || { _remote_kernel_update_rollback "$host" "1"; return 1; }
     dry_run_exec "Setting kernel update phase marker to 2 on $host" \
         remote__exec "$host" "echo 'KUPDATE_PHASE=2' > /tmp/macpro-kernel-update.env"
-    log "Phase 2 complete: kernel unpinned, holds removed"
+    log "✓ Phase 2 complete: kernel unpinned, holds removed"
 
-    if ! tui_confirm "Kernel Update: Phase 3 of 7" "Run apt-get dist-upgrade? This will install a new kernel if available."; then
-        _remote_kernel_update_rollback "$host" "2"
-        return 1
-    fi
+    log "Phase 3/7: Running apt-get update and dist-upgrade..."
     dry_run_exec "Running apt-get update and dist-upgrade on $host" \
         remote__exec "$host" "sudo apt-get update && sudo apt-get dist-upgrade -y" || {
         _remote_kernel_update_rollback "$host" "2"
@@ -424,7 +403,7 @@ remote_kernel_update() {
     }
     dry_run_exec "Setting kernel update phase marker to 3 on $host" \
         remote__exec "$host" "echo 'KUPDATE_PHASE=3' > /tmp/macpro-kernel-update.env"
-    log "Phase 3 complete: dist-upgrade finished"
+    log "✓ Phase 3 complete: dist-upgrade finished"
 
     new_kver=$(remote__exec "$host" "ls /boot/vmlinuz-* | sort -V | tail -1 | sed 's|/boot/vmlinuz-||'")
     current_kver=$(remote__exec "$host" "uname -r")
@@ -432,10 +411,7 @@ remote_kernel_update() {
     if [ "$new_kver" = "$current_kver" ]; then
         log "No new kernel installed — skipping DKMS verification"
     else
-        if ! tui_confirm "Kernel Update: Phase 4 of 7 (CRITICAL)" "Verify DKMS built wl.ko for new kernel $new_kver?"; then
-            _remote_kernel_update_rollback "$host" "3"
-            return 1
-        fi
+        log "Phase 4/7: Verifying DKMS built wl.ko for new kernel $new_kver..."
 
         local dkms_status
         dkms_status=$(remote__exec "$host" "sudo dkms status broadcom-sta/6.30.223.271 -k $new_kver 2>/dev/null")
@@ -444,7 +420,7 @@ remote_kernel_update() {
             log "DKMS did not auto-build for $new_kver — building manually..."
             if ! remote_driver_rebuild "$host" "$new_kver"; then
                 error "DKMS build FAILED for kernel $new_kver"
-                tui_msgbox "CRITICAL: DKMS Build Failed" "The WiFi driver cannot compile for kernel $new_kver.\n\nDO NOT REBOOT into this kernel.\n\nRolling back now..."
+                error "DO NOT REBOOT into this kernel. Rolling back now..."
                 _remote_kernel_update_rollback "$host" "3"
                 return 1
             fi
@@ -464,12 +440,9 @@ remote_kernel_update() {
     fi
     dry_run_exec "Setting kernel update phase marker to 4 on $host" \
         remote__exec "$host" "echo 'KUPDATE_PHASE=4' > /tmp/macpro-kernel-update.env"
-    log "Phase 4 complete: DKMS verified"
+    log "✓ Phase 4 complete: DKMS verified"
 
-    if ! tui_confirm "Kernel Update: Phase 5 of 7" "Configure GRUB fallback so old kernel is default?"; then
-        _remote_kernel_update_rollback "$host" "4"
-        return 1
-    fi
+    log "Phase 5/7: Configuring GRUB fallback (old kernel = default)..."
     dry_run_exec "Setting GRUB_DEFAULT to saved on $host" \
         remote__exec "$host" "sudo sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' /etc/default/grub"
     dry_run_exec "Adding GRUB_SAVEDEFAULT on $host" \
@@ -483,33 +456,30 @@ remote_kernel_update() {
     log "GRUB saved default: $saved_default"
     dry_run_exec "Setting kernel update phase marker to 5 on $host" \
         remote__exec "$host" "echo 'KUPDATE_PHASE=5' > /tmp/macpro-kernel-update.env"
-    log "Phase 5 complete: GRUB fallback configured"
+    log "✓ Phase 5 complete: GRUB fallback configured"
 
-    if ! tui_confirm "Kernel Update: Phase 6 of 7" "Reboot into new kernel $new_kver? Power cycle returns to $current_kver if it fails."; then
-        _remote_kernel_update_rollback "$host" "5"
-        return 1
-    fi
+    log "Phase 6/7: Rebooting into new kernel $new_kver..."
+    log "Power cycle returns to $current_kver if new kernel fails."
     dry_run_exec "Setting kernel update phase marker to 6 on $host" \
         remote__exec "$host" "echo 'KUPDATE_PHASE=6' > /tmp/macpro-kernel-update.env"
     dry_run_exec "Setting GRUB reboot to new kernel on $host" \
         remote__exec "$host" "sudo grub-reboot 'Ubuntu, with Linux $new_kver'"
+
+    log "Waiting for system to come back online after reboot..."
     remote_reboot "$host" || {
         error "Reboot failed — system may be in unstable state"
         _remote_kernel_update_rollback "$host" "6"
         return 1
     }
-    log "Phase 6 complete: rebooted into new kernel"
+    log "✓ Phase 6 complete: rebooted into new kernel"
 
-    if ! tui_confirm "Kernel Update: Phase 7 of 7" "Re-lock the system (pin kernel, disable apt sources, re-enable holds)?"; then
-        log "WARNING: System left unlocked — manual re-lock required"
-        return 0
-    fi
+    log "Phase 7/7: Re-locking system (pin kernel, disable apt sources, re-enable holds)..."
     remote_pin_kernel "$host"
     remote_toggle_apt_sources "$host" disable
     dry_run_exec "Removing kernel update phase marker on $host" \
         remote__exec "$host" "rm -f /tmp/macpro-kernel-update.env"
 
-    log "Kernel update complete!"
+    log "✓ Kernel update complete!"
     return 0
 }
 
@@ -566,11 +536,7 @@ remote_non_kernel_update() {
     local host
     host=$(remote__get_host "${1:-}")
 
-    warn "This will update non-kernel packages (security updates only)"
-    if ! tui_confirm "Security Update" "Install non-kernel security updates?"; then
-        log "Operation cancelled"
-        return 1
-    fi
+    log "Installing non-kernel security updates on $host..."
 
     local failed=0
 
@@ -697,11 +663,7 @@ remote_reboot() {
     local host
     host=$(remote__get_host "${1:-}")
 
-    warn "This will REBOOT the remote machine $host"
-    if ! tui_confirm "Reboot" "Reboot the remote machine $host?"; then
-        log "Operation cancelled"
-        return 1
-    fi
+    log "Rebooting $host..."
 
     log "Pre-reboot checks on $host..."
 

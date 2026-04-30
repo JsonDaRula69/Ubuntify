@@ -1904,38 +1904,30 @@ _kernel_status() {
 
 _kernel_pin() {
     if command -v remote_kernel_repin >/dev/null 2>&1; then
-        if tui_confirm "Pin Kernel" "This will pin the current kernel.\n\nProceed?"; then
-            remote_kernel_repin
-            tui_msgbox "Kernel Pinned" "Kernel has been pinned."
-        fi
+        remote_kernel_repin
+        tui_msgbox "Kernel Pinned" "Kernel has been pinned."
     fi
 }
 
 _kernel_unpin() {
     if command -v remote_kernel_unpin >/dev/null 2>&1; then
-        if tui_confirm "Unpin Kernel" "This will unpin the kernel.\n\nProceed?"; then
-            remote_kernel_unpin
-            tui_msgbox "Kernel Unpinned" "Kernel has been unpinned."
-        fi
+        remote_kernel_unpin
+        tui_msgbox "Kernel Unpinned" "Kernel has been unpinned."
     fi
 }
 
 _kernel_update() {
-    if tui_confirm "Update Kernel" "This will run the full kernel update process.\n\nThis is risky - WiFi may break.\n\nProceed?"; then
-        if command -v remote_kernel_update >/dev/null 2>&1; then
-            remote_kernel_update
-        fi
+    if command -v remote_kernel_update >/dev/null 2>&1; then
+        remote_kernel_update
     fi
 }
 
 _kernel_security() {
-    if tui_confirm "Security Updates" "Apply security patches (non-kernel).\n\nProceed?"; then
-        if command -v remote_non_kernel_update >/dev/null 2>&1; then
-            remote_non_kernel_update
-            tui_msgbox "Updates Complete" "Security updates have been applied."
-        else
-            tui_msgbox "Not Implemented" "remote_non_kernel_update not available"
-        fi
+    if command -v remote_non_kernel_update >/dev/null 2>&1; then
+        remote_non_kernel_update
+        tui_msgbox "Updates Complete" "Security updates have been applied."
+    else
+        tui_msgbox "Not Implemented" "remote_non_kernel_update not available"
     fi
 }
 
@@ -1958,13 +1950,11 @@ menu_wifi() {
             fi
             ;;
         rebuild)
-            if tui_confirm "Rebuild Driver" "This will rebuild the Broadcom WiFi driver via DKMS.\n\nProceed?"; then
-                if command -v remote_driver_rebuild >/dev/null 2>&1; then
-                    remote_driver_rebuild
-                    tui_msgbox "Driver Rebuilt" "WiFi driver has been rebuilt."
-                else
-                    tui_msgbox "Not Implemented" "remote_driver_rebuild not available"
-                fi
+            if command -v remote_driver_rebuild >/dev/null 2>&1; then
+                remote_driver_rebuild
+                tui_msgbox "Driver Rebuilt" "WiFi driver has been rebuilt."
+            else
+                tui_msgbox "Not Implemented" "remote_driver_rebuild not available"
             fi
             ;;
         back) return 0 ;;
