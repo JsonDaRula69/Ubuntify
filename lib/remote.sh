@@ -144,20 +144,59 @@ remote_kernel_status() {
     echo ""
 
     local info
-    info=$(remote__exec "$host" "printf 'KERNEL:%s\nPINNED:%s\nHELD:%s\n' \
+    info=$(remote__exec "$host" "printf 'KERNEL:%s\nPINNED:%s\nHELD:%s\nSOURCES_ENABLED:%s\n' \
         \"\$(uname -r)\" \
         \"\$(cat /etc/apt/preferences.d/99-pin-kernel 2>/dev/null || echo 'No pinning configured')\" \
         \"\$(sudo apt-mark showhold 2>/dev/null | grep linux || echo 'No kernel packages held')\" \
+        \"\$(grep -c '^Types: deb' /etc/apt/sources.list.d/*.sources 2>/dev/null || echo 0)\" \
     " 2>/dev/null) || { error "Failed to get kernel status from $host"; return 1; }
 
-    local kernel pinned held
+    local kernel pinned held sources_enabled
     kernel=$(echo "$info" | grep '^KERNEL:' | sed 's/^KERNEL://')
     pinned=$(echo "$info" | grep '^PINNED:' | sed 's/^PINNED://' | sed 's/\\n/\n/g')
     held=$(echo "$info" | grep '^HELD:' | sed 's/^HELD://' | sed 's/\\n/\n/g')
+    sources_enabled=$(echo "$info" | grep '^SOURCES_ENABLED:' | sed 's/^SOURCES_ENABLED://')
 
     echo "=== Kernel Status ==="
     echo "  Current Kernel: $kernel"
+
+    local was_disabled=0
+    if [ "$sources_enabled" -eq 0 ] 2>/dev/null || [ -z "$sources_enabled" ]; then
+        was_disabled=1
+        log "Temporarily enabling apt sources to check for updates..."
+        remote__exec "$host" "sudo sed -i 's/^Types:$/Types: deb/' /etc/apt/sources.list.d/*.sources 2>/dev/null; \
+            for list in /etc/apt/sources.list.d/*.list; do \
+                [ -f \"\$list\" ] && sudo sed -i 's/^#deb/deb/' \"\$list\"; \
+            done; \
+            sudo sed -i 's/^#deb/deb/' /etc/apt/sources.list 2>/dev/null" >/dev/null 2>&1
+        remote__exec "$host" "sudo apt-get update -qq" >/dev/null 2>&1
+    fi
+
+    local latest_kernel current_abi
+    latest_kernel=$(remote__exec "$host" "apt-cache policy linux-image-generic 2>/dev/null | grep -oP '6\\.8\\.0-\\d+' | head -1" 2>/dev/null) || true
+    current_abi=$(echo "$kernel" | sed 's/-generic$//')
+
+    if [ "$was_disabled" -eq 1 ]; then
+        log "Re-disabling apt sources..."
+        remote__exec "$host" "sudo sed -i 's/^Types: deb/Types:/' /etc/apt/sources.list.d/*.sources 2>/dev/null; \
+            for list in /etc/apt/sources.list.d/*.list; do \
+                [ -f \"\$list\" ] && sudo sed -i 's/^deb/#deb/' \"\$list\"; \
+            done; \
+            sudo sed -i 's/^deb/#deb/' /etc/apt/sources.list 2>/dev/null" >/dev/null 2>&1
+    fi
+
+    if [ -n "$latest_kernel" ]; then
+        echo "  Latest Available: $latest_kernel-generic"
+        if [ "$latest_kernel" = "$current_abi" ]; then
+            echo "  Update Available: No (on latest)"
+        else
+            echo "  ★ Update Available: Yes → $latest_kernel-generic"
+        fi
+    else
+        echo "  Update Available: Unable to determine"
+    fi
     echo ""
+
     echo "=== Held Packages ==="
     echo "$held"
     echo ""
