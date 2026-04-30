@@ -2115,8 +2115,8 @@ _agent_deploy() {
 
     if ! remote_mac_preflight; then
         agent_error "Remote preflight checks failed for ${TARGET_HOST:-macpro}" "$E_CHECK"
-            return 1
-        fi
+        return 1
+    fi
 
     local deploy_rc=0
     case "$DEPLOY_METHOD" in
@@ -2413,11 +2413,19 @@ main() {
         die "Invalid configuration — see errors above"
     fi
 
-    if ! remote_mac_preflight; then
-        die "Remote preflight checks failed for ${TARGET_HOST:-macpro}. See errors above."
-    fi
-
     if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+        if [ -z "${REMOTE_OPERATION:-}" ]; then
+            # Agent deploy — need macOS connectivity
+            if ! remote_mac_preflight; then
+                agent_error "Remote preflight checks failed for ${TARGET_HOST:-macpro}" "$E_CHECK"
+            fi
+        else
+            # Agent manage — need Ubuntu connectivity
+            if ! remote_linux_preflight; then
+                agent_error "Remote preflight checks failed for ${LINUX_HOST:-macpro-linux}" "$E_CHECK"
+            fi
+        fi
+
         run_agent_mode
         local agent_rc=$?
         log_shutdown
@@ -2430,12 +2438,23 @@ main() {
 
         case "$mode" in
             deploy)
+                if ! remote_mac_preflight; then
+                    error "Remote preflight checks failed for ${TARGET_HOST:-macpro}. See errors above."
+                    continue
+                fi
                 run_deploy
                 ;;
             manage)
+                if ! remote_linux_preflight; then
+                    continue
+                fi
                 run_manage_mode
                 ;;
             revert)
+                if ! remote_mac_preflight; then
+                    error "Remote preflight checks failed for ${TARGET_HOST:-macpro}. See errors above."
+                    continue
+                fi
                 if command -v handle_revert_flag >/dev/null 2>&1; then
                     handle_revert_flag "--revert"
                 else

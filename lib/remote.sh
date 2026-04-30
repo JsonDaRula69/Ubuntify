@@ -63,6 +63,40 @@ remote_test_connection() {
     fi
 }
 
+# Preflight check for manage mode — verifies connectivity to Ubuntu instance
+remote_linux_preflight() {
+    local host="${1:-${LINUX_HOST:-macpro-linux}}"
+
+    log_info "Checking connectivity to Ubuntu instance at $host..."
+
+    if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" 'echo ok' >/dev/null 2>&1; then
+        log_error "Cannot connect to $host via SSH"
+        log_error "Ensure the Ubuntu instance is running and SSH key authentication is configured"
+        log_error "  ssh $host  (should connect without password)"
+        if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+            return 1
+        fi
+        tui_msgbox "Connection Failed" "Cannot reach $host via SSH.\n\nEnsure the Ubuntu instance is running and SSH keys are configured.\n\nTry: ssh $host"
+        return 1
+    fi
+
+    log_info "SSH connection to $host: OK"
+
+    if ! ssh $_REMOTE_MAC_SSH_OPTS "$host" 'sudo -n true 2>/dev/null'; then
+        log_warn "Passwordless sudo not configured on $host — some operations will prompt for password"
+        if [ "${AGENT_MODE:-0}" -eq 1 ]; then
+            log_error "Agent mode requires passwordless sudo on $host"
+            log_error "Add: ${USERNAME:-jsondarula} ALL=(ALL) NOPASSWD:ALL to /etc/sudoers.d/ on $host"
+            return 1
+        fi
+        tui_msgbox "Sudo Warning" "Passwordless sudo is not configured on $host.\n\nSome management operations require root access.\n\nTo enable: echo '${USERNAME:-jsondarula} ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/${USERNAME:-jsondarula}"
+    else
+        log_info "Passwordless sudo on $host: OK"
+    fi
+
+    return 0
+}
+
 remote_get_info() {
     local host
     host=$(remote__get_host "${1:-}")
@@ -76,8 +110,8 @@ remote_get_info() {
     wifi_status=$(remote__exec "$host" "ip link show | grep -E 'wlan|wlp' | head -1") || wifi_status="Not detected"
     disk_usage=$(remote__exec "$host" "df -h / | tail -1") || { error "Failed to get disk usage"; return 1; }
     uptime=$(remote__exec "$host" "uptime -p") || { error "Failed to get uptime"; return 1; }
-    apt_sources=$(remote__exec "$host" "grep -c '^deb' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null | grep -v ':0' | wc -l") || apt_sources="0"
-    dkms_status=$(remote__exec "$host" "dkms status broadcom-sta 2>/dev/null || echo 'Not installed'") || dkms_status="Unknown"
+    apt_sources=$(remote__exec "$host" "grep -c '^# Types:\|^deb' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null | grep -v ':0' | wc -l") || apt_sources="0"
+    dkms_status=$(remote__exec "$host" "sudo dkms status broadcom-sta 2>/dev/null || echo 'Not installed'") || dkms_status="Unknown"
 
     echo "=== System Information ==="
     echo "  Host: $host"
@@ -103,7 +137,7 @@ remote_kernel_status() {
 
     kernel=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
     pinned=$(remote__exec "$host" "cat /etc/apt/preferences.d/99-pin-kernel 2>/dev/null || echo 'No pinning configured'")
-    held=$(remote__exec "$host" "apt-mark showhold 2>/dev/null | grep linux || echo 'No kernel packages held'")
+    held=$(remote__exec "$host" "sudo apt-mark showhold 2>/dev/null | grep linux || echo 'No kernel packages held'")
 
     echo "=== Kernel Status ==="
     echo "  Current Kernel: $kernel"
@@ -285,7 +319,7 @@ remote_driver_status() {
     kver=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
     log "Kernel: $kver"
 
-    dkms_status=$(remote__exec "$host" "dkms status 2>/dev/null || echo 'DKMS not available'")
+    dkms_status=$(remote__exec "$host" "sudo dkms status 2>/dev/null || echo 'DKMS not available'")
     log "DKMS status: $dkms_status"
 
     wl_status=$(remote__exec "$host" "lsmod | grep '^wl ' 2>/dev/null || echo 'wl module not loaded'")
@@ -384,7 +418,7 @@ remote_kernel_update() {
         fi
 
         local dkms_status
-        dkms_status=$(remote__exec "$host" "dkms status broadcom-sta/6.30.223.271 -k $new_kver 2>/dev/null")
+        dkms_status=$(remote__exec "$host" "sudo dkms status broadcom-sta/6.30.223.271 -k $new_kver 2>/dev/null")
 
         if ! echo "$dkms_status" | grep -q "installed"; then
             log "DKMS did not auto-build for $new_kver — building manually..."
@@ -588,7 +622,7 @@ remote_health_check() {
     echo ""
 
     echo "=== DKMS Status ==="
-    remote__exec "$host" "dkms status broadcom-sta" || {
+    remote__exec "$host" "sudo dkms status broadcom-sta" || {
         echo "  DKMS status unavailable"
         errors=$((errors + 1))
     }
