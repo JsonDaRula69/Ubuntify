@@ -232,7 +232,7 @@ __SSH_KEYS__
       done
       # Stage 1: Runtime library dependencies (must be installed before their dependents)
       if [ -n "$_PKGS" ]; then
-        dpkg --force-depends -i "$_PKGS/libpcsclite1_"*.deb "$_PKGS/libiw30t64_"*.deb 2>>"$LOG" || true
+        dpkg --force-depends --skip-same-version -i "$_PKGS/libpcsclite1_"*.deb "$_PKGS/libiw30t64_"*.deb 2>>"$LOG" || true
       fi
       # Stage 2: wpasupplicant + libnl deps from ISO pool
       if ! command -v wpa_supplicant >/dev/null 2>&1; then
@@ -244,13 +244,13 @@ __SSH_KEYS__
           fi
         done
         if [ -n "$_WPA_DEBS" ]; then
-          dpkg --force-depends -i $_WPA_DEBS 2>>"$LOG" || true
+          dpkg --force-depends --skip-same-version -i $_WPA_DEBS 2>>"$LOG" || true
         fi
       fi
       # Stage 3: wireless-tools (depends on libiw30t64 already installed in Stage 1)
       if ! command -v iwconfig >/dev/null 2>&1; then
         if [ -n "$_PKGS" ]; then
-          dpkg --force-depends -i "$_PKGS/wireless-tools_"*.deb 2>>"$LOG" || true
+          dpkg --force-depends --skip-same-version -i "$_PKGS/wireless-tools_"*.deb 2>>"$LOG" || true
         fi
       fi
 
@@ -282,9 +282,9 @@ __SSH_KEYS__
       # Start SSH server for remote debugging
       wh '{"progress":23,"stage":"prep-ssh","status":"starting","message":"Starting SSH server for remote debugging"}'
       log "Starting SSH server for remote debugging..."
-      dpkg --force-depends -i /cdrom/pool/main/o/openssh/openssh-server_*.deb /cdrom/pool/main/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
+      dpkg --force-depends --skip-same-version -i /cdrom/pool/main/o/openssh/openssh-server_*.deb /cdrom/pool/main/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
       if [ ! -f /usr/sbin/sshd ]; then
-        dpkg --force-depends -i /isodevice/pool/main/o/openssh/openssh-server_*.deb /isodevice/pool/main/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
+        dpkg --force-depends --skip-same-version -i /isodevice/pool/main/o/openssh/openssh-server_*.deb /isodevice/pool/main/o/openssh/openssh-sftp-server_*.deb 2>>"$LOG" || true
       fi
       if [ -f /usr/sbin/sshd ]; then
         # Create installer user for SSH access (ssh: install-server only applies to target)
@@ -728,11 +728,8 @@ __SSH_KEYS__
       printf '#!/bin/bash\nset -e\nexport LIBEFIVAR_OPS=efivarfs\nEFIVARS="/sys/firmware/efi/efivars"\nif [ ! -d "$EFIVARS" ]; then\n  echo "ERROR: EFI variables not available" >&2\n  exit 1\nfi\nMACOS_BOOT=$(efibootmgr | grep -i "macos\\|apple" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)\nif [ -z "$MACOS_BOOT" ]; then\n  MACOS_BOOT=$(efibootmgr | grep "Boot80\\|Boot81" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)\nfi\nif [ -z "$MACOS_BOOT" ]; then\n  echo "No macOS boot entry found — searching for macOS bootloader on ESP..."\n  # Find the EFI System Partition and check for Apple bootloader\n  ESP_DEV=""\n  for dev in /dev/sda1 /dev/nvme0n1p1; do\n    if [ -b "$dev" ]; then\n      ESP_DEV="$dev"\n      break\n    fi\n  done\n  if [ -z "$ESP_DEV" ]; then\n    ESP_DEV="$(lsblk -no NAME,FSTYPE /dev/sda 2>/dev/null | grep -m1 vfat | awk "{print \\"/dev/\\"\\$1}") || true"\n  fi\n  if [ -n "$ESP_DEV" ]; then\n    MNT="/mnt/esp_temp"\n    mkdir -p "$MNT"\n    mount "$ESP_DEV" "$MNT" 2>/dev/null || true\n    if [ -f "$MNT/EFI/Apple/AppleEFI/Boot.efi" ] || [ -f "$MNT/EFI/APPLE/APPLEEFI/BOOT.EFI" ]; then\n      APPLE_DISK="$(echo "$ESP_DEV" | sed "s/[0-9]*$//")"\n      APPLE_PART="$(echo "$ESP_DEV" | sed "s/.*[^0-9]\\([0-9]*\\)$/\\1/")"\n      echo "Creating macOS boot entry: $APPLE_DISK ($APPLE_PART) \\\\EFI\\\\Apple\\\\AppleEFI\\\\Boot.efi"\n      efibootmgr --create --label "macOS" --disk "$APPLE_DISK" --part "$APPLE_PART" --loader "\\\\EFI\\\\Apple\\\\AppleEFI\\\\Boot.efi" 2>/dev/null || true\n      MACOS_BOOT=$(efibootmgr | grep -i "macos" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)\n    fi\n    umount "$MNT" 2>/dev/null || true\n  fi\nfi\nif [ -z "$MACOS_BOOT" ]; then\n  echo "WARNING: macOS boot entry not found and could not be created" >&2\n  echo "Use Apple Boot Manager (hold Option at boot) instead" >&2\n  exit 1\nfi\nefibootmgr --bootnext "$MACOS_BOOT"\necho "macOS set as next boot device. Reboot to start macOS."\n' > /target/usr/local/bin/boot-macos
       chmod +x /target/usr/local/bin/boot-macos
       # Ensure Ubuntu is the default boot device (first in boot order)
-      # efibootmgr needs /sys/firmware/efi for chroot
-      mount --bind /sys /target/sys 2>/dev/null || true
-      mount --bind /proc /target/proc 2>/dev/null || true
-      mount --bind /dev /target/dev 2>/dev/null || true
-      export LIBEFIVAR_OPS=efivarfs
+       # efibootmgr needs /sys/firmware/efi — /proc, /sys, /dev already mounted from update-grub step
+       export LIBEFIVAR_OPS=efivarfs
       UBUNTU_BOOT=$(chroot /target efibootmgr | grep -i "ubuntu" | head -1 | grep -o "Boot[0-9A-F]\\{4\\}" | sed "s/Boot//" || true)
       if [ -n "$UBUNTU_BOOT" ]; then
         BOOT_ORDER=$(chroot /target efibootmgr | grep "BootOrder" | sed "s/BootOrder: //" || true)
@@ -873,9 +870,17 @@ __SSH_KEYS__
       chmod 440 "/target/etc/sudoers.d/__USERNAME__"
 
     - |
-      # sh -c block — must redefine helpers (wh/die/log)
+      # sh -c block — must redefine helpers (wh/die/log) AND rediscover CIDATA
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
+      CIDATA=""
+      for _cidata_mp in /cdrom /isodevice /mnt; do
+        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
+          CIDATA="$_cidata_mp"
+          break
+        fi
+      done
+      CIDATA_LOG_DIR="${CIDATA}/logs"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
       diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
       die() { echo "[late] FATAL: $1" >> "$LOG"; wh "{\"progress\":${2:-97},\"stage\":\"late\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag dumped to console\"}"; diag; exit 1; }
