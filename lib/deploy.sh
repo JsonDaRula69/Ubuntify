@@ -42,7 +42,7 @@ _phase_analyze() {
 }
 
 _phase_shrink_apfs() {
-    printf '\r%b  %b▸%b Resizing APFS container...           \r' "$CLR" "$CYAN" "$NC" >&2
+    printf '\r%b  %b▸%b Resizing APFS container...           \n' "$CLR" "$CYAN" "$NC" >&2
     shrink_apfs_if_needed "$APFS_CONTAINER" "$INTERNAL_DISK" _APFS_RESIZED _APFS_ORIGINAL_SIZE
     journal_set "APFS_RESIZED" "$_APFS_RESIZED"
     journal_set "ORIGINAL_APFS_SIZE" "${_APFS_ORIGINAL_SIZE:-}"
@@ -63,7 +63,7 @@ _phase_shrink_apfs() {
 }
 
 _phase_create_esp() {
-    printf '\r%b  %b▸%b Creating ESP partition...            \r' "$CLR" "$CYAN" "$NC" >&2
+    printf '\r%b  %b▸%b Creating ESP partition...            \n' "$CLR" "$CYAN" "$NC" >&2
     local _esp_output_file
     _esp_output_file=$(mktemp /tmp/macpro-esp-output.XXXXXX)
     create_esp_partition "$INTERNAL_DISK" _ESP_CREATED _ESP_DEVICE > "$_esp_output_file"
@@ -85,7 +85,7 @@ _phase_create_root() {
         log "Full disk mode — skipping root partition creation (installer handles partitioning)"
         return 0
     fi
-    printf '\r%b  %b▸%b Creating root partition...            \r' "$CLR" "$CYAN" "$NC" >&2
+    printf '\r%b  %b▸%b Creating root partition...            \n' "$CLR" "$CYAN" "$NC" >&2
     local _root_output_file
     _root_output_file=$(mktemp /tmp/macpro-root-output.XXXXXX)
     create_root_partition "$INTERNAL_DISK" _ROOT_CREATED _ROOT_DEVICE _ROOT_SIZE_BYTES > "$_root_output_file" 2>&1
@@ -114,12 +114,12 @@ _phase_extract_iso() {
     fi
 
     local host="${TARGET_HOST:-macpro}"
-    printf '\r%b  %b▸%b Transferring ISO to %s...   \r' "$CLR" "$CYAN" "$NC" "$host" >&2
+    printf '\r%b  %b▸%b Transferring ISO to %s...   \n' "$CLR" "$CYAN" "$NC" "$host" >&2
     local REMOTE_ISO="/tmp/ubuntu-macpro.iso"
     if ! remote_mac_cp "$ISO_PATH" "$REMOTE_ISO"; then
         die "Failed to transfer ISO to $host"
     fi
-    printf '\r%b  %b▸%b Extracting ISO on remote host...      \r' "$CLR" "$CYAN" "$NC" >&2
+    printf '\r%b  %b▸%b Extracting ISO on remote host...      \n' "$CLR" "$CYAN" "$NC" >&2
     if ! remote_mac_sudo --timeout 600 xorriso -osirrox on -indev "$REMOTE_ISO" -extract / "$ESP_MOUNT" 2>/dev/null; then
         printf '\r%b  %b✗%b Remote ISO extraction failed           \n' "$CLR" "$RED" "$NC" >&2
         remote_mac_exec rm -f "$REMOTE_ISO" 2>/dev/null || true
@@ -141,7 +141,7 @@ _phase_copy_pkgs() {
 
     if ! remote_mac_dir_exists "$ESP_MOUNT/macpro-pkgs" || \
        ! remote_mac_exec "ls $ESP_MOUNT/macpro-pkgs/*.deb >/dev/null 2>&1"; then
-        printf '\r%b  %b▸%b Copying driver packages to ESP...     \r' "$CLR" "$CYAN" "$NC" >&2
+        printf '\r%b  %b▸%b Copying driver packages to ESP...     \n' "$CLR" "$CYAN" "$NC" >&2
         remote_mac_sudo mkdir -p "$ESP_MOUNT/macpro-pkgs"
         remote_mac_cp_contents "$SCRIPT_DIR/packages/" "$ESP_MOUNT/macpro-pkgs/" 2>/dev/null && pkgs_copied=1 || warn "Some packages may be missing"
         if [ "$pkgs_copied" -eq 1 ]; then
@@ -152,7 +152,7 @@ _phase_copy_pkgs() {
     if [ -d "$SCRIPT_DIR/packages/dkms-patches" ]; then
         local DKMS_DST="$ESP_MOUNT/macpro-pkgs/dkms-patches"
         if ! remote_mac_dir_exists "$DKMS_DST"; then
-            printf '\r%b  %b▸%b Copying DKMS patches to ESP...        \r' "$CLR" "$CYAN" "$NC" >&2
+            printf '\r%b  %b▸%b Copying DKMS patches to ESP...        \n' "$CLR" "$CYAN" "$NC" >&2
             remote_mac_sudo mkdir -p "$DKMS_DST"
             remote_mac_cp_dir "$SCRIPT_DIR/packages/dkms-patches/" "$DKMS_DST/" || die "Failed to copy DKMS patches — WiFi driver cannot compile without them"
             printf '\r%b  %b✓%b DKMS patches copied                    \n' "$CLR" "$GREEN" "$NC" >&2
@@ -166,7 +166,7 @@ _phase_copy_pkgs() {
 }
 
 _phase_generate_config() {
-    printf '\r%b  %b▸%b Generating autoinstall configuration...\r' "$CLR" "$CYAN" "$NC" >&2
+    printf '\r%b  %b▸%b Generating autoinstall configuration...\n' "$CLR" "$CYAN" "$NC" >&2
     local ESP_MOUNT="/Volumes/${ESP_NAME:-CIDATA}"
     if [ -n "${1:-}" ]; then
         ESP_MOUNT="$1"
@@ -228,7 +228,7 @@ _phase_generate_config() {
 }
 
 _phase_verify_bless() {
-    printf '\r%b  %b▸%b Verifying ESP contents and boot...    \r' "$CLR" "$CYAN" "$NC" >&2
+    printf '\r%b  %b▸%b Verifying ESP contents and boot...    \n' "$CLR" "$CYAN" "$NC" >&2
     local ESP_MOUNT="/Volumes/${ESP_NAME:-CIDATA}"
     if [ -n "${1:-}" ]; then
         ESP_MOUNT="$1"

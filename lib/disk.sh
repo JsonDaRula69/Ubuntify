@@ -40,7 +40,7 @@ cleanup_linux_partitions() {
         | awk '/Linux Filesystem|Linux Swap/{print $NF}' 2>/dev/null || true)
 
     if [ -n "$_linux_devices" ]; then
-        printf '\r%b  %b▸%b Erasing leftover Linux partitions     \r' "$CLR" "$CYAN" "$NC" >&2
+        printf '\r%b  %b▸%b Erasing leftover Linux partitions     \n' "$CLR" "$CYAN" "$NC" >&2
         log_info "Found Linux partitions visible to diskutil — erasing to reclaim space"
         for _dev in $_linux_devices; do
             if ! echo "$_dev" | grep -qE '^disk[0-9]+s[0-9]+$'; then
@@ -73,7 +73,7 @@ cleanup_linux_partitions() {
         _gpt_linux_indices=$(sudo gpt -r show "$INTERNAL_DISK" 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print $3}' || true)
     fi
     if [ -n "$_gpt_linux_indices" ]; then
-        printf '\r%b  %b▸%b Removing leftover Linux GPT entries    \r' "$CLR" "$CYAN" "$NC" >&2
+        printf '\r%b  %b▸%b Removing leftover Linux GPT entries    \n' "$CLR" "$CYAN" "$NC" >&2
         log_info "Found leftover Linux GPT entries — removing"
         for _idx in $_gpt_linux_indices; do
             if ! [[ "$_idx" =~ ^[0-9]+$ ]] || [ "$_idx" -le 2 ]; then

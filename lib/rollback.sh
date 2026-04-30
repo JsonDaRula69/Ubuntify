@@ -406,7 +406,7 @@ rollback_internal() {
     # Step 1: Restore boot device
     local original_boot="${JOURNAL_ORIGINAL_BOOT_DEVICE:-}"
     if [ -n "$original_boot" ]; then
-        printf '\r%b  %b▸%b Restoring boot device to %s            \r' "$CLR" "$CYAN" "$NC" "$original_boot" >&2
+        printf '\r%b  %b▸%b Restoring boot device to %s            \n' "$CLR" "$CYAN" "$NC" "$original_boot" >&2
         log_info "Attempting to restore boot device to ${original_boot}"
         if [ -n "${TARGET_HOST:-}" ]; then
             if dry_run_exec "Restoring boot device to ${original_boot}" \
@@ -440,7 +440,7 @@ rollback_internal() {
     local esp_device="${JOURNAL_ESP_DEVICE:-}"
 
     if [ "$esp_created" = "1" ] && [ -n "$esp_device" ]; then
-        printf '\r%b  %b▸%b Removing ESP partition %s            \r' "$CLR" "$CYAN" "$NC" "$esp_device" >&2
+        printf '\r%b  %b▸%b Removing ESP partition %s            \n' "$CLR" "$CYAN" "$NC" "$esp_device" >&2
         log_info "Removing created ESP partition ${esp_device}"
 
         if [ -n "${TARGET_HOST:-}" ]; then
@@ -488,7 +488,7 @@ rollback_internal() {
     local root_device="${JOURNAL_ROOT_DEVICE:-}"
 
     if [ "$root_created" = "1" ] && [ -n "$root_device" ]; then
-        printf '\r%b  %b▸%b Removing root partition %s            \r' "$CLR" "$CYAN" "$NC" "$root_device" >&2
+        printf '\r%b  %b▸%b Removing root partition %s            \n' "$CLR" "$CYAN" "$NC" "$root_device" >&2
         log_info "Removing created root partition ${root_device}"
 
         if [ -n "${TARGET_HOST:-}" ]; then
@@ -515,7 +515,7 @@ rollback_internal() {
          _linux_parts=$(diskutil list /dev/disk0 2>/dev/null | grep 'Linux Filesystem' || true)
      fi
      if [ -n "$_linux_parts" ]; then
-         printf '\r%b  %b▸%b Removing leftover Linux partitions         \r' "$CLR" "$CYAN" "$NC" >&2
+         printf '\r%b  %b▸%b Removing leftover Linux partitions         \n' "$CLR" "$CYAN" "$NC" >&2
          log_info "Found leftover Linux partitions — removing"
          # Extract partition identifiers (e.g. disk0s4)
          echo "$_linux_parts" | while IFS= read -r _line; do
@@ -542,7 +542,7 @@ rollback_internal() {
         local _gpt_linux_indices
         _gpt_linux_indices=$(remote_mac_sudo "gpt -r show /dev/disk0 2>/dev/null | awk '/0FC63DAF|0657FD6D/{print \$3}'" || true)
         if [ -n "$_gpt_linux_indices" ]; then
-            printf '\r%b  %b▸%b Scrubbing ghost GPT entries              \r' "$CLR" "$CYAN" "$NC" >&2
+            printf '\r%b  %b▸%b Scrubbing ghost GPT entries              \n' "$CLR" "$CYAN" "$NC" >&2
             log_info "Found leftover Linux GPT entries — scrubbing"
             for _idx in $_gpt_linux_indices; do
                 if ! [[ "$_idx" =~ ^[0-9]+$ ]] || [ "$_idx" -le 2 ]; then
@@ -564,7 +564,7 @@ rollback_internal() {
     local apfs_container="${JOURNAL_ORIGINAL_APFS_CONTAINER:-${JOURNAL_APFS_CONTAINER:-}}"
 
     if [ "$apfs_resized" = "1" ] && [ -n "$apfs_container" ]; then
-        printf '\r%b  %b▸%b Expanding APFS container to fill disk   \r' "$CLR" "$CYAN" "$NC" >&2
+        printf '\r%b  %b▸%b Expanding APFS container to fill disk   \n' "$CLR" "$CYAN" "$NC" >&2
         log_info "Expanding APFS container to fill available space"
 
         local _original_target="${JOURNAL_ORIGINAL_APFS_SIZE:-0}"
