@@ -148,7 +148,7 @@ analyze_disk_layout() {
     local _apfs_container_name="$2"
 
     log "Analyzing disk layout..."
-    printf '\r%b  %b▸%b Identifying internal disk...         \r' "$CLR" "$CYAN" "$NC" >&2
+    printf '\r%b  %b▸%b Identifying internal disk...         \n' "$CLR" "$CYAN" "$NC" >&2
 
     local APFS_PARTITION
     local FREE_SPACE
@@ -157,13 +157,13 @@ analyze_disk_layout() {
 
     _internal_disk_val=$(remote_mac_exec diskutil list | grep -E 'internal.*physical' | head -1 | grep -oE '/dev/disk[0-9]+' || true)
     [ -n "$_internal_disk_val" ] || die "Cannot identify internal disk"
-
     log "Internal disk: $_internal_disk_val"
-    printf '\r%b  %b▸%b Reading partition table...          \r' "$CLR" "$CYAN" "$NC" >&2
+
+    printf '\r%b  %b▸%b Reading partition table...          \n' "$CLR" "$CYAN" "$NC" >&2
     remote_mac_exec diskutil list "$_internal_disk_val"
     echo ""
 
-    printf '\r%b  %b▸%b Locating APFS container...          \r' "$CLR" "$CYAN" "$NC" >&2
+    printf '\r%b  %b▸%b Locating APFS container...          \n' "$CLR" "$CYAN" "$NC" >&2
     APFS_PARTITION=$(remote_mac_exec diskutil list "$_internal_disk_val" | grep -i "APFS" | grep -oE 'disk[0-9]+s[0-9]+' | head -1 || true)
     if [ -n "$APFS_PARTITION" ]; then
         _apfs_container_val=$(remote_mac_exec diskutil info "$APFS_PARTITION" 2>/dev/null | grep -i "container" | grep -oE 'disk[0-9]+' | head -1 || true)
@@ -172,7 +172,7 @@ analyze_disk_layout() {
         _apfs_container_val=$(remote_mac_exec diskutil list | grep -i "APFS" | grep -oE 'disk[0-9]+' | head -1 || true)
     fi
     if [ -n "$_apfs_container_val" ]; then
-        printf '\r%b  %b▸%b Checking free space...               \r' "$CLR" "$CYAN" "$NC" >&2
+        printf '\r%b  %b▸%b Checking free space...               \n' "$CLR" "$CYAN" "$NC" >&2
         FREE_SPACE=$(remote_mac_exec "diskutil info '$_apfs_container_val' 2>/dev/null | grep 'Volume Free Space' | grep -oE '[0-9]+(\.[0-9]+)? [GTMP]?B' | head -1" || true)
         if [ -z "$FREE_SPACE" ]; then
             FREE_SPACE=$(remote_mac_exec "diskutil apfs list '$_apfs_container_val' 2>/dev/null | grep 'Capacity In Use By Volumes' | grep -oE '[0-9]+(\.[0-9]+)? [GTMP]?B' | head -1" || true)
@@ -181,7 +181,7 @@ analyze_disk_layout() {
         log "APFS container: /dev/$_apfs_container_val"
         log "Free space: ${FREE_SPACE:-unknown}"
 
-        printf '\r%b  %b▸%b Verifying Recovery partition...     \r' "$CLR" "$CYAN" "$NC" >&2
+        printf '\r%b  %b▸%b Verifying Recovery partition...     \n' "$CLR" "$CYAN" "$NC" >&2
         if ! check_recovery_health "$_apfs_container_val"; then
             warn "macOS Recovery partition may be damaged. Deployment can proceed but repair Recovery if possible: boot to Internet Recovery (Option+R) and reinstall macOS."
         fi
