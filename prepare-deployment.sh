@@ -2053,6 +2053,7 @@ menu_reboot_remote() {
     tui_menu "Reboot" "Select reboot option:" \
         "Reboot (restart Ubuntu)" "reboot" \
         "Boot to macOS (set next boot + restart)" "boot_macos" \
+        "Restore Ubuntu Boot (after booting to macOS)" "boot_ubuntu" \
         "Back" "back" || return
 
     case "$_TUI_RESULT" in
@@ -2071,6 +2072,14 @@ menu_reboot_remote() {
                 remote_boot_macos
             else
                 tui_msgbox "Not Implemented" "remote_boot_macos not available"
+            fi
+            ;;
+        boot_ubuntu)
+            if command -v remote_boot_ubuntu >/dev/null 2>&1; then
+                remote_boot_ubuntu
+                tui_msgbox "Boot Order Restored" "Ubuntu is now the default boot device.\nReboot to start Ubuntu."
+            else
+                tui_msgbox "Not Implemented" "remote_boot_ubuntu not available"
             fi
             ;;
         back|"") return ;;
@@ -2102,7 +2111,7 @@ run_manage_mode() {
 _AGENT_OPERATIONS="sysinfo kernel_status kernel_pin kernel_unpin kernel_update "
 _AGENT_OPERATIONS="${_AGENT_OPERATIONS}security_update health_check rollback_status "
 _AGENT_OPERATIONS="${_AGENT_OPERATIONS}driver_status driver_rebuild disk_usage erase_macos "
-_AGENT_OPERATIONS="${_AGENT_OPERATIONS}apt_enable apt_disable reboot boot_macos headless_verify "
+_AGENT_OPERATIONS="${_AGENT_OPERATIONS}apt_enable apt_disable reboot boot_macos boot_ubuntu headless_verify "
 _AGENT_OPERATIONS="${_AGENT_OPERATIONS}gpu_status gpu_setup"
 
 _validate_agent_deploy() {
@@ -2189,6 +2198,7 @@ _agent_manage() {
         apt_disable)     remote_apt_disable "$host" ;;
         reboot)          remote_reboot "$host" ;;
         boot_macos)      remote_boot_macos "$host" ;;
+        boot_ubuntu)     remote_boot_ubuntu "$host" ;;
         headless_verify) remote_headless_verify "$host" ;;
         gpu_status)      remote_gpu_status "$host" ;;
         gpu_setup)       remote_gpu_setup "$host" ;;

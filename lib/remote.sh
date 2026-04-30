@@ -1079,15 +1079,92 @@ remote_boot_macos() {
         return 1
     fi
 
-    dry_run_exec "Setting macOS as next boot device on $host" \
-        remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootnext $boot_entry" || {
-        error "Failed to set macOS as next boot device"
-        return 1
-    }
+    log "Found macOS boot entry: $boot_entry"
 
+    # Apple EFI 1.1 firmware may not honor BootNext (one-time override).
+    # Use BootOrder (persistent) instead — move macOS to first position,
+    # save current BootOrder to restore after reboot.
+    local current_bootorder
+    current_bootorder=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep '^BootOrder:' | sed 's/BootOrder: //'") || true
+
+    if [ -n "$current_bootorder" ]; then
+        log "Current BootOrder: $current_bootorder"
+        log "Saving BootOrder to /tmp/macpro-bootorder-backup.txt for restoration..."
+        remote__exec "$host" "echo '$current_bootorder' | sudo tee /tmp/macpro-bootorder-backup.txt" >/dev/null 2>&1 || true
+
+        # Build new BootOrder with macOS first, then remaining entries (excluding macOS)
+        local new_bootorder
+        new_bootorder=$(echo "$current_bootorder" | sed "s/$boot_entry,//;s/,$boot_entry//;s/^$boot_entry$//;s/^$boot_entry,//" | sed "s/^/$boot_entry,/" | sed 's/,$//')
+        log "New BootOrder: $new_bootorder"
+
+        dry_run_exec "Setting macOS as first boot device on $host" \
+            remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootorder $new_bootorder" || {
+            # Fallback: try BootNext if BootOrder fails
+            warn "BootOrder change failed — trying BootNext as fallback"
+            dry_run_exec "Setting BootNext to macOS on $host" \
+                remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootnext $boot_entry" || {
+                error "Failed to set macOS as boot device"
+                return 1
+            }
+        }
+    else
+        # No BootOrder found — try BootNext as only option
+        dry_run_exec "Setting macOS as next boot device on $host" \
+            remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootnext $boot_entry" || {
+            error "Failed to set macOS as next boot device"
+            return 1
+        }
+    fi
+
+    log "After reboot, use 'boot-macos' or manage menu to restore Ubuntu boot order."
     log "Rebooting into macOS..."
+
     dry_run_exec "Rebooting $host into macOS" \
         remote__exec "$host" "sudo reboot" || true
+}
+
+remote_boot_ubuntu() {
+    local host
+    host=$(remote__get_host "${1:-}")
+
+    log "Restoring Ubuntu as default boot device on $host..."
+
+    local backup
+    backup=$(remote__exec "$host" "cat /tmp/macpro-bootorder-backup.txt 2>/dev/null") || true
+
+    if [ -z "$backup" ]; then
+        log "No BootOrder backup found — setting Ubuntu as first boot entry"
+        local ubuntu_entry
+        ubuntu_entry=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -iE 'ubuntu' | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || true
+        if [ -z "$ubuntu_entry" ]; then
+            error "No Ubuntu boot entry found"
+            return 1
+        fi
+        local current_order
+        current_order=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep '^BootOrder:' | sed 's/BootOrder: //'") || true
+        local new_order
+        new_order=$(echo "$current_order" | sed "s/$ubuntu_entry,//;s/,$ubuntu_entry//;s/^$ubuntu_entry$//;s/^$ubuntu_entry,//" | sed "s/^/$ubuntu_entry,/" | sed 's/,$//')
+        dry_run_exec "Restoring Ubuntu as first boot device on $host" \
+            remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootorder $new_order" || {
+            error "Failed to restore Ubuntu boot order"
+            return 1
+        }
+    else
+        log "Restoring BootOrder from backup: $backup"
+        dry_run_exec "Restoring BootOrder on $host" \
+            remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootorder $backup" || {
+            error "Failed to restore BootOrder"
+            return 1
+        }
+        remote__exec "$host" "sudo rm -f /tmp/macpro-bootorder-backup.txt" >/dev/null 2>&1 || true
+    fi
+
+    log "Ubuntu restored as default boot device"
+
+    dry_run_exec "Clearing BootNext on $host" \
+        remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --bootnext 2>/dev/null || true"
+
+    log "Boot order restored. Ubuntu will boot on next restart."
 }
 
 ## macOS Headless Readiness
