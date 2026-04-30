@@ -548,10 +548,74 @@ remote_kernel_update() {
         _remote_kernel_update_rollback "$host" "6"
         return 1
     }
+
+    local booted_kver
+    booted_kver=$(remote__exec "$host" "uname -r") || {
+        error "Cannot determine booted kernel — SSH may have fallen back to old kernel"
+        _remote_kernel_update_rollback "$host" "6"
+        return 1
+    }
+
+    if [ "$booted_kver" != "$new_kver" ]; then
+        error "Booted into $booted_kver instead of $new_kver"
+        error "grub-reboot may have fallen back to old kernel"
+        _remote_kernel_update_rollback "$host" "6"
+        return 1
+    fi
+    log "Confirmed: booted into new kernel $new_kver"
+
+    local dkms_post
+    dkms_post=$(remote__exec "$host" "sudo dkms status broadcom-sta/6.30.223.271 -k $new_kver 2>/dev/null") || true
+    if ! echo "$dkms_post" | grep -q "installed"; then
+        error "DKMS broadcom-sta NOT installed for $new_kver after reboot"
+        error "WiFi may not survive a future reboot — re-pinning old kernel as fallback"
+        new_kver="$current_kver"
+    fi
+
     log "✓ Phase 6 complete: rebooted into new kernel"
 
     log "Phase 7/7: Re-locking system (pin kernel, disable apt sources, re-enable holds)..."
-    remote_pin_kernel "$host"
+    log "Pinning kernel $new_kver on $host..."
+    local pin_abi
+    pin_abi=$(echo "$new_kver" | sed 's/-generic$//')
+
+    local prefs_content
+    prefs_content="Package: linux-image-*
+Pin: release o=Ubuntu
+Pin-Priority: -1
+
+Package: linux-headers-*
+Pin: release o=Ubuntu
+Pin-Priority: -1
+
+Package: linux-modules-*
+Pin: release o=Ubuntu
+Pin-Priority: -1
+
+Package: linux-image-${pin_abi}*
+Pin: release o=Ubuntu
+Pin-Priority: 1001
+
+Package: linux-headers-${pin_abi}*
+Pin: release o=Ubuntu
+Pin-Priority: 1001
+
+Package: linux-modules-${pin_abi}*
+Pin: release o=Ubuntu
+Pin-Priority: 1001"
+
+    echo "$prefs_content" | dry_run_exec "Writing kernel apt preferences on $host" \
+        remote__exec "$host" "sudo tee /etc/apt/preferences.d/99-pin-kernel > /dev/null"
+
+    dry_run_exec "Holding kernel packages on $host" \
+        remote__exec "$host" "sudo apt-mark hold linux-image-${new_kver} && \
+            sudo apt-mark hold linux-headers-${new_kver} && \
+            sudo apt-mark hold linux-modules-${new_kver} && \
+            sudo apt-mark hold linux-modules-extra-${new_kver} 2>/dev/null || true"
+
+    dry_run_exec "Holding snap refreshes on $host" \
+        remote__exec "$host" "sudo snap refresh --hold=forever 2>/dev/null || true"
+
     remote_toggle_apt_sources "$host" disable
     dry_run_exec "Removing kernel update phase marker on $host" \
         remote__exec "$host" "rm -f /tmp/macpro-kernel-update.env"
