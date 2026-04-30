@@ -1099,3 +1099,234 @@ remote_headless_verify() {
     log "Running headless readiness verification on macOS host $host..."
     verify_headless_readiness "$host"
 }
+
+## GPU / LLM Inference Setup (AMD FirePro Tahiti / GCN 1.0)
+
+remote_gpu_status() {
+    local host
+    host=$(remote__get_host "${1:-}")
+
+    log "Checking GPU and LLM inference status on $host..."
+
+    local gpu_data
+    gpu_data=$(remote__exec "$host" "printf 'GPUS:%s\nVULKAN_ICD:%s\nVULKAN_LIB:%s\nCLINFO:%s\nLLAMACPP:%s\nRADV_DEBUG:%s\n' \
+        \"\$(lspci -nn 2>/dev/null | grep -c 'VGA\|3d\|display')\" \
+        \"\$(ls /usr/share/vulkan/icd.d/radeon_icd.json 2>/dev/null && echo present || echo missing)\" \
+        \"\$(ls /usr/lib/x86_64-linux-gnu/libvulkan_radeon.so 2>/dev/null && echo present || echo missing)\" \
+        \"\$(command -v clinfo >/dev/null 2>&1 && clinfo -l 2>/dev/null | grep -c 'Device Type' || echo 0)\" \
+        \"\$(ls /opt/llama.cpp/build/bin/llama-server 2>/dev/null && echo installed || echo not_installed)\" \
+        \"\${RADV_DEBUG:-unset}\" \
+    " 2>/dev/null) || { error "Failed to retrieve GPU data from $host"; return 1; }
+
+    local gpu_count vulkan_icd vulkan_lib clinfo_devices llamacpp radv_debug
+    gpu_count=$(echo "$gpu_data" | grep '^GPUS:' | sed 's/^GPUS://')
+    vulkan_icd=$(echo "$gpu_data" | grep '^VULKAN_ICD:' | sed 's/^VULKAN_ICD://')
+    vulkan_lib=$(echo "$gpu_data" | grep '^VULKAN_LIB:' | sed 's/^VULKAN_LIB://')
+    clinfo_devices=$(echo "$gpu_data" | grep '^CLINFO:' | sed 's/^CLINFO://')
+    llamacpp=$(echo "$gpu_data" | grep '^LLAMACPP:' | sed 's/^LLAMACPP://')
+    radv_debug=$(echo "$gpu_data" | grep '^RADV_DEBUG:' | sed 's/^RADV_DEBUG://')
+
+    local gpu_details
+    gpu_details=$(remote__exec "$host" "lspci -nn 2>/dev/null | grep 'VGA\|3d\|display' | sed 's/^/  /'") || true
+
+    local vram_info
+    vram_info=$(remote__exec "$host" "clinfo 2>/dev/null | grep -E 'Global memory size|Device Name' | head -6") || true
+
+    echo "=== GPU Hardware ==="
+    echo "  GPU Count: $gpu_count"
+    echo "$gpu_details"
+    echo ""
+    echo "=== VRAM (OpenCL) ==="
+    echo "$vram_info" | sed 's/^/  /'
+    echo ""
+    echo "=== Vulkan ==="
+    echo "  RADV ICD: $vulkan_icd"
+    echo "  RADV library: $vulkan_lib"
+    echo "  RADV_DEBUG: $radv_debug"
+    echo ""
+    echo "=== OpenCL ==="
+    echo "  Rusticl devices: $clinfo_devices"
+    echo ""
+    echo "=== LLM Inference ==="
+    echo "  llama.cpp: $llamacpp"
+
+    if [ "$llamacpp" = "installed" ]; then
+        local llama_version
+        llama_version=$(remote__exec "$host" "/opt/llama.cpp/build/bin/llama-cli --version 2>/dev/null | head -1" || echo "unknown")
+        echo "  Version: $llama_version"
+    fi
+
+    echo ""
+
+    if [ "$vulkan_icd" = "present" ] && [ "$vulkan_lib" = "present" ] && [ "$llamacpp" = "installed" ] && [ "$radv_debug" = "novm,syncshaders,zerovram" ]; then
+        echo "★ LLM inference: READY"
+    elif [ "$vulkan_icd" = "present" ] && [ "$vulkan_lib" = "present" ]; then
+        if [ "$llamacpp" = "not_installed" ]; then
+            echo "⚠ LLM inference: Vulkan ready, llama.cpp not installed"
+        elif [ "$radv_debug" != "novm,syncshaders,zerovram" ]; then
+            echo "⚠ LLM inference: Vulkan ready, RADV_DEBUG workarounds not set"
+        fi
+    else
+        echo "✗ LLM inference: Vulkan drivers missing — run GPU Setup"
+    fi
+}
+
+remote_gpu_setup() {
+    local host
+    host=$(remote__get_host "${1:-}")
+
+    log "Setting up GPU LLM inference on $host..."
+
+    # Phase 1: GPU driver stack (Mesa Vulkan + linux-firmware + Rusticl OpenCL)
+    # This replaces amdgpu-install with open-source equivalents for GCN 1.0 (Tahiti)
+    # amdgpu-install PRO driver does NOT support GCN 1.0 — Mesa RADV is the correct driver
+    log "Phase 1/4: Installing GPU driver stack..."
+
+    dry_run_exec "Enabling apt sources for GPU packages on $host" \
+        remote_toggle_apt_sources "$host" enable
+
+    dry_run_exec "Installing Mesa Vulkan + OpenCL + firmware on $host" \
+        remote__exec "$host" "sudo apt-get update -qq && sudo apt-get install -y \
+            mesa-vulkan-drivers libvulkan1 libvulkan-dev \
+            glslc spirv-headers spirv-tools \
+            mesa-opencl-icd clinfo \
+            linux-firmware linux-modules-extra-\$(uname -r)" || {
+        error "GPU driver installation failed"
+        remote_toggle_apt_sources "$host" disable
+        return 1
+    }
+
+    dry_run_exec "Disabling apt sources on $host" \
+        remote_toggle_apt_sources "$host" disable
+    log "✓ Phase 1 complete: GPU drivers installed"
+
+    # Phase 2: Environment configuration (RADV workarounds + kernel params)
+    log "Phase 2/4: Configuring GPU environment..."
+
+    dry_run_exec "Setting RADV_DEBUG workarounds in /etc/environment on $host" \
+        remote__exec "$host" "grep -q '^RADV_DEBUG=' /etc/environment 2>/dev/null && \
+            sudo sed -i 's/^RADV_DEBUG=.*/RADV_DEBUG=novm,syncshaders,zerovram/' /etc/environment || \
+            echo 'RADV_DEBUG=novm,syncshaders,zerovram' | sudo tee -a /etc/environment"
+
+    local kernel_params
+    kernel_params=$(remote__exec "$host" "grep -E 'amdgpu\\.si|nomodeset' /etc/default/grub 2>/dev/null || echo NOT_SET")
+    if echo "$kernel_params" | grep -q "NOT_SET"; then
+        log "Checking kernel parameters..."
+        local current_params
+        current_params=$(remote__exec "$host" "cat /proc/cmdline" 2>/dev/null || echo "")
+        if echo "$current_params" | grep -q "amdgpu.si_support=1"; then
+            log "Kernel parameters already set via boot config (amdgpu.si_support=1 present)"
+        else
+            warn "amdgpu.si_support=1 not detected in kernel params"
+            warn "Ensure boot parameters include: amdgpu.si_support=1 radeon.si_support=0"
+            warn "These should be set in the autoinstall or GRUB config"
+        fi
+    else
+        log "Kernel parameters configured in GRUB"
+    fi
+    log "✓ Phase 2 complete: environment configured"
+
+    # Phase 3: Build llama.cpp with Vulkan backend
+    log "Phase 3/4: Building llama.cpp with Vulkan backend..."
+
+    local build_deps
+    build_deps=$(remote__exec "$host" "dpkg -l cmake build-essential git 2>/dev/null | grep -c '^ii'" || echo "0")
+    if [ "$build_deps" -lt 3 ]; then
+        dry_run_exec "Enabling apt sources for build dependencies on $host" \
+            remote_toggle_apt_sources "$host" enable
+        dry_run_exec "Installing build dependencies on $host" \
+            remote__exec "$host" "sudo apt-get install -y cmake build-essential git" || true
+        dry_run_exec "Disabling apt sources on $host" \
+            remote_toggle_apt_sources "$host" disable
+    fi
+
+    local llamacpp_exists
+    llamacpp_exists=$(remote__exec "$host" "ls /opt/llama.cpp/build/bin/llama-server 2>/dev/null && echo yes || echo no")
+
+    if [ "$llamacpp_exists" = "yes" ]; then
+        log "llama.cpp already exists at /opt/llama.cpp — updating..."
+        dry_run_exec "Updating llama.cpp on $host" \
+            remote__exec "$host" "cd /opt/llama.cpp && git pull --ff-only" || {
+            warn "git pull failed — rebuilding from existing source"
+        }
+    else
+        log "Cloning llama.cpp..."
+        dry_run_exec "Cloning llama.cpp to /opt/llama.cpp on $host" \
+            remote__exec "$host" "sudo git clone https://github.com/ggml-org/llama.cpp /opt/llama.cpp" || {
+            error "Failed to clone llama.cpp"
+            return 1
+        }
+    fi
+
+    dry_run_exec "Building llama.cpp with Vulkan on $host" \
+        remote__exec "$host" "cd /opt/llama.cpp && sudo cmake -B build -DGGML_VULKAN=ON 2>&1 && sudo cmake --build build --config Release -j\$(nproc) 2>&1" || {
+        error "llama.cpp build failed"
+        return 1
+    }
+    log "✓ Phase 3 complete: llama.cpp built with Vulkan"
+
+    # Phase 4: Verify
+    log "Phase 4/4: Verifying installation..."
+    local driver_info
+    driver_info=$(remote__exec "$host" "printf 'VULKAN_ICD:%s\nMESA_VERSION:%s\nRUSTICL:%s\nFIRMWARE:%s\n' \
+        \"\$(ls /usr/share/vulkan/icd.d/radeon_icd.json 2>/dev/null && echo present || echo MISSING)\" \
+        \"\$(dpkg -l mesa-vulkan-drivers 2>/dev/null | grep '^ii' | awk '{print \$3}')\" \
+        \"\$(dpkg -l mesa-opencl-icd 2>/dev/null | grep '^ii' | awk '{print \$3}')\" \
+        \"\$(dpkg -l linux-firmware 2>/dev/null | grep '^ii' | awk '{print \$3}')\" \
+    " 2>/dev/null) || true
+    log "Driver versions:\n$driver_info"
+
+    local vulkan_check
+    vulkan_check=$(remote__exec "$host" "export RADV_DEBUG=novm,syncshaders,zerovram && /opt/llama.cpp/build/bin/llama-cli -m /dev/null --list-devices 2>&1 | head -10" || echo "FAILED")
+    log "Vulkan devices: $vulkan_check"
+
+    local env_check
+    env_check=$(remote__exec "$host" "grep RADV_DEBUG /etc/environment 2>/dev/null" || echo "NOT SET")
+    log "Environment: $env_check"
+
+    local opencl_check
+    opencl_check=$(remote__exec "$host" "clinfo -l 2>/dev/null | head -5" || echo "NO DEVICES")
+    log "OpenCL devices: $opencl_check"
+
+    dry_run_exec "Creating llama-server wrapper on $host" \
+        remote__exec "$host" "sudo tee /usr/local/bin/llama-server > /dev/null << 'WRAPPER'
+#!/bin/bash
+export RADV_DEBUG=novm,syncshaders,zerovram
+exec /opt/llama.cpp/build/bin/llama-server -ub 256 \"\\\$@\"
+WRAPPER
+sudo chmod +x /usr/local/bin/llama-server"
+
+    dry_run_exec "Creating llama-cli wrapper on $host" \
+        remote__exec "$host" "sudo tee /usr/local/bin/llama-cli > /dev/null << 'WRAPPER'
+#!/bin/bash
+export RADV_DEBUG=novm,syncshaders,zerovram
+exec /opt/llama.cpp/build/bin/llama-cli -ub 256 \"\\\$@\"
+WRAPPER
+sudo chmod +x /usr/local/bin/llama-cli"
+
+    log "✓ GPU setup complete"
+    echo ""
+    echo "=== GPU Setup Summary ==="
+    echo "  Mesa Vulkan (RADV): $(echo "$driver_info" | grep '^MESA_VERSION:' | sed 's/^MESA_VERSION://')"
+    echo "  Rusticl OpenCL:    $(echo "$driver_info" | grep '^RUSTICL:' | sed 's/^RUSTICL://')"
+    echo "  linux-firmware:     $(echo "$driver_info" | grep '^FIRMWARE:' | sed 's/^FIRMWARE://')"
+    echo "  Vulcan ICD:         $(echo "$driver_info" | grep '^VULKAN_ICD:' | sed 's/^VULKAN_ICD://')"
+    echo "  llama.cpp:          /opt/llama.cpp/build/bin/"
+    echo "  Wrappers:           /usr/local/bin/llama-server, /usr/local/bin/llama-cli"
+    echo "  RADV_DEBUG:         novm,syncshaders,zerovram (in /etc/environment)"
+    echo ""
+    echo "Usage:"
+    echo "  llama-server -m model.gguf -ngl 99 -c 4096 --host 0.0.0.0 --port 8080"
+    echo "  llama-cli -m model.gguf -ngl 99 -c 4096"
+    echo ""
+    echo "Recommended models for 3GB VRAM (FirePro D500):"
+    echo "  Llama 3.2 3B Q4_K_M  (~2GB, fits single GPU)"
+    echo "  Qwen 2.5 1.5B Q4_K_M (~1.5GB, fastest)"
+    echo ""
+    echo "Dual-GPU split (both D500s, ~6GB total):"
+    echo "  Llama 3.2 3B Q6_K    (~4.2GB, best quality for 3B)"
+    echo "  Mistral 7B Q3_K_M    (~4.5GB, stretch fit)"
+    echo ""
+    echo "Note: Do NOT install amdgpu-install — it replaces Mesa RADV with"
+    echo "  AMDGPU PRO which dropped GCN 1.0 (Tahiti) support."
+}

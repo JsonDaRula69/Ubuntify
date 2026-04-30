@@ -1849,6 +1849,7 @@ manage_menu() {
         "System Info (kernel · WiFi · disk · DKMS)" "sysinfo" \
         "Kernel Management (status, pin, update)" "kernel" \
         "WiFi / Driver (status, rebuild)" "wifi" \
+        "GPU / LLM (status, setup local inference)" "gpu" \
         "Storage (disk usage, erase macOS)" "storage" \
         "APT Sources (enable, disable)" "apt" \
         "Reboot (reboot, boot to macOS)" "reboot" \
@@ -1931,6 +1932,33 @@ _kernel_security() {
     fi
 }
 
+menu_gpu() {
+    tui_menu "GPU / LLM Inference" "Select GPU operation:" \
+        "Check GPU Status (Vulkan, OpenCL, llama.cpp)" "status" \
+        "Setup LLM Inference (install llama.cpp + Vulkan)" "setup" \
+        "Back" "back" || return
+
+    case "$_TUI_RESULT" in
+        status)
+            if command -v remote_gpu_status >/dev/null 2>&1; then
+                local status
+                status=$(remote_gpu_status)
+                tui_msgbox "GPU / LLM Status" "$status"
+            else
+                tui_msgbox "Not Implemented" "remote_gpu_status not available"
+            fi
+            ;;
+        setup)
+            if command -v remote_gpu_setup >/dev/null 2>&1; then
+                remote_gpu_setup
+            else
+                tui_msgbox "Not Implemented" "remote_gpu_setup not available"
+            fi
+            ;;
+        back) return 0 ;;
+    esac
+}
+
 menu_wifi() {
     local choice
     tui_menu "WiFi/Driver" "Select WiFi operation:" \
@@ -1938,7 +1966,6 @@ menu_wifi() {
         "Rebuild driver" "rebuild" \
             "Back" "back" || return 1
     choice="$_TUI_RESULT"
-
     case "$choice" in
         status)
             if command -v remote_driver_status >/dev/null 2>&1; then
@@ -2059,6 +2086,7 @@ run_manage_mode() {
             sysinfo)   menu_system_info ;;
             kernel)    kernel_handle_choice "$(menu_kernel)" ;;
             wifi)      menu_wifi ;;
+            gpu)       menu_gpu ;;
             storage)   menu_storage ;;
             apt)       menu_apt ;;
             headless)  remote_headless_verify ;;
@@ -2074,7 +2102,8 @@ run_manage_mode() {
 _AGENT_OPERATIONS="sysinfo kernel_status kernel_pin kernel_unpin kernel_update "
 _AGENT_OPERATIONS="${_AGENT_OPERATIONS}security_update health_check rollback_status "
 _AGENT_OPERATIONS="${_AGENT_OPERATIONS}driver_status driver_rebuild disk_usage erase_macos "
-_AGENT_OPERATIONS="${_AGENT_OPERATIONS}apt_enable apt_disable reboot boot_macos headless_verify"
+_AGENT_OPERATIONS="${_AGENT_OPERATIONS}apt_enable apt_disable reboot boot_macos headless_verify "
+_AGENT_OPERATIONS="${_AGENT_OPERATIONS}gpu_status gpu_setup"
 
 _validate_agent_deploy() {
     [ -z "${DEPLOY_METHOD:-}" ] && agent_error "Missing --method (1=ESP, 2=USB, 3=manual, 4=VM)" "$E_AGENT_PARAM"
@@ -2161,6 +2190,8 @@ _agent_manage() {
         reboot)          remote_reboot "$host" ;;
         boot_macos)      remote_boot_macos "$host" ;;
         headless_verify) remote_headless_verify "$host" ;;
+        gpu_status)      remote_gpu_status "$host" ;;
+        gpu_setup)       remote_gpu_setup "$host" ;;
         *) agent_error "Unknown operation: $op. Available: $_AGENT_OPERATIONS" "$E_USAGE" ;;
     esac
 }
