@@ -181,20 +181,15 @@ remote_kernel_unpin() {
     local kver
     kver=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
 
-    dry_run_exec "Unholding kernel image package on $host" \
-        remote__exec "$host" "sudo apt-mark unhold linux-image-${kver} 2>/dev/null || true"
-    dry_run_exec "Unholding kernel headers package on $host" \
-        remote__exec "$host" "sudo apt-mark unhold linux-headers-${kver} 2>/dev/null || true"
-    dry_run_exec "Unholding kernel modules package on $host" \
-        remote__exec "$host" "sudo apt-mark unhold linux-modules-${kver} 2>/dev/null || true"
-    dry_run_exec "Unholding kernel modules-extra package on $host" \
-        remote__exec "$host" "sudo apt-mark unhold linux-modules-extra-${kver} 2>/dev/null || true"
-    dry_run_exec "Removing kernel apt preferences on $host" \
-        remote__exec "$host" "sudo rm /etc/apt/preferences.d/99-pin-kernel 2>/dev/null || true"
-    dry_run_exec "Unmasking apt-daily service/timer on $host" \
-        remote__exec "$host" "sudo systemctl unmask apt-daily.service apt-daily.timer 2>/dev/null || true"
-    dry_run_exec "Unmasking apt-daily-upgrade service/timer on $host" \
-        remote__exec "$host" "sudo systemctl unmask apt-daily-upgrade.service apt-daily-upgrade.timer 2>/dev/null || true"
+    dry_run_exec "Unpinning kernel and unmasking services on $host" \
+        remote__exec "$host" "sudo apt-mark unhold linux-image-${kver} 2>/dev/null; \
+            sudo apt-mark unhold linux-headers-${kver} 2>/dev/null; \
+            sudo apt-mark unhold linux-modules-${kver} 2>/dev/null; \
+            sudo apt-mark unhold linux-modules-extra-${kver} 2>/dev/null || true; \
+            sudo rm -f /etc/apt/preferences.d/99-pin-kernel; \
+            sudo systemctl unmask apt-daily.service apt-daily.timer 2>/dev/null; \
+            sudo systemctl unmask apt-daily-upgrade.service apt-daily-upgrade.timer 2>/dev/null; \
+            sudo snap refresh --unhold 2>/dev/null || true"
 
     log "Kernel unpinned successfully"
 }
@@ -214,15 +209,6 @@ remote_kernel_repin() {
     local kver abi
     kver=$(remote__exec "$host" "uname -r") || { error "Failed to get kernel version"; return 1; }
     abi=$(echo "$kver" | sed 's/-generic$//')
-
-    dry_run_exec "Holding kernel image package on $host" \
-        remote__exec "$host" "sudo apt-mark hold linux-image-${kver}"
-    dry_run_exec "Holding kernel headers package on $host" \
-        remote__exec "$host" "sudo apt-mark hold linux-headers-${kver}"
-    dry_run_exec "Holding kernel modules package on $host" \
-        remote__exec "$host" "sudo apt-mark hold linux-modules-${kver}"
-    dry_run_exec "Holding kernel modules-extra package on $host" \
-        remote__exec "$host" "sudo apt-mark hold linux-modules-extra-${kver} 2>/dev/null || true"
 
     local prefs_content
     prefs_content="Package: linux-image-*
@@ -251,18 +237,21 @@ Pin-Priority: 1001"
     echo "$prefs_content" | dry_run_exec "Writing kernel apt preferences on $host" \
         remote__exec "$host" "sudo tee /etc/apt/preferences.d/99-pin-kernel > /dev/null"
 
-    dry_run_exec "Disabling apt sources by commenting out on $host" \
-        remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
-    dry_run_exec "Disabling apt sources in sources.list.d on $host" \
-        remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; done"
-    dry_run_exec "Masking apt-daily service on $host" \
-        remote__exec "$host" "sudo systemctl mask apt-daily.service 2>/dev/null || true"
-    dry_run_exec "Masking apt-daily timer on $host" \
-        remote__exec "$host" "sudo systemctl mask apt-daily.timer 2>/dev/null || true"
-    dry_run_exec "Masking apt-daily-upgrade service on $host" \
-        remote__exec "$host" "sudo systemctl mask apt-daily-upgrade.service 2>/dev/null || true"
-    dry_run_exec "Masking apt-daily-upgrade timer on $host" \
-        remote__exec "$host" "sudo systemctl mask apt-daily-upgrade.timer 2>/dev/null || true"
+    dry_run_exec "Pinning kernel and disabling sources on $host" \
+        remote__exec "$host" "sudo apt-mark hold linux-image-${kver} && \
+            sudo apt-mark hold linux-headers-${kver} && \
+            sudo apt-mark hold linux-modules-${kver} && \
+            sudo apt-mark hold linux-modules-extra-${kver} 2>/dev/null || true; \
+            sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list; \
+            for list in /etc/apt/sources.list.d/*.list; do \
+                [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; \
+            done; \
+            for _src in /etc/apt/sources.list.d/*.sources; do \
+                [ -f \"\$_src\" ] && sudo sed -i 's/^Types:/# Types:/' \"\$_src\"; \
+            done; \
+            sudo systemctl mask apt-daily.service apt-daily.timer 2>/dev/null; \
+            sudo systemctl mask apt-daily-upgrade.service apt-daily-upgrade.timer 2>/dev/null; \
+            sudo snap refresh --hold=forever 2>/dev/null || true"
 
     log "Kernel re-pinned successfully"
 }
@@ -579,9 +568,13 @@ remote_non_kernel_update() {
 
     log "Enabling apt sources on $host..."
     dry_run_exec "Enabling apt sources on $host" \
-        remote__exec "$host" "sudo sed -i 's/^#deb/deb/' /etc/apt/sources.list"
-    dry_run_exec "Enabling apt sources in sources.list.d on $host" \
-        remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i 's/^#deb/deb/' \"\$list\"; done"
+        remote__exec "$host" "sudo sed -i 's/^#deb/deb/' /etc/apt/sources.list; \
+            for list in /etc/apt/sources.list.d/*.list; do \
+                [ -f \"\$list\" ] && sudo sed -i 's/^#deb/deb/' \"\$list\"; \
+            done; \
+            for _src in /etc/apt/sources.list.d/*.sources; do \
+                [ -f \"\$_src\" ] && sudo sed -i 's/^# Types:/Types:/' \"\$_src\"; \
+            done"
 
     log "Running apt-get update..."
     if ! dry_run_exec "Running apt-get update on $host" \
@@ -601,9 +594,13 @@ remote_non_kernel_update() {
 
     log "Disabling apt sources..."
     dry_run_exec "Disabling apt sources on $host" \
-        remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
-    dry_run_exec "Disabling apt sources in sources.list.d on $host" \
-        remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; done"
+        remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list; \
+            for list in /etc/apt/sources.list.d/*.list; do \
+                [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; \
+            done; \
+            for _src in /etc/apt/sources.list.d/*.sources; do \
+                [ -f \"\$_src\" ] && sudo sed -i 's/^Types:/# Types:/' \"\$_src\"; \
+            done"
 
     log "Apt sources disabled"
 }
