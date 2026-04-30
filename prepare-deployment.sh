@@ -1668,19 +1668,14 @@ menu_deploy() {
         return 1
     fi
 
-    tui_msgbox "Deployment Complete" "Deployment preparation complete!\n\nBoot device: CIDATA (set via bless --nextonly)\nLog: $(log_get_file_path)"
+    log_info "Deployment preparation complete"
 
-    if tui_countdown "Rebooting Mac Pro" "The Mac Pro will boot into the Ubuntu installer" 30; then
+    if tui_countdown "Rebooting Mac Pro" "The Mac Pro will boot into the Ubuntu installer" 10; then
         log_info "Rebooting Mac Pro (auto)..."
-        if remote_mac_exec "sudo reboot" 2>/dev/null; then
-            log_info "Reboot command sent to Mac Pro"
-            tui_msgbox "Rebooting" "Reboot command sent to Mac Pro.\n\nMonitor the webhook server for installation progress:\n  http://${WEBHOOK_HOST:-192.168.1.115}:${WEBHOOK_PORT:-8080}\n\nAfter Ubuntu installs, connect via: ssh ${LINUX_HOST:-macpro-linux}"
-        else
-            tui_msgbox "Reboot Failed" "Could not send reboot command.\n\nManually reboot: ssh ${TARGET_HOST:-macpro} 'sudo reboot'"
-        fi
+        remote_mac_exec "sudo reboot" 2>/dev/null || true
+        log_info "Reboot command sent to Mac Pro"
     else
         log_info "Reboot cancelled by user"
-        tui_msgbox "Reboot Cancelled" "Mac Pro will NOT reboot.\n\nTo reboot manually:\n  ssh ${TARGET_HOST:-macpro} 'sudo reboot'"
     fi
 }
 
