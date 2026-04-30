@@ -434,15 +434,53 @@ remote_kernel_update() {
         remote__exec "$host" "echo 'KUPDATE_PHASE=2' > /tmp/macpro-kernel-update.env"
     log "✓ Phase 2 complete: kernel unpinned, holds removed"
 
-    log "Phase 3/7: Running apt-get update and dist-upgrade..."
-    dry_run_exec "Running apt-get update and dist-upgrade on $host" \
-        remote__exec "$host" "sudo apt-get update && sudo apt-get --fix-broken install -y && sudo apt-get dist-upgrade -y" || {
-        _remote_kernel_update_rollback "$host" "2"
+    log "Phase 3/7: Installing latest kernel..."
+    dry_run_exec "Running apt-get update on $host" \
+        remote__exec "$host" "sudo apt-get update" || {
+        _remote_kernel_update_rollback "$host" "1"
         return 1
     }
+
+    dry_run_exec "Resolving broken dependencies on $host" \
+        remote__exec "$host" "sudo apt-get --fix-broken install -y" || true
+
+    local latest_abi
+    latest_abi=$(remote__exec "$host" "apt-cache policy linux-image-generic 2>/dev/null | grep -oP '6\\.8\\.0-\\d+' | head -1" 2>/dev/null) || true
+
+    if [ -z "$latest_abi" ]; then
+        log "Cannot determine latest kernel — falling back to dist-upgrade"
+        dry_run_exec "Running dist-upgrade on $host" \
+            remote__exec "$host" "sudo apt-get dist-upgrade -y" || {
+            _remote_kernel_update_rollback "$host" "2"
+            return 1
+        }
+    else
+        current_abi=$(echo "$current_kver" | sed 's/-generic$//')
+        if [ "$latest_abi" = "$current_abi" ]; then
+            log "Already on latest kernel ($current_kver) — running dist-upgrade for other packages"
+            dry_run_exec "Running dist-upgrade on $host" \
+                remote__exec "$host" "sudo apt-get dist-upgrade -y" || {
+                _remote_kernel_update_rollback "$host" "2"
+                return 1
+            }
+        else
+            log "Installing kernel $latest_abi-generic (from $current_kver)..."
+            dry_run_exec "Installing new kernel on $host" \
+                remote__exec "$host" "sudo apt-get install -y linux-image-${latest_abi}-generic linux-headers-${latest_abi}-generic linux-modules-${latest_abi}-generic linux-modules-extra-${latest_abi}-generic" || {
+                _remote_kernel_update_rollback "$host" "2"
+                return 1
+            }
+            dry_run_exec "Running dist-upgrade for remaining packages on $host" \
+                remote__exec "$host" "sudo apt-get dist-upgrade -y" || {
+                _remote_kernel_update_rollback "$host" "2"
+                return 1
+            }
+        fi
+    fi
+
     dry_run_exec "Setting kernel update phase marker to 3 on $host" \
         remote__exec "$host" "echo 'KUPDATE_PHASE=3' > /tmp/macpro-kernel-update.env"
-    log "✓ Phase 3 complete: dist-upgrade finished"
+    log "✓ Phase 3 complete: kernel packages installed"
 
     new_kver=$(remote__exec "$host" "ls /boot/vmlinuz-* | sort -V | tail -1 | sed 's|/boot/vmlinuz-||'")
     current_kver=$(remote__exec "$host" "uname -r")
