@@ -52,6 +52,23 @@ retry_ssh() {
             return 255
         fi
 
+        # Only retry on SSH connection errors — not on remote command failures
+        local is_ssh_error=0
+        if grep -qi "connection refused\|connection timed out\|broken pipe\|network is unreachable\|no route to host\|connection reset\|host key verification failed" "$stderr_file" 2>/dev/null; then
+            is_ssh_error=1
+        fi
+
+        # Exit code 255 = SSH transport failure (always retry)
+        if [ "$exit_code" -eq 255 ]; then
+            is_ssh_error=1
+        fi
+
+        if [ "$is_ssh_error" -eq 0 ]; then
+            # Remote command failed — not an SSH issue, don't retry
+            rm -f "$stderr_file"
+            return "$exit_code"
+        fi
+
         if grep -q "Connection refused" "$stderr_file" 2>/dev/null; then
             warn "SSH: connection refused (server may be rebooting)"
         elif grep -q "Connection timed out" "$stderr_file" 2>/dev/null; then

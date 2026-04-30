@@ -397,7 +397,7 @@ remote_kernel_update() {
 
     log "Phase 3/7: Running apt-get update and dist-upgrade..."
     dry_run_exec "Running apt-get update and dist-upgrade on $host" \
-        remote__exec "$host" "sudo apt-get update && sudo apt-get dist-upgrade -y" || {
+        remote__exec "$host" "sudo apt-get update && sudo apt-get --fix-broken install -y && sudo apt-get dist-upgrade -y" || {
         _remote_kernel_update_rollback "$host" "2"
         return 1
     }
