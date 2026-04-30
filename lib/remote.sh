@@ -868,7 +868,7 @@ EOF
     remote__exec "$host" "sudo update-grub" 2>/dev/null || true
 
     local macos_boot
-    macos_boot=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -i macos | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || true
+    macos_boot=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -iE 'mac os|macos|apple' | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || true
     if [ -n "$macos_boot" ]; then
         dry_run_exec "Removing macOS EFI boot entry" \
             remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr --delete-bootnum --bootnum $macos_boot" || true
@@ -904,7 +904,7 @@ remote_boot_macos() {
 
     log "Setting macOS as next boot device..."
     local boot_entry
-    boot_entry=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -i macos | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || true
+    boot_entry=$(remote__exec "$host" "sudo LIBEFIVAR_OPS=efivarfs efibootmgr | grep -iE 'mac os|macos|apple' | head -1 | grep -oE 'Boot[0-9A-F]+' | sed 's/Boot//'") || true
 
     # Also check Apple's standard boot numbers (Boot80/81)
     if [ -z "$boot_entry" ]; then
@@ -925,7 +925,7 @@ remote_boot_macos() {
                 APPLE_PART=\$(echo \$ESP_DEV | sed \"s/.*[^0-9]//\"); \
                 efibootmgr --create --label \"macOS\" --disk \$APPLE_DISK --part \$APPLE_PART --loader \"\\\\EFI\\\\Apple\\\\AppleEFI\\\\Boot.efi\" 2>/dev/null || true; \
                 sleep 1; \
-                efibootmgr | grep -i macos | head -1 | grep -oE \"Boot[0-9A-F]+\" | sed \"s/Boot//\"; \
+                efibootmgr | grep -iE 'mac os|macos|apple' | head -1 | grep -oE \"Boot[0-9A-F]+\" | sed \"s/Boot//\"; \
             else \
                 echo \"NO_BOOTLOADER\"; \
             fi; \
