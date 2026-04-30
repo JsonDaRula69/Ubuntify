@@ -97,7 +97,7 @@ __SSH_KEYS__
       dpkg --force-depends --skip-same-version -i $PKGS/linux-headers-${ABI_VER}_*.deb \
               $PKGS/linux-headers-${KVER}_*.deb \
               $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { die "kernel headers install failed" 5; }
-      # linux-modules-extra contains cfg80211, mac80211 — required by wl driver
+      dpkg --force-depends --skip-same-version -i $PKGS/wireless-regdb_*.deb 2>>"$LOG" || log "WARN: wireless-regdb install in live env failed (non-critical)"
       dpkg --force-depends --skip-same-version -i $PKGS/linux-modules-extra-${KVER}_*.deb 2>>"$LOG" || { die "linux-modules-extra install failed — WiFi driver will not work without cfg80211" 5; }
       depmod -a "$KVER" 2>>"$LOG" || log "WARN: depmod in live env returned non-zero"
 
@@ -552,14 +552,24 @@ __SSH_KEYS__
         die "DKMS patches missing — broadcom-sta cannot compile on kernel 6.8+" 30
       fi
 
-       # Stage 1: Kernel headers (no deps)
-       wh '{"progress":35,"stage":"late-headers","status":"installing","message":"Stage 1/5: Installing kernel headers and extra modules into target"}'
-       dpkg --root /target --force-depends --skip-same-version -i \
-         $PKGS/linux-headers-${ABI_VER}_*.deb \
-         $PKGS/linux-headers-${KVER}_*.deb \
-         $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { die "Stage 1 (headers) failed" 35; }
-       dpkg --root /target --force-depends --skip-same-version -i $PKGS/linux-modules-extra-${KVER}_*.deb 2>>"$LOG" || { die "Stage 1 (linux-modules-extra) failed — cfg80211 required for WiFi" 35; }
-       chroot /target depmod -a "$KVER" 2>>"$LOG" || log "WARN: depmod in target returned non-zero"
+      # Bind-mount /proc, /sys, /dev BEFORE dpkg — linux-image postinst needs
+      # /proc/mounts (update-initramfs) and /dev (grub-probe)
+      mount --bind /proc /target/proc 2>>"$LOG" || { die "mount /proc into target failed" 35; }
+      mount --bind /sys /target/sys 2>>"$LOG" || { umount /target/proc 2>/dev/null || true; die "mount /sys into target failed" 35; }
+      mount --bind /dev /target/dev 2>>"$LOG" || { umount /target/sys /target/proc 2>/dev/null || true; die "mount /dev into target failed" 35; }
+
+      # Stage 1: Kernel headers, modules-extra, and wireless-regdb
+      wh '{"progress":35,"stage":"late-headers","status":"installing","message":"Stage 1/5: Installing kernel headers and extra modules into target"}'
+      dpkg --root /target --force-depends --skip-same-version -i \
+        $PKGS/linux-headers-${ABI_VER}_*.deb \
+        $PKGS/linux-headers-${KVER}_*.deb \
+        $PKGS/linux-libc-dev_*.deb 2>>"$LOG" || { die "Stage 1 (headers) failed" 35; }
+      dpkg --root /target --force-depends --skip-same-version -i $PKGS/wireless-regdb_*.deb 2>>"$LOG" || log "WARN: wireless-regdb install failed (non-critical)"
+      dpkg --root /target --force-depends --skip-same-version -i $PKGS/linux-modules-extra-${KVER}_*.deb 2>>"$LOG" || log "WARN: linux-modules-extra dpkg returned non-zero (module files may still be installed)"
+      if [ ! -f "/target/lib/modules/${KVER}/kernel/net/wireless/cfg80211.ko*" ] && [ ! -f "/target/lib/modules/${KVER}/updates/dkms/wl.ko*" ]; then
+        die "Stage 1 (linux-modules-extra) failed — cfg80211.ko not found in target" 35
+      fi
+      chroot /target depmod -a "$KVER" 2>>"$LOG" || log "WARN: depmod in target returned non-zero"
 
       # Stage 2: Base libraries first, then binaries that depend on them
       wh '{"progress":45,"stage":"late-libs","status":"installing","message":"Stage 2/5: Installing base libraries into target"}'
@@ -617,12 +627,9 @@ __SSH_KEYS__
         done
       fi
 
-      # Bind-mount /proc, /sys, /dev for chroot DKMS compilation
-      # Set up cleanup trap so mounts are always unmounted, even on failure
+      # /proc, /sys, /dev already bind-mounted before Stage 1 (needed by linux-image postinst)
+      # Ensure cleanup trap removes them on exit
       trap '_dump_log; umount /target/dev /target/sys /target/proc 2>/dev/null || true' EXIT
-      mount --bind /proc /target/proc 2>>"$LOG" || { die "mount /proc failed" 60; }
-      mount --bind /sys /target/sys 2>>"$LOG" || { umount /target/proc 2>/dev/null || true; die "mount /sys failed" 60; }
-      mount --bind /dev /target/dev 2>>"$LOG" || { umount /target/sys /target/proc 2>/dev/null || true; die "mount /dev failed" 60; }
 
       # DKMS build and install in target
       chroot /target ln -sf /usr/bin/x86_64-linux-gnu-gcc-13 /usr/bin/cc 2>/dev/null || chroot /target ln -sf /usr/bin/gcc-13 /usr/bin/cc 2>/dev/null || true
