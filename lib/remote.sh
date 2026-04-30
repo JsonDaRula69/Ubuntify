@@ -279,17 +279,25 @@ remote_toggle_apt_sources() {
     case "$action" in
         enable)
             log "Enabling apt sources on $host..."
-            dry_run_exec "Uncommenting deb lines in sources.list on $host" \
-                remote__exec "$host" "sudo sed -i '/^#deb/ s/^#//' /etc/apt/sources.list"
-            dry_run_exec "Uncommenting deb lines in sources.list.d on $host" \
-                remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^#deb/ s/^#//' \"\$list\"; done"
+            dry_run_exec "Enabling apt sources on $host" \
+                remote__exec "$host" "sudo sed -i '/^#deb/ s/^#//' /etc/apt/sources.list; \
+                    for list in /etc/apt/sources.list.d/*.list; do \
+                        [ -f \"\$list\" ] && sudo sed -i '/^#deb/ s/^#//' \"\$list\"; \
+                    done; \
+                    for _src in /etc/apt/sources.list.d/*.sources; do \
+                        [ -f \"\$_src\" ] && sudo sed -i 's/^# Types:/Types:/' \"\$_src\"; \
+                    done"
             ;;
         disable)
             log "Disabling apt sources on $host..."
-            dry_run_exec "Commenting out deb lines in sources.list on $host" \
-                remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list"
-            dry_run_exec "Commenting out deb lines in sources.list.d on $host" \
-                remote__exec "$host" "for list in /etc/apt/sources.list.d/*.list; do [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; done"
+            dry_run_exec "Disabling apt sources on $host" \
+                remote__exec "$host" "sudo sed -i '/^deb/ s/^/#/' /etc/apt/sources.list; \
+                    for list in /etc/apt/sources.list.d/*.list; do \
+                        [ -f \"\$list\" ] && sudo sed -i '/^deb/ s/^/#/' \"\$list\"; \
+                    done; \
+                    for _src in /etc/apt/sources.list.d/*.sources; do \
+                        [ -f \"\$_src\" ] && sudo sed -i 's/^Types:/# Types:/' \"\$_src\"; \
+                    done"
             ;;
         *)
             error "remote_toggle_apt_sources: unknown action '$action'. Use 'enable' or 'disable'."
