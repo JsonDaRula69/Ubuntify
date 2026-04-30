@@ -16,6 +16,8 @@ if [ -n "${SUDO_USER:-}" ]; then
     [ -d "$_REAL_HOME" ] && _REMOTE_MAC_SSH_USER_HOME="$_REAL_HOME"
 fi
 _REMOTE_MAC_SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o BatchMode=yes -o StrictHostKeyChecking=no"
+_REMOTE_MAC_SSH_OPTS="$_REMOTE_MAC_SSH_OPTS -o ControlMaster=auto -o ControlPath=${_REMOTE_MAC_SSH_USER_HOME}/.ssh/sockets/%r@%h-%p -o ControlPersist=600"
+mkdir -p "${_REMOTE_MAC_SSH_USER_HOME}/.ssh/sockets" 2>/dev/null || true
 _REMOTE_MAC_SSH_CONFIG="${_REMOTE_MAC_SSH_USER_HOME}/.ssh/config"
 if [ -f "$_REMOTE_MAC_SSH_CONFIG" ]; then
     _REMOTE_MAC_SSH_OPTS="$_REMOTE_MAC_SSH_OPTS -F $_REMOTE_MAC_SSH_CONFIG"
