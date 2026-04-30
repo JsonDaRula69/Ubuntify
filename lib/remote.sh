@@ -557,10 +557,13 @@ remote_non_kernel_update() {
         failed=1
     fi
 
-    log "Upgrading non-kernel packages..."
+    log "Resolving broken dependencies..."
+    remote__exec "$host" "sudo apt-get --fix-broken install -y" 2>/dev/null || true
+
+    log "Upgrading non-kernel packages (kernel packages blocked by apt preferences and holds)..."
     if [ "$failed" -eq 0 ]; then
         if ! dry_run_exec "Running apt-get upgrade on $host" \
-            remote__exec "$host" "sudo apt-get upgrade -y --exclude=linux-image-*,linux-headers-*,linux-modules-*"; then
+            remote__exec "$host" "sudo apt-get upgrade -y"; then
             error "Upgrade failed"
             failed=1
         fi
