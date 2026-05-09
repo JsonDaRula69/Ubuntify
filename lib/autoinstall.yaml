@@ -37,15 +37,41 @@ __SSH_KEYS__
     - |
       set -x
       LOG="/run/macpro.log"
+      # CIDATA discovery: mount the CIDATA ESP by label for WRITABLE log storage.
+      # The ISO at /cdrom is read-only and also has macpro-pkgs — we must NOT use it for logs.
       CIDATA=""
-      for _cidata_mp in /cdrom /isodevice /mnt; do
-        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
-          CIDATA="$_cidata_mp"
+      CIDATA_DEV=$(blkid -t LABEL="CIDATA" -o device 2>/dev/null | head -1)
+      if [ -n "$CIDATA_DEV" ] && [ -b "$CIDATA_DEV" ]; then
+        mkdir -p /mnt/cidata-logs 2>/dev/null
+        if mount "$CIDATA_DEV" /mnt/cidata-logs 2>/dev/null; then
+          CIDATA="/mnt/cidata-logs"
+        fi
+      fi
+      # Fallback: check if CIDATA is already mounted at a writable location
+      if [ -z "$CIDATA" ]; then
+        for _cidata_mp in /isodevice /mnt; do
+          if [ -d "$_cidata_mp/macpro-pkgs" ] && [ -w "$_cidata_mp" ]; then
+            CIDATA="$_cidata_mp"
+            break
+          fi
+        done
+      fi
+      # Discover packages mount (may differ from CIDATA log mount)
+      PKGS_MOUNT=""
+      for _pkgs_mp in /cdrom /isodevice /mnt /mnt/cidata-logs; do
+        if [ -d "$_pkgs_mp/macpro-pkgs" ]; then
+          PKGS_MOUNT="$_pkgs_mp"
           break
         fi
       done
       CIDATA_LOG_DIR="${CIDATA}/logs"
-      _sync_log() { if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null; cp "$LOG" "$CIDATA_LOG_DIR/macpro-early.log" 2>/dev/null || true; dmesg > "$CIDATA_LOG_DIR/dmesg-early.log" 2>/dev/null || true; fi; }
+      _sync_log() {
+        if [ -z "$CIDATA" ] || [ ! -d "$CIDATA" ]; then return 0; fi
+        mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null || { echo "[early-sync-log] WARN: cannot create $CIDATA_LOG_DIR" >> "$LOG"; return 1; }
+        cp "$LOG" "$CIDATA_LOG_DIR/macpro-early.log" 2>/dev/null || echo "[early-sync-log] WARN: cp macpro-early.log failed" >> "$LOG"
+        dmesg > "$CIDATA_LOG_DIR/dmesg-early.log" 2>/dev/null || echo "[early-sync-log] WARN: dmesg dump failed" >> "$LOG"
+        sync "$CIDATA_LOG_DIR" 2>/dev/null || true
+      }
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
       diag() { { echo "=== DIAGNOSTIC DUMP ==="; echo "Date: $(date 2>/dev/null)"; echo "Kernel: $(uname -r 2>/dev/null)"; echo "Args: $*"; echo "--- lsmod wl ---"; lsmod 2>/dev/null | grep -E 'wl|cfg80211|mac80211'; echo "--- ip link ---"; ip link show 2>/dev/null; echo "--- ip addr ---"; ip addr show 2>/dev/null; echo "--- iwconfig ---"; iwconfig 2>/dev/null; echo "--- netplan ---"; cat /etc/netplan/01-wifi.yaml 2>/dev/null; echo "--- wpa_supplicant ---"; which wpa_supplicant 2>/dev/null || echo "NOT FOUND"; ps aux 2>/dev/null | grep -E 'wpa|networkd|dhclient' | grep -v grep; echo "--- dkms ---"; dkms status 2>/dev/null; echo "--- dmesg wl ---"; dmesg 2>/dev/null | grep -iE 'wl|broadcom|wifi|wlan|b43' | tail -10; echo "--- $LOG ---"; cat "$LOG" 2>/dev/null; echo "=== END DIAGNOSTIC ==="; } > /tmp/macpro-diag.txt 2>/dev/null; cat /tmp/macpro-diag.txt > /dev/console 2>/dev/null; wh "{\"progress\":${2:-0},\"stage\":\"early\",\"status\":\"failed\",\"message\":\"FATAL: $1 — diag at /tmp/macpro-diag.txt\"}"; }
@@ -69,9 +95,9 @@ __SSH_KEYS__
       fi
       KVER="$(uname -r)"
       ABI_VER="${KVER%-generic}"
-      PKGS="${CIDATA}/macpro-pkgs"
+      PKGS="${PKGS_MOUNT}/macpro-pkgs"
       if [ ! -d "$PKGS" ]; then
-        die "Cannot find macpro-pkgs at $PKGS" 2
+        die "Cannot find macpro-pkgs at $PKGS (searched /cdrom /isodevice /mnt /mnt/cidata-logs)" 2
       fi
 
       echo "=== MAC PRO 2013 AUTOINSTALL ===" > "$LOG"
@@ -444,6 +470,7 @@ __SSH_KEYS__
         size: __ROOT_SIZE_BYTES__
         preserve: true
         wipe: superblock
+        partition_type: 0fc63daf-8483-4772-8e79-3d69d8477de4
       - type: partition
         id: recovery
         device: root-disk
@@ -475,14 +502,36 @@ __SSH_KEYS__
       ABI_VER="${KVER%-generic}"
       LOG="/run/macpro.log"
       CIDATA=""
-      for _cidata_mp in /cdrom /isodevice /mnt /target/cdrom; do
-        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
-          CIDATA="$_cidata_mp"
+      CIDATA_DEV=$(blkid -t LABEL="CIDATA" -o device 2>/dev/null | head -1)
+      if [ -n "$CIDATA_DEV" ] && [ -b "$CIDATA_DEV" ]; then
+        mkdir -p /mnt/cidata-logs 2>/dev/null
+        if mount "$CIDATA_DEV" /mnt/cidata-logs 2>/dev/null; then
+          CIDATA="/mnt/cidata-logs"
+        fi
+      fi
+      if [ -z "$CIDATA" ]; then
+        for _cidata_mp in /isodevice /mnt; do
+          if [ -d "$_cidata_mp/macpro-pkgs" ] && [ -w "$_cidata_mp" ]; then
+            CIDATA="$_cidata_mp"
+            break
+          fi
+        done
+      fi
+      PKGS_MOUNT=""
+      for _pkgs_mp in /cdrom /isodevice /mnt /mnt/cidata-logs; do
+        if [ -d "$_pkgs_mp/macpro-pkgs" ]; then
+          PKGS_MOUNT="$_pkgs_mp"
           break
         fi
       done
       CIDATA_LOG_DIR="${CIDATA}/logs"
-      _sync_log() { if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null; cp "$LOG" "$CIDATA_LOG_DIR/macpro-late.log" 2>/dev/null || true; dmesg > "$CIDATA_LOG_DIR/dmesg-late.log" 2>/dev/null || true; fi; }
+      _sync_log() {
+        if [ -z "$CIDATA" ] || [ ! -d "$CIDATA" ]; then return 0; fi
+        mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null || { echo "[late-sync-log] WARN: cannot create $CIDATA_LOG_DIR" >> "$LOG"; return 1; }
+        cp "$LOG" "$CIDATA_LOG_DIR/macpro-late.log" 2>/dev/null || echo "[late-sync-log] WARN: cp macpro-late.log failed" >> "$LOG"
+        dmesg > "$CIDATA_LOG_DIR/dmesg-late.log" 2>/dev/null || echo "[late-sync-log] WARN: dmesg dump failed" >> "$LOG"
+        sync "$CIDATA_LOG_DIR" 2>/dev/null || true
+      }
       WHURL="__WHURL__"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
       diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
@@ -538,7 +587,7 @@ __SSH_KEYS__
       fi
 
       # Discover macpro-pkgs mount point
-      PKGS="${CIDATA}/macpro-pkgs"
+      PKGS="${PKGS_MOUNT}/macpro-pkgs"
       if [ ! -d "$PKGS" ]; then
         die "Cannot find macpro-pkgs on any mount point" 29
       fi
@@ -874,12 +923,23 @@ __SSH_KEYS__
       LOG="/run/macpro.log"
       WHURL="__WHURL__"
       CIDATA=""
-      for _cidata_mp in /cdrom /isodevice /mnt; do
-        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
-          CIDATA="$_cidata_mp"
-          break
+      CIDATA_DEV=$(blkid -t LABEL="CIDATA" -o device 2>/dev/null | head -1)
+      if [ -n "$CIDATA_DEV" ] && [ -b "$CIDATA_DEV" ]; then
+        mkdir -p /mnt/cidata-logs 2>/dev/null
+        if mount "$CIDATA_DEV" /mnt/cidata-logs 2>/dev/null; then
+          CIDATA="/mnt/cidata-logs"
+        elif mount "$CIDATA_DEV" /mnt/cidata-logs -o remount,rw 2>/dev/null; then
+          CIDATA="/mnt/cidata-logs"
         fi
-      done
+      fi
+      if [ -z "$CIDATA" ]; then
+        for _cidata_mp in /isodevice /mnt; do
+          if [ -d "$_cidata_mp/macpro-pkgs" ] && [ -w "$_cidata_mp" ]; then
+            CIDATA="$_cidata_mp"
+            break
+          fi
+        done
+      fi
       CIDATA_LOG_DIR="${CIDATA}/logs"
       wh() { curl -s -X POST "$WHURL" -H "Content-Type: application/json" -d "$1" > /dev/null 2>&1 || true; }
       diag() { echo "=== DIAG ===" > /dev/console 2>/dev/null; lsmod 2>/dev/null | grep -E "wl|cfg80211" > /dev/console 2>/dev/null; ip link show > /dev/console 2>/dev/null; ip addr show > /dev/console 2>/dev/null; iwconfig > /dev/console 2>/dev/null; cat /etc/netplan/*.yaml > /dev/console 2>/dev/null 2>&1; which wpa_supplicant > /dev/console 2>/dev/null; dkms status > /dev/console 2>/dev/null; dmesg 2>/dev/null | grep -iE "wl|broadcom|wifi" | tail -5 > /dev/console 2>/dev/null; cat "$LOG" > /dev/console 2>/dev/null; }
@@ -892,18 +952,31 @@ __SSH_KEYS__
       dmesg > /target/var/log/macpro-install/dmesg.log || true
       # Also sync logs to CIDATA (survives reboot — readable from macOS)
       if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then
-        mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null || true
-        cp /run/macpro.log "$CIDATA_LOG_DIR/macpro-late.log" 2>/dev/null || true
-        cp /target/var/log/macpro-install/early-commands.log "$CIDATA_LOG_DIR/" 2>/dev/null || true
-        dmesg > "$CIDATA_LOG_DIR/dmesg-late.log" 2>/dev/null || true
-        # Copy curtin/subiquity installer logs if they exist
-        for _logdir in /var/log/installer /var/log; do
-          for _log in curtin-install.log curtin.log subiquity-server.log syslog; do
-            if [ -f "$_logdir/$_log" ]; then
-              cp "$_logdir/$_log" "$CIDATA_LOG_DIR/" 2>/dev/null || true
+        if ! mkdir -p "$CIDATA_LOG_DIR" 2>/dev/null; then
+          echo "[late-logs] WARN: cannot mkdir $CIDATA_LOG_DIR" >> "$LOG"
+        else
+          cp /run/macpro.log "$CIDATA_LOG_DIR/macpro-late.log" 2>/dev/null || echo "[late-logs] WARN: cp macpro-late.log failed" >> "$LOG"
+          cp /target/var/log/macpro-install/early-commands.log "$CIDATA_LOG_DIR/" 2>/dev/null || true
+          dmesg > "$CIDATA_LOG_DIR/dmesg-late.log" 2>/dev/null || echo "[late-logs] WARN: dmesg dump failed" >> "$LOG"
+          # Copy curtin/subiquity installer logs if they exist
+          for _logdir in /var/log/installer /var/log /var/log/install-logs-*; do
+            for _log in curtin-install.log curtin.log subiquity-server.log subiquity-client.log syslog install.log autoinstall-user-data; do
+              if [ -f "$_logdir/$_log" ]; then
+                cp "$_logdir/$_log" "$CIDATA_LOG_DIR/" 2>/dev/null || true
+              fi
+            done
+            if [ -d "$_logdir" ]; then
+              cp -r "$_logdir/" "$CIDATA_LOG_DIR/installer-logs/" 2>/dev/null || true
+              break
             fi
           done
-        done
+          # Dump partition table state for post-mortem
+          sgdisk -p /dev/sda > "$CIDATA_LOG_DIR/partition-table.txt" 2>/dev/null || true
+          lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT /dev/sda > "$CIDATA_LOG_DIR/lsblk.txt" 2>/dev/null || true
+          sync "$CIDATA_LOG_DIR" 2>/dev/null || true
+        fi
+      else
+        echo "[late-logs] WARN: CIDATA mount not found — logs NOT saved to ESP" >> "$LOG"
       fi
 
       wh '{"progress":97,"stage":"late-verify","status":"verifying","message":"Verifying target system before reboot"}'
@@ -1003,12 +1076,23 @@ __SSH_KEYS__
       done
       # Sync ALL error logs to CIDATA (survives reboot — readable from macOS)
       CIDATA=""
-      for _cidata_mp in /cdrom /isodevice /mnt; do
-        if [ -d "$_cidata_mp/macpro-pkgs" ]; then
-          CIDATA="$_cidata_mp"
-          break
+      CIDATA_DEV=$(blkid -t LABEL="CIDATA" -o device 2>/dev/null | head -1)
+      if [ -n "$CIDATA_DEV" ] && [ -b "$CIDATA_DEV" ]; then
+        mkdir -p /mnt/cidata-logs 2>/dev/null
+        if mount "$CIDATA_DEV" /mnt/cidata-logs 2>/dev/null; then
+          CIDATA="/mnt/cidata-logs"
+        elif mount "$CIDATA_DEV" /mnt/cidata-logs -o remount,rw 2>/dev/null; then
+          CIDATA="/mnt/cidata-logs"
         fi
-      done
+      fi
+      if [ -z "$CIDATA" ]; then
+        for _cidata_mp in /isodevice /mnt; do
+          if [ -d "$_cidata_mp/macpro-pkgs" ] && [ -w "$_cidata_mp" ]; then
+            CIDATA="$_cidata_mp"
+            break
+          fi
+        done
+      fi
       if [ -n "$CIDATA" ] && [ -d "$CIDATA" ]; then
         mkdir -p "$CIDATA/logs" 2>/dev/null || true
         cp -r "$ERR_DIR/"* "$CIDATA/logs/" 2>/dev/null || true

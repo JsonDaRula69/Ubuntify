@@ -1245,10 +1245,10 @@ remote_gpu_status() {
         fi
     else
         echo "✗ LLM inference: Vulkan drivers missing — run GPU Setup"
-    fi
-}
+     fi
+ }
 
-remote_gpu_setup() {
+ remote_gpu_setup() {
     local host
     host=$(remote__get_host "${1:-}")
 

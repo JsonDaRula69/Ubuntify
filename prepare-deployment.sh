@@ -14,6 +14,7 @@ JSON_OUTPUT=0
 REMOTE_HOST=""
 LINUX_HOST=""
 REMOTE_OPERATION=""
+GOVERNOR=""
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly ESP_NAME="CIDATA"
@@ -47,6 +48,11 @@ source "$LIB_DIR/discover.sh"
 # Source remote.sh if it exists (for Manage mode)
 if [ -f "$LIB_DIR/remote.sh" ]; then
     source "$LIB_DIR/remote.sh"
+fi
+
+# Source drivers.sh if it exists (for driver installation)
+if [ -f "$LIB_DIR/drivers.sh" ]; then
+    source "$LIB_DIR/drivers.sh"
 fi
 
 export DRY_RUN
@@ -1416,6 +1422,7 @@ show_help() {
     echo "  --operation OP        Manage mode operation (see README)"
     echo "  --wifi-ssid SSID      Override WiFi SSID from deploy.conf"
     echo "  --wifi-password PASS  Override WiFi password from deploy.conf"
+    echo "  --governor GOV        CPU governor for governor_set operation"
     echo "  --webhook-host HOST   Override webhook host from deploy.conf"
     echo "  --webhook-port PORT   Override webhook port from deploy.conf"
     echo "  --encryption MODE     Password storage: plaintext, aes256, keychain (default: plaintext)"
@@ -1476,6 +1483,8 @@ while [ $# -gt 0 ]; do
         --wifi-ssid=*)       WIFI_SSID="${1#*=}"; shift ;;
         --wifi-password)     WIFI_PASSWORD="$2"; shift 2 ;;
         --wifi-password=*)   WIFI_PASSWORD="${1#*=}"; shift ;;
+        --governor)          GOVERNOR="$2"; shift 2 ;;
+        --governor=*)        GOVERNOR="${1#*=}"; shift ;;
         --webhook-host)      WEBHOOK_HOST="$2"; shift 2 ;;
         --webhook-host=*)    WEBHOOK_HOST="${1#*=}"; shift ;;
         --webhook-port)      WEBHOOK_PORT="$2"; shift 2 ;;
@@ -1848,6 +1857,7 @@ manage_menu() {
     tui_menu "Mac Pro Management" "Select operation:" \
         "System Info (kernel · WiFi · disk · DKMS)" "sysinfo" \
         "Kernel Management (status, pin, update)" "kernel" \
+        "Install Drivers (GPU · Bluetooth · Microcode · Performance)" "drivers" \
         "WiFi / Driver (status, rebuild)" "wifi" \
         "GPU / LLM (status, setup local inference)" "gpu" \
         "Storage (disk usage, erase macOS)" "storage" \
@@ -1956,6 +1966,90 @@ menu_gpu() {
             fi
             ;;
         back) return 0 ;;
+    esac
+}
+
+menu_drivers() {
+    local choice
+    tui_menu "Driver & Performance" "Select operation:" \
+        "Status (GPU · CPU · Bluetooth · Audio · Kernel)" "status" \
+        "Install All Drivers (GPU · Bluetooth · Microcode · Performance)" "install" \
+        "Fix WiFi (power mgmt, watchdog)" "fix_wifi" \
+        "CPU Governor" "governor" \
+        "Back" "back" || return 1
+    choice="$_TUI_RESULT"
+
+    case "$choice" in
+        status)
+            if command -v remote_driver_status >/dev/null 2>&1; then
+                local status
+                status=$(remote_driver_status)
+                tui_msgbox "Driver & Performance Status" "$status"
+            else
+                tui_msgbox "Not Implemented" "remote_driver_status not available"
+            fi
+            ;;
+
+        install)
+            if command -v remote_install_drivers >/dev/null 2>&1; then
+                remote_install_drivers
+            else
+                tui_msgbox "Not Implemented" "remote_install_drivers not available"
+            fi
+            ;;
+
+        fix_wifi)
+            if command -v remote_fix_wifi >/dev/null 2>&1; then
+                remote_fix_wifi
+            else
+                tui_msgbox "Not Implemented" "remote_fix_wifi not available"
+            fi
+            ;;
+
+        governor)
+            _menu_governor
+            ;;
+
+        back)
+            return 0
+            ;;
+    esac
+}
+
+_menu_governor() {
+    local host="${LINUX_HOST:-${REMOTE_HOST:-macpro-linux}}"
+    local current pstate
+
+    if command -v remote__exec >/dev/null 2>&1; then
+        current=$(remote__exec "$host" "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null" || echo "unknown")
+        pstate=$(remote__exec "$host" "cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null" || echo "unknown")
+    else
+        current=$(ssh "$host" "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null" || echo "unknown")
+        pstate=$(ssh "$host" "cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null" || echo "unknown")
+    fi
+
+    local choice
+    tui_menu "CPU Governor" "Current: ${current} (intel_pstate: ${pstate})" \
+        "Performance (max frequency, server/workstation)" "performance" \
+        "Powersave (dynamic scaling, energy efficient)" "powersave" \
+        "Schedutil (scheduler-directed, default kernel)" "schedutil" \
+        "Ondemand (dynamic, older default)" "ondemand" \
+        "Conservative (slow scale-up, energy aware)" "conservative" \
+        "Back" "back" || return 1
+    choice="$_TUI_RESULT"
+
+    case "$choice" in
+        back) return 0 ;;
+        performance|powersave|schedutil|ondemand|conservative)
+            if command -v remote_set_governor >/dev/null 2>&1; then
+                remote_set_governor "$choice" "$host"
+                local new_gov
+                new_gov=$(remote__exec "$host" "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null" || echo "unknown")
+                tui_msgbox "CPU Governor" "Governor set to: ${new_gov}"
+            else
+                tui_msgbox "Not Implemented" "remote_set_governor not available"
+            fi
+            ;;
     esac
 }
 
@@ -2094,6 +2188,7 @@ run_manage_mode() {
         case "$choice" in
             sysinfo)   menu_system_info ;;
             kernel)    kernel_handle_choice "$(menu_kernel)" ;;
+            drivers)   menu_drivers ;;
             wifi)      menu_wifi ;;
             gpu)       menu_gpu ;;
             storage)   menu_storage ;;
@@ -2112,7 +2207,7 @@ _AGENT_OPERATIONS="sysinfo kernel_status kernel_pin kernel_unpin kernel_update "
 _AGENT_OPERATIONS="${_AGENT_OPERATIONS}security_update health_check rollback_status "
 _AGENT_OPERATIONS="${_AGENT_OPERATIONS}driver_status driver_rebuild disk_usage erase_macos "
 _AGENT_OPERATIONS="${_AGENT_OPERATIONS}apt_enable apt_disable reboot boot_macos boot_ubuntu headless_verify "
-_AGENT_OPERATIONS="${_AGENT_OPERATIONS}gpu_status gpu_setup"
+_AGENT_OPERATIONS="${_AGENT_OPERATIONS}gpu_status gpu_setup driver_install governor_set fix_wifi"
 
 _validate_agent_deploy() {
     [ -z "${DEPLOY_METHOD:-}" ] && agent_error "Missing --method (1=ESP, 2=USB, 3=manual, 4=VM)" "$E_AGENT_PARAM"
@@ -2180,6 +2275,7 @@ _agent_manage() {
     [ -z "$op" ] && agent_error "Missing --operation for manage mode. Available: $_AGENT_OPERATIONS" "$E_AGENT_PARAM"
 
     local host="${LINUX_HOST:-${REMOTE_HOST:-macpro-linux}}"
+    local op_arg="${GOVERNOR:-}"
 
     case "$op" in
         sysinfo)         remote_get_info "$host" ;;
@@ -2201,7 +2297,10 @@ _agent_manage() {
         boot_ubuntu)     remote_boot_ubuntu "$host" ;;
         headless_verify) remote_headless_verify "$host" ;;
         gpu_status)      remote_gpu_status "$host" ;;
-        gpu_setup)       remote_gpu_setup "$host" ;;
+        gpu_setup)        remote_gpu_setup "$host" ;;
+        driver_install)   remote_install_drivers "$host" ;;
+        governor_set)     remote_set_governor "$op_arg" "$host" ;;
+        fix_wifi)        remote_fix_wifi "$host" ;;
         *) agent_error "Unknown operation: $op. Available: $_AGENT_OPERATIONS" "$E_USAGE" ;;
     esac
 }

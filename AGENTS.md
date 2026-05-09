@@ -310,6 +310,7 @@ The Manage mode presents a menu that maps to remote.sh functions:
 |-----------|---------------|-----------------|
 | System Info | — | `remote_get_info` |
 | Kernel Management | Status, Pin, Unpin, Update, Security-only | `remote_kernel_status`, `remote_kernel_repin`, `remote_kernel_unpin`, `remote_kernel_update`, `remote_non_kernel_update` |
+| Install Drivers | Status, Install All, CPU Governor | `remote_driver_status`, `remote_install_drivers`, `remote_set_governor` |
 | WiFi/Driver | (submenu via remote.sh functions) | Various WiFi diagnostic functions |
 | Storage | Disk usage, Erase macOS | `remote_get_info` (disk_usage), erase workflow |
 | APT Sources | Enable/Disable | `remote_toggle_apt_sources(host, "enable"|"disable")` |
@@ -797,6 +798,9 @@ The following operations are available in agent mode via `--operation OP`:
 | `boot_macos` | `remote_boot_macos()` | Set next boot to macOS and reboot | Yes |
 | `driver_status` | `remote_driver_status()` | WiFi/DKMS driver status check | No |
 | `driver_rebuild` | `remote_driver_rebuild()` | Rebuild DKMS WiFi driver module | Yes |
+| `driver_install` | `remote_install_drivers()` | Install all drivers + performance tuning (GPU, Bluetooth, microcode, CPU governor, I/O scheduler) | Yes |
+| `driver_status` | `remote_driver_status()` | Show driver & performance status (GPU, CPU, Bluetooth, Audio, Kernel) | No |
+| `governor_set` | `remote_set_governor()` | Set CPU governor (performance, powersave, schedutil, ondemand, conservative) | Yes |
 | `erase_macos` | `remote_erase_macos()` | Delete macOS partitions, expand Ubuntu to full disk | Yes |
 | `apt_enable` | `remote_apt_enable()` | Enable APT package sources (use kernel_unpin instead) | Yes |
 | `apt_disable` | `remote_apt_disable()` | Disable APT package sources (use kernel_pin instead) | Yes |
@@ -854,6 +858,8 @@ The `remote_toggle_apt_sources(host, action)` function (line 234 in lib/remote.s
 - **macOS Recovery MUST be preserved** — `check_recovery_health()` runs before deployment (in `analyze_disk_layout`), after APFS resize (in `shrink_apfs_if_needed`), and after bless (in `_phase_verify_bless`). If Recovery is missing/unhealthy, deployment is blocked. `generate_dualboot_storage` verifies the APFS container partition (GUID `7c3457ef-0000-11aa-aa11-00306543ecac`) is in the preserve list — without it, the installer destroys Recovery. `diskutil apfs resizeContainer` can corrupt APFS volume metadata that the firmware uses to discover Recovery — the post-resize check catches this.
 - **macOS auto-unmounts FAT32 ESP volumes** — after `newfs_msdos` + `diskutil mount`, macOS's `diskarbitrationd` may auto-unmount EFI-typed partitions before subsequent SSH commands can verify them. Always use `mount_msdos /dev/$dev /Volumes/$ESP_NAME` with an explicit mount point (after `mkdir -p`) instead of `diskutil mount`, which bypasses diskarbitrationd's auto-removal. Fall back to `diskutil mount` only if `mount_msdos` fails. `verify_esp_mount` proactively re-mounts via `_vem_ensure_mounted()` and resolves alternate mount paths (e.g. `/Volumes/CIDATA 1`). `create_esp_partition` adds `sleep 3` after mount to give macOS time to settle. **When writing code that mounts ESP/FAT32 partitions, always use `mount_msdos` with explicit mount point, not `diskutil mount`.**
 - **`verify_esp_mount` accepts optional second argument `esp_device`** — this allows callers (like `_phase_create_esp`) to pass the device name so `verify_esp_mount` can re-mount without reading the journal. Always pass the device when available.
+- **`/etc/default/grub.d/macpro.cfg` overrides `/etc/default/grub`** — the autoinstall creates this drop-in with `nomodeset amdgpu.si.modeset=0`; `update-grub` sources it AFTER `/etc/default/grub`, so its `GRUB_CMDLINE_LINUX_DEFAULT` takes precedence. The driver install script renames it to `.disabled` before editing GRUB.
+- **Intel microcode 0x42e is latest for Ivy Bridge-EP** — the `intel-microcode` package contains rev 0x42e (2019-03), which matches the CPU's factory revision. No newer microcode exists for this stepping. The "microcode not updated" appearance is expected.
 
 ## Runtime Output Directory
 
